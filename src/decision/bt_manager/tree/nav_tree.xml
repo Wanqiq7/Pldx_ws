@@ -48,9 +48,13 @@
       </ForceSuccess>
      
       <ReactiveFallback name="NavPriorityRoot">
-        <SubTree ID="TunnelRecoverySubTree"
-                 __shared_blackboard="true"
-                 __autoremap="true" />
+        <!-- Keep recovery on the main tree blackboard. BT.CPP v4 isolates
+             SubTree blackboards, while TunnelTimeoutBackoutAction reads and
+             writes shared state directly (current_pose/cmd_vel). -->
+        <TunnelTimeoutBackoutAction
+          timeout_s="15.0"
+          max_backout_s="10.0"
+          branch="TunnelBackout" />
 
         <!-- 前哨专项撤退一旦触发就保持高优先级；回血至上限且5秒防御结束后退出。 -->
         <ReactiveSequence name="Priority0OutpostHealthRecovery">

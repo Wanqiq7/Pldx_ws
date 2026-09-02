@@ -4,7 +4,7 @@
 
 #include "bt_manager/utils/log.hpp"
 #include "bt_manager/utils/nav_zone.hpp"
-#include <behaviortree_cpp_v3/behavior_tree.h>
+#include <behaviortree_cpp/behavior_tree.h>
 #include <nav2_behavior_tree/bt_action_node.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 

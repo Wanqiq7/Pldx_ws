@@ -6,7 +6,7 @@
     publish_freq: 20.0      # freqency of publish, 5.0, 10.0, 20.0, 50.0, etc.
     output_data_type: 0
     frame_id: livox_frame
-    lvx_file_path: /home/livox/livox_test.lvx
+    lvx_file_path: ""
     user_config_path: "$(find-pkg-share livox_ros_driver2)/config/mixed_MID360_config.json"
     cmdline_input_bd_code: livox0000000001
     enable_internal_lidar_merge: true

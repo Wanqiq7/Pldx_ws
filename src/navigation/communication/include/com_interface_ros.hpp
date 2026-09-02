@@ -99,11 +99,6 @@ public:
       receive_steady = std::chrono::steady_clock::now();
     }
     ros_interfaces::msg::SentryInfoOffline msg;
-    msg.is_get = in.is_get;
-    msg.armor_pos.x = static_cast<double>(in.armor_pos[0]);
-    msg.armor_pos.y = static_cast<double>(in.armor_pos[1]);
-    msg.armor_pos.z = static_cast<double>(in.armor_pos[2]);
-    msg.armor_num = in.armor_num;
     msg.yaw_camerainit_to_gimbal = in.yaw_camerainit_to_gimbal;
     msg.lifter_current_pos = in.lifter_current_pos;
     msg.is_transformable = in.is_transformable;
@@ -127,10 +122,12 @@ public:
     double history_span_ms = 0.0;
     {
       std::lock_guard<std::mutex> lk(imu_mutex_);
-      if (chassis_imu_history_.size() >= kImuHistoryCapacity) {
-        chassis_imu_history_.pop_front();
+      if (std::isfinite(in.chassis_imu_yaw)) {
+        if (chassis_imu_history_.size() >= kImuHistoryCapacity) {
+          chassis_imu_history_.pop_front();
+        }
+        chassis_imu_history_.push_back(ImuYawSample{stamp, in.chassis_imu_yaw});
       }
-      chassis_imu_history_.push_back(ImuYawSample{stamp, in.chassis_imu_yaw});
       if (performance_diagnostics_enabled_) {
         history_size = chassis_imu_history_.size();
         if (history_size > 1) {
@@ -270,7 +267,7 @@ private:
     // Chassis control variables
     float vx_mps = 0.0f;
     float vy_mps = 0.0f;
-    float vw_rpm = 0.0f;
+    float vw_rad_s = 0.0f;
     float current_vx = 0.0f;
     float current_vy = 0.0f;
     float current_vw = 0.0f;
@@ -282,8 +279,8 @@ private:
 
     // Behavior-related variables
     uint8_t pitch_mode = 0;
-    float scan_yaw_min_deg_ = 0.0f;
-    float scan_yaw_max_deg_ = 0.0f;
+    float scan_yaw_min_rad_ = 0.0f;
+    float scan_yaw_max_rad_ = 0.0f;
     uint8_t desire_stance = 0;
     uint8_t desire_lifter_pos = 0;
     uint8_t comfirm_revive = 0;
@@ -295,14 +292,13 @@ private:
     bool not_aim_enemy = true;
     bool use_capacitor = false;
     bool use_gyro_mode = false;
-    float gyro_vel = 0.0f;
     bool tunnel_escape_active = false;
     float tunnel_escape_vx = 0.0f;
     float tunnel_escape_vy = 0.0f;
     bool tunnel_prepare_active = false;
     bool tunnel_ready = false;
     bool tunnel_align_active = false;
-    float tunnel_align_angle_deg = 0.0f;
+    float tunnel_align_angle_rad = 0.0f;
     geometry_msgs::msg::Quaternion odom_q;
     {
       // Snapshot shared state to avoid data races.
@@ -312,7 +308,7 @@ private:
       vy_mps = static_cast<float>(cmd_vel_.linear.y);
       // vy_mps = 0.0f;
 
-      vw_rpm = static_cast<float>(cmd_vel_.angular.z * 60.0 / (2.0 * M_PI));
+      vw_rad_s = static_cast<float>(cmd_vel_.angular.z);
 
       current_vx = odom_.twist.twist.linear.x;
       current_vy = odom_.twist.twist.linear.y;
@@ -328,16 +324,15 @@ private:
       desire_stance = behavior_.desired_stance;
       desire_lifter_pos = behavior_.desire_lifter_pos;
       use_gyro_mode = behavior_.use_gyro_mode;
-      gyro_vel = behavior_.gyro_vel;
       tunnel_escape_active = behavior_.tunnel_escape_active;
       tunnel_escape_vx = behavior_.tunnel_escape_vx;
       tunnel_escape_vy = behavior_.tunnel_escape_vy;
       tunnel_prepare_active = behavior_.tunnel_prepare_active;
       tunnel_ready = behavior_.tunnel_ready;
       tunnel_align_active = behavior_.tunnel_align_active;
-      tunnel_align_angle_deg = behavior_.tunnel_align_angle_deg;
-      scan_yaw_min_deg_ = behavior_.scan_yaw_min;
-      scan_yaw_max_deg_ = behavior_.scan_yaw_max;
+      tunnel_align_angle_rad = static_cast<float>(behavior_.tunnel_align_angle_deg * M_PI / 180.0);
+      scan_yaw_min_rad_ = static_cast<float>(behavior_.scan_yaw_min * M_PI / 180.0);
+      scan_yaw_max_rad_ = static_cast<float>(behavior_.scan_yaw_max * M_PI / 180.0);
       ammo_purchase_request = behavior_.ammo_purchase_request;
       comfirm_revive = behavior_.revive_request;
       ammo_req = behavior_.remote_ammo_request;
@@ -345,10 +340,6 @@ private:
       health_req = behavior_.remote_health_request;
       use_limited_scan = behavior_.use_limited_scan;
       not_aim_enemy = behavior_.not_aim_enemy;
-      if (use_gyro_mode) {
-        vw_rpm = gyro_vel;
-      }
-      // vw_rpm = 0.0f;
       if (tunnel_escape_active) {
         vx_mps = tunnel_escape_vx;
         vy_mps = tunnel_escape_vy;
@@ -359,6 +350,12 @@ private:
       }
     }
 
+    tf2::Quaternion q;
+    tf2::fromMsg(odom_q, q);
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+    const float current_yaw_rad = static_cast<float>(yaw);
+
     if (!delta_yaw_initialized) {
       vx_mps = 0.0f;
       vy_mps = 0.0f;
@@ -368,31 +365,34 @@ private:
         *get_clock(),
         1000,
         "[COM] delta_yaw is not initialized; suppressing translational command.");
+    } else {
+      const float theta = current_yaw_rad - delta_yaw;
+      const float cos_theta = std::cos(theta);
+      const float sin_theta = std::sin(theta);
+      const float vx_b = vx_mps * cos_theta + vy_mps * sin_theta;
+      const float vy_b = -vx_mps * sin_theta + vy_mps * cos_theta;
+      vx_mps = vx_b;
+      vy_mps = vy_b;
     }
 
-    tf2::Quaternion q;
-    tf2::fromMsg(odom_q, q);
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-    const float current_yaw_deg = static_cast<float>(yaw * 180.0 / M_PI);
     ChassisTarget target(vx_mps,
       vy_mps,
-      vw_rpm,
-      current_yaw_deg,
+      vw_rad_s,
+      current_yaw_rad,
       current_vx,
       current_vy,
       current_vw,
       fx_global,
       fy_global,
       fw_global,
-      1,
+      true,
       delta_yaw);
 
     BehaviorData behavior_data(pitch_mode,
       desire_stance,
       desire_lifter_pos,
-      scan_yaw_min_deg_,
-      scan_yaw_max_deg_,
+      scan_yaw_min_rad_,
+      scan_yaw_max_rad_,
       ammo_purchase_request,
       comfirm_revive,
       revive_req,
@@ -402,7 +402,8 @@ private:
       not_aim_enemy,
       use_capacitor,
       tunnel_align_active,
-      tunnel_align_angle_deg);
+      tunnel_align_angle_rad,
+      use_gyro_mode);
     auto flag = Communication::send2stm32<ChassisTarget>(target, ENUM_PACKET_NAV_DATA);
     if (performance_diagnostics_enabled_) {
       auto diagnostics = getDiagnosticsSnapshot();
@@ -417,7 +418,7 @@ private:
         LOG_DEBUG_BLOCK(std::string(CYAN) + "[COM][ChassisCmd] ",
           NV(target.vx_mps),
           NV(target.vy_mps),
-          NV(target.vw_rpm),
+          NV(target.vw_rad_s),
           NV(target.current_yaw),
           NV(target.current_vx),
           NV(target.current_vy),
@@ -442,8 +443,8 @@ private:
           NV(behavior_data.pitch_mode),
           NV(static_cast<int>(behavior_data.desire_stance)),
           NV(static_cast<int>(behavior_data.desire_lifter_pos)),
-          NV(behavior_data.scan_yaw_min_deg),
-          NV(behavior_data.scan_yaw_max_deg),
+          NV(behavior_data.scan_yaw_min_rad),
+          NV(behavior_data.scan_yaw_max_rad),
           NV(behavior_data.ammo_purchase_request),
           NV(behavior_data.revive_request),
           NV(behavior_data.remote_revive_request),
@@ -452,7 +453,7 @@ private:
           NV(behavior_data.use_limited_scan),
           NV(behavior_data.use_capacitor),
           NV(behavior_data.tunnel_align_active),
-          NV(behavior_data.tunnel_align_angle_deg));
+          NV(behavior_data.tunnel_align_angle_rad));
         last_send_time = now_time;
       }
     }

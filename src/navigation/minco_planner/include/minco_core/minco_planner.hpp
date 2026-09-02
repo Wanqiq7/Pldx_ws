@@ -34,7 +34,8 @@ public:
 
   // === Core Planning Interfaces ===
   nav_msgs::msg::Path createPlan(
-    const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal) override;
+    const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal,
+    std::function<bool()> cancel_checker) override;
 
   bool PlanGlobalPath(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal);

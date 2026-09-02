@@ -16,6 +16,8 @@
   <depend>pcl_ros</depend>
   <depend>libpcl-all-dev</depend>
   <depend>libopencv-dev</depend>
+  <depend>yaml_cpp_vendor</depend>
+  <depend>libomp-dev</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

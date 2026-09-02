@@ -851,8 +851,10 @@ bool MincoPlanner::normalizePoseToFrame(const geometry_msgs::msg::PoseStamped & 
 }
 
 nav_msgs::msg::Path MincoPlanner::createPlan(
-  const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal)
+  const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal,
+  std::function<bool()> cancel_checker)
 {
+  (void)cancel_checker;
   // Nav2 interface: createPlan() only sets the goal flag for MincoFSM.
   // It must NOT run A* or optimization here.
   nav_msgs::msg::Path path;

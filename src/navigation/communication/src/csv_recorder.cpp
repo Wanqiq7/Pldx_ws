@@ -47,7 +47,7 @@ CsvRecorder::CsvRecorder() noexcept : start_time_(std::chrono::steady_clock::now
     }
 
     stream_ << "system_time,elapsed_ms,send_result,send_success,"
-               "vx_mps,vy_mps,vw_rpm,current_yaw,current_vx,current_vy,current_vw,"
+               "vx_mps,vy_mps,vw_rad_s,current_yaw,current_vx,current_vy,current_vw,"
                "fx_global,fy_global,fw_global,use_speed_control,delta_yaw,"
                "odom_stamp_sec,odom_receive_stamp_sec,odom_age_ms,"
                "chassis_sample_stamp_sec,chassis_imu_yaw,history_size,history_span_ms,"
@@ -102,7 +102,7 @@ void CsvRecorder::recordChassis(
       return;
     }
     writePrefix(send_result);
-    stream_ << std::setprecision(9) << data.vx_mps << ',' << data.vy_mps << ',' << data.vw_rpm << ','
+    stream_ << std::setprecision(9) << data.vx_mps << ',' << data.vy_mps << ',' << data.vw_rad_s << ','
             << data.current_yaw << ',' << data.current_vx << ',' << data.current_vy << ','
             << data.current_vw << ',' << data.fx_global << ',' << data.fy_global << ',' << data.fw_global
             << ',' << static_cast<int>(data.use_speed_control) << ',' << data.delta_yaw << ','

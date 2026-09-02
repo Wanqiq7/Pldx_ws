@@ -7,7 +7,16 @@ if(CMAKE_COMPILER_ID MATCHES "Clang|GNU")
   set(CMAKE_CXX_EXTENSIONS OFF) # 禁用编译器扩展
   add_compile_options(-Wall -Wextra -Wpedantic)
   set(CMAKE_BUILD_TYPE "Release")
-  add_compile_options(-Werror -Wno-error=unused-variable -Wno-error=unused-parameter)
+  # Jazzy/GCC 13 diagnoses additional legacy warnings (shadowing and Eigen
+  # null-dereference heuristics); keep warnings enabled without making them
+  # fatal so the planner remains buildable on the supported toolchain.
+  add_compile_options(
+    -Wno-error
+    -Wno-error=shadow
+    -Wno-error=null-dereference
+    -Wno-error=maybe-uninitialized
+    -Wno-error=unused-variable
+    -Wno-error=unused-parameter)
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -68,6 +77,10 @@ PUBLIC
 
 target_compile_options(${library_name}
 PRIVATE
+  -Wno-error
+  -Wno-error=shadow
+  -Wno-error=null-dereference
+  -Wno-error=maybe-uninitialized
   -Wno-error=unused-parameter
   -Wno-error=unused-function
   -Wno-error=ignored-qualifiers

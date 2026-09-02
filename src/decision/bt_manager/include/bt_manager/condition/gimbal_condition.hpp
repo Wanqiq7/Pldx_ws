@@ -4,7 +4,7 @@
 #include "bt_manager/ros_interface.hpp"
 #include "bt_manager/utils/area.hpp"
 #include "bt_manager/utils/log.hpp"
-#include <behaviortree_cpp_v3/condition_node.h>
+#include <behaviortree_cpp/condition_node.h>
 #include <geometry_msgs/msg/pose.hpp>
 
 namespace Sentry_BT {

@@ -148,7 +148,7 @@ DriverNode::DriverNode(const rclcpp::NodeOptions & node_options) : Node("livox_d
   this->declare_parameter("frame_id", "frame_default");
   this->declare_parameter("user_config_path", "path_default");
   this->declare_parameter("cmdline_input_bd_code", "000000000000001");
-  this->declare_parameter("lvx_file_path", "/home/livox/livox_test.lvx");
+  this->declare_parameter("lvx_file_path", "");
   this->declare_parameter("enable_internal_lidar_merge", enable_internal_lidar_merge);
   this->declare_parameter("enable_merge_debug", enable_merge_debug);
   this->declare_parameter("merge_front_ip", merge_front_ip);

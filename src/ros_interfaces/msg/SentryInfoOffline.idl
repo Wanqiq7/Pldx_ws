@@ -1,0 +1,37 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from ros_interfaces/msg/SentryInfoOffline.msg
+// generated code does not contain a copyright notice
+
+#include "std_msgs/msg/Header.idl"
+
+module ros_interfaces {
+  module msg {
+    struct SentryInfoOffline {
+      std_msgs::msg::Header header;
+
+      @verbatim (language="comment", text=
+        "camera_init到gimbal的yaw轴角度 逆时针为正")
+      float yaw_camerainit_to_gimbal;
+
+      @verbatim (language="comment", text=
+        "0 -- kTop 1 -- kBottom 2 -- kMiddle")
+      uint8 lifter_current_pos;
+
+      @verbatim (language="comment", text=
+        "是否能够进行变形（不止变形中不能变形，升降卡住后也无法进行变形）")
+      boolean is_transformable;
+
+      @verbatim (language="comment", text=
+        "变形状态，0-1，0%为未变形，100%为完全变形，过渡状态根据实际情况变化")
+      float transform_state;
+
+      @verbatim (language="comment", text=
+        "电容容量百分比")
+      uint8 capacitor_capacity;
+
+      @verbatim (language="comment", text=
+        "底盘航向是否完成对齐")
+      boolean tunnel_yaw_aligned;
+    };
+  };
+};

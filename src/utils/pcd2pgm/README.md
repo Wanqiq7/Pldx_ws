@@ -28,7 +28,7 @@
 
 ### 2.2 安装依赖
 
-[ROS2 Humble](https://docs.ros.org/en/humble/Installation.html)（尚未在其他 ROS 版本中测试）
+[ROS2 Jazzy](https://docs.ros.org/en/jazzy/Installation.html)
 
 ```sh
 rosdep install -r --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y
@@ -61,7 +61,7 @@ ros2 run nav2_map_server map_saver_cli -f YOUR_MAP_NAME
   ```yaml
   /pcd2pgm:
     ros__parameters:
-      file_directory: /home/lihanchen/Downloads/pcd2pgm/  # PCD文件所在目录
+      file_directory: ""  # PCD文件所在目录；为空时使用当前工作目录
       file_name: RMUC  # PCD文件名（不包含后缀）
       flag_pass_through: true  # 是否使用Pass Through滤波器
       map_resolution: 0.05  # 地图分辨率

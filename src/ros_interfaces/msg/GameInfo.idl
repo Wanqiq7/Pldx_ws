@@ -1,0 +1,49 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from ros_interfaces/msg/GameInfo.msg
+// generated code does not contain a copyright notice
+
+#include "std_msgs/msg/Header.idl"
+
+module ros_interfaces {
+  module msg {
+    struct GameInfo {
+      std_msgs::msg::Header header;
+
+      @verbatim (language="comment", text=
+        "比赛剩余时间，单位s")
+      uint16 game_time_remaining;
+
+      @verbatim (language="comment", text=
+        "己方剩余金币数量")
+      uint16 coin_remaining;
+
+      @verbatim (language="comment", text=
+        "场地事件代码，未解码，需接收后根据协议解码")
+      uint32 event_code;
+
+      @verbatim (language="comment", text=
+        "0:未开始比赛 1:准备阶段 2:15s裁判系统自检 3:5s倒计时 4:比赛中 5:比赛结算中")
+      uint8 game_status;
+
+      @verbatim (language="comment", text=
+        "手动指定的目标点x坐标，单位m，坐标系minimap")
+      float manual_point_x;
+
+      @verbatim (language="comment", text=
+        "手动指定的目标点y坐标，单位m，坐标系minimap")
+      float manual_point_y;
+
+      @verbatim (language="comment", text=
+        "手动指定的目标点快捷")
+      uint8 manual_key;
+
+      @verbatim (language="comment", text=
+        "敌方前哨站血量")
+      uint16 enemy_outpost_hp;
+
+      @verbatim (language="comment", text=
+        "敌方基地血量")
+      uint16 enemy_base_hp;
+    };
+  };
+};

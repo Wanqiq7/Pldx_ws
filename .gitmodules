@@ -1,0 +1,3 @@
+[submodule "src/navigation/ros2_libxr"]
+	path = src/navigation/ros2_libxr
+	url = https://github.com/QDU-VRobot/ROS2_LIBXR.git

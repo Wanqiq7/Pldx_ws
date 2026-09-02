@@ -65,7 +65,7 @@ find_package(livox_ros_driver2 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(glog REQUIRED)
 find_package(OpenMP QUIET)
-find_package(PythonLibs REQUIRED) # Consider using Pybind11 for ROS2
+find_package(Python3 REQUIRED COMPONENTS Development)
 find_path(MATPLOTLIB_CPP_INCLUDE_DIRS "matplotlibcpp.h")
 
 if(OPENMP_FOUND)
@@ -77,7 +77,7 @@ include_directories(
   include
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS}
-  ${PYTHON_INCLUDE_DIRS}
+  ${Python3_INCLUDE_DIRS}
 )
 
 link_directories(
@@ -114,8 +114,8 @@ ament_target_dependencies(point_lio_component
   livox_ros_driver2
 )
 
-target_link_libraries(point_lio_component ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
-target_include_directories(point_lio_component PRIVATE ${PYTHON_INCLUDE_DIRS})
+target_link_libraries(point_lio_component ${PCL_LIBRARIES} Python3::Python)
+target_include_directories(point_lio_component PRIVATE ${Python3_INCLUDE_DIRS})
 rclcpp_components_register_nodes(point_lio_component "point_lio::LaserMappingNode")
 
 # Declare a ROS2 executable
@@ -139,8 +139,8 @@ ament_target_dependencies(pointlio_mapping
   livox_ros_driver2
 )
 
-target_link_libraries(pointlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
-target_include_directories(pointlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
+target_link_libraries(pointlio_mapping ${PCL_LIBRARIES} Python3::Python)
+target_include_directories(pointlio_mapping PRIVATE ${Python3_INCLUDE_DIRS})
 
 # Install the executable
 install(TARGETS

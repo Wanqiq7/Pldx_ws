@@ -9,10 +9,13 @@
 #include <nav_msgs/msg/odometry.hpp>
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 
 // Custom Messages
+#include "pldx_vision_interfaces/msg/target_observation.hpp"
+#include "pldx_vision_interfaces/msg/vision_target_directive.hpp"
 #include "ros_interfaces/msg/behavior.hpp"
 #include "ros_interfaces/msg/game_info.hpp"
 #include "ros_interfaces/msg/mpc_position_command.hpp"
@@ -37,8 +40,13 @@ private:
   rclcpp::Subscription<ros_interfaces::msg::RadarInfo>::SharedPtr radar_info_sub;
   rclcpp::Subscription<ros_interfaces::msg::SentryInfoOffline>::SharedPtr sentry_offline_sub;
   rclcpp::Subscription<ros_interfaces::msg::SentryInfoOnline>::SharedPtr sentry_online_sub;
+  rclcpp::Subscription<pldx_vision_interfaces::msg::TargetObservation>::SharedPtr vision_target_sub;
+  rclcpp::TimerBase::SharedPtr vision_target_timeout_timer_;
+  std::atomic<int64_t> last_vision_stamp_ns_{0};
 
   rclcpp::Publisher<ros_interfaces::msg::Behavior>::SharedPtr behavior_pub;
+  rclcpp::Publisher<pldx_vision_interfaces::msg::VisionTargetDirective>::SharedPtr
+    vision_target_directive_pub;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub;
   rclcpp::Subscription<ros_interfaces::msg::MpcPositionCommand>::SharedPtr mpc_cmd_sub;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub;
@@ -68,6 +76,8 @@ private:
   void radarInfoCallback(const ros_interfaces::msg::RadarInfo::SharedPtr msg);
   void sentryOfflineCallback(const ros_interfaces::msg::SentryInfoOffline::SharedPtr msg);
   void sentryOnlineCallback(const ros_interfaces::msg::SentryInfoOnline::SharedPtr msg);
+  void visionTargetCallback(const pldx_vision_interfaces::msg::TargetObservation::SharedPtr msg);
+  void clearVisionTarget();
 
 public:
   ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr);

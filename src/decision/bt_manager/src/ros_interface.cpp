@@ -19,6 +19,11 @@ ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
   auto node_ptr = rclcpp::Node::SharedPtr(this, [](rclcpp::Node *) {
   });
   this->declare_parameter<bool>("publish_area_markers", true);
+  this->declare_parameter<std::string>("vision_target_observation_topic", "vision/target_observation");
+  this->declare_parameter<std::string>("vision_target_map_frame", "map");
+  this->declare_parameter<int>("vision_target_max_age_ms", 200);
+  this->declare_parameter<double>("vision_target_min_confidence", 0.4);
+  this->declare_parameter<int>("vision_target_tf_timeout_ms", 50);
   param_manager_ = std::make_shared<ParamManager>(node_ptr);
   // 订阅全局信息话题
   team_info_sub = this->create_subscription<ros_interfaces::msg::TeamInformation>(
@@ -49,6 +54,25 @@ ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
     "/sentry/online_info", 1, [this](const ros_interfaces::msg::SentryInfoOnline::SharedPtr msg) {
       this->sentryOnlineCallback(msg);
     });
+
+  const auto vision_target_topic = this->get_parameter("vision_target_observation_topic").as_string();
+  vision_target_sub =
+    this->create_subscription<pldx_vision_interfaces::msg::TargetObservation>(vision_target_topic,
+      rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
+      [this](const pldx_vision_interfaces::msg::TargetObservation::SharedPtr msg) {
+        this->visionTargetCallback(msg);
+      });
+  vision_target_timeout_timer_ = this->create_wall_timer(std::chrono::milliseconds(50), [this]() {
+    const auto stamp_ns = last_vision_stamp_ns_.load(std::memory_order_relaxed);
+    if (stamp_ns <= 0) {
+      return;
+    }
+    const auto age = this->now().nanoseconds() - stamp_ns;
+    const auto max_age_ms = this->get_parameter("vision_target_max_age_ms").as_int();
+    if (age > std::max<int64_t>(0, max_age_ms) * 1000000LL) {
+      clearVisionTarget();
+    }
+  });
 
   odom_sub = this->create_subscription<nav_msgs::msg::Odometry>(
     "/aft_mapped_to_init", 1, [this](const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -86,6 +110,8 @@ ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
     });
   // 定时发布行为状态（10Hz）
   behavior_pub = this->create_publisher<ros_interfaces::msg::Behavior>("/sentry/behaivor_send", 10);
+  vision_target_directive_pub = this->create_publisher<pldx_vision_interfaces::msg::VisionTargetDirective>(
+    "vision/target_directive", 10);
   cmd_vel_pub = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
   area_visualizer_ = std::make_unique<AreaVisualizer>(*this);
@@ -97,8 +123,7 @@ ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
     const auto use_gyro_mode = blackboard_->get<bool>("use_gyro_mode");
     const auto gyro_vel = blackboard_->get<float>("gyro_vel");
     const auto tunnel_escape_active = blackboard_->get<bool>("tunnel_escape_active");
-    const auto tunnel_escape_cmd_vel =
-      blackboard_->get<geometry_msgs::msg::Twist>("tunnel_escape_cmd_vel");
+    const auto tunnel_escape_cmd_vel = blackboard_->get<geometry_msgs::msg::Twist>("tunnel_escape_cmd_vel");
     const auto tunnel_prepare_active = blackboard_->get<bool>("tunnel_prepare_active");
     const auto tunnel_ready = blackboard_->get<bool>("tunnel_ready");
     const auto tunnel_align_active = blackboard_->get<bool>("tunnel_align_active");
@@ -142,6 +167,19 @@ ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
     behavior_msg.not_aim_enemy = not_aim_enemy;
     behavior_msg.use_capacitor = use_capacitor;
     behavior_pub->publish(behavior_msg);
+
+    pldx_vision_interfaces::msg::VisionTargetDirective directive_msg;
+    directive_msg.header.stamp = this->now();
+    if (not_aim_enemy) {
+      directive_msg.valid = true;
+      directive_msg.restrict_to_preferred_targets = true;
+      directive_msg.preferred_target_ids.clear();
+      directive_msg.excluded_target_ids.clear();
+      directive_msg.source_mask = pldx_vision_interfaces::msg::VisionTargetDirective::SOURCE_NAVIGATION;
+    } else {
+      directive_msg.valid = false;
+    }
+    vision_target_directive_pub->publish(directive_msg);
 
     if (revive_request != 0) {
       blackboard_->set<uint8_t>("revive_request", 0);
@@ -252,7 +290,7 @@ void ros_interface::gameInfoCallback(const ros_interfaces::msg::GameInfo::Shared
   case 97:  // 'a'键（兼容小写）
     blackboard_->set<ControlMode>("control_mode", ControlMode::MANUAL_CONTROL);
     break;
-  case 66:  // 'B'键切换敌方前哨站摧毁状态
+  case 66:    // 'B'键切换敌方前哨站摧毁状态
   case 98: {  // 'b'键（兼容小写）
     const auto enemy_outpost_destroyed = blackboard_->get<bool>("enemy_outpost_destroyed");
     blackboard_->set<bool>("enemy_outpost_destroyed", !enemy_outpost_destroyed);
@@ -264,14 +302,14 @@ void ros_interface::gameInfoCallback(const ros_interfaces::msg::GameInfo::Shared
       "manual_override_stance", Sentry_BT::SentryStance::ENHANCED_ATTACK);
     blackboard_->set<bool>("manual_stance_override_active", true);
     break;
-  case 68:  // 'D'键进入强化防御姿态,不改变导航控制模式
-  case 100: // 'd'键（兼容小写）
+  case 68:   // 'D'键进入强化防御姿态,不改变导航控制模式
+  case 100:  // 'd'键（兼容小写）
     blackboard_->set<Sentry_BT::SentryStance>(
       "manual_override_stance", Sentry_BT::SentryStance::ENHANCED_DEFEND);
     blackboard_->set<bool>("manual_stance_override_active", true);
     break;
-  case 69:  // 'E'键进入强化移动姿态,不改变导航控制模式
-  case 101: // 'e'键（兼容小写）
+  case 69:   // 'E'键进入强化移动姿态,不改变导航控制模式
+  case 101:  // 'e'键（兼容小写）
     blackboard_->set<Sentry_BT::SentryStance>(
       "manual_override_stance", Sentry_BT::SentryStance::ENHANCED_MOVE);
     blackboard_->set<bool>("manual_stance_override_active", true);
@@ -324,37 +362,78 @@ void ros_interface::radarInfoCallback(const ros_interfaces::msg::RadarInfo::Shar
 void ros_interface::sentryOfflineCallback(const ros_interfaces::msg::SentryInfoOffline::SharedPtr msg)
 {
   // 存储哨兵离线状态信息
-  blackboard_->set<bool>("target_valid", msg->is_get);
   blackboard_->set<Sentry_BT::LifterPos>(
     "lifter_current_pos", static_cast<Sentry_BT::LifterPos>(msg->lifter_current_pos));
   blackboard_->set<bool>("is_transformable", msg->is_transformable);
   blackboard_->set<float>("transform_state", msg->transform_state);
-  blackboard_->set<uint8_t>("capacitor_capacity", msg->capacitor_capacity);
+  if (msg->capacitor_capacity <= 100U) {
+    blackboard_->set<uint8_t>("capacitor_capacity", msg->capacitor_capacity);
+  }
   blackboard_->set<bool>("tunnel_yaw_aligned", msg->tunnel_yaw_aligned);
   auto tf_utils = blackboard_->get<std::shared_ptr<Sentry_BT::TransformUtils>>("transform_utils");
   float gimbal_yaw_init = msg->yaw_camerainit_to_gimbal;
   if (tf_utils) {
     tf_utils->updateGimbalYawInit(gimbal_yaw_init);
   }
-  // 存储装甲板位置
-  if (msg->is_get)
-  // if(false)
-  {
-    geometry_msgs::msg::Pose target_pose_in, target_pose;
+}
 
-    target_pose_in.position.x = (msg->armor_pos.x) / 1000.0;  // 转换为米
-    target_pose_in.position.y = (msg->armor_pos.y) / 1000.0;
-    target_pose_in.position.z = (msg->armor_pos.z) / 1000.0;
-    target_pose_in.orientation.w = 1.0;
-
-    if (tf_utils) {
-      // tf_utils->transformPoseToMap(target_pose_in, target_pose, "gimbal");
-      tf_utils->transformGimbalToMap(target_pose_in, target_pose);
-    }
-    target_pose.orientation.w = 1.0;  // 设置默认朝向
-    blackboard_->set<int>("target_armor_id", (int)msg->armor_num);
-    blackboard_->set<geometry_msgs::msg::Pose>("target_pose", target_pose);
+void ros_interface::visionTargetCallback(
+  const pldx_vision_interfaces::msg::TargetObservation::SharedPtr msg)
+{
+  if (!msg) {
+    clearVisionTarget();
+    return;
   }
+
+  const auto max_age_ms = this->get_parameter("vision_target_max_age_ms").as_int();
+  const auto min_confidence = this->get_parameter("vision_target_min_confidence").as_double();
+  const auto stamp = rclcpp::Time(msg->header.stamp, this->get_clock()->get_clock_type());
+  const auto age = this->now() - stamp;
+  const bool timestamp_valid =
+    stamp.nanoseconds() > 0 && age >= rclcpp::Duration::from_nanoseconds(-50'000'000) &&
+    age <= rclcpp::Duration::from_seconds(std::max<int64_t>(0, max_age_ms) / 1000.0);
+  const bool point_valid =
+    std::isfinite(msg->position.x) && std::isfinite(msg->position.y) && std::isfinite(msg->position.z);
+  const bool observation_valid = msg->valid && msg->target_id >= 1 && msg->target_id <= 8 &&
+                                 std::isfinite(msg->confidence) && msg->confidence >= min_confidence &&
+                                 msg->confidence <= 1.0F && !msg->header.frame_id.empty() && point_valid &&
+                                 timestamp_valid;
+  if (!observation_valid) {
+    clearVisionTarget();
+    return;
+  }
+
+  auto tf_utils = blackboard_->get<std::shared_ptr<Sentry_BT::TransformUtils>>("transform_utils");
+  geometry_msgs::msg::Pose input_pose;
+  input_pose.position = msg->position;
+  input_pose.orientation.w = 1.0;
+  geometry_msgs::msg::Pose target_pose;
+  const bool transformed =
+    tf_utils && tf_utils->transformPoseToMap(input_pose, target_pose, msg->header.frame_id);
+  if (!transformed) {
+    clearVisionTarget();
+    RCLCPP_WARN_THROTTLE(this->get_logger(),
+      *this->get_clock(),
+      2000,
+      "Vision target TF unavailable for %s -> map (latest)",
+      msg->header.frame_id.c_str());
+    return;
+  }
+
+  target_pose.orientation = geometry_msgs::msg::Quaternion();
+  target_pose.orientation.w = 1.0;
+  blackboard_->set<bool>("target_valid", true);
+  blackboard_->set<int>("target_armor_id", static_cast<int>(msg->target_id));
+  blackboard_->set<geometry_msgs::msg::Pose>("target_pose", target_pose);
+  last_vision_stamp_ns_.store(stamp.nanoseconds(), std::memory_order_relaxed);
+}
+
+void ros_interface::clearVisionTarget()
+{
+  last_vision_stamp_ns_.store(0, std::memory_order_relaxed);
+  blackboard_->set<bool>("target_valid", false);
+  blackboard_->set<int>("target_armor_id", -1);
+  blackboard_->set<geometry_msgs::msg::Pose>("target_pose", geometry_msgs::msg::Pose());
 }
 
 // 新增：哨兵在线信息回调函数

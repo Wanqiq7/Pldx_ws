@@ -53,8 +53,8 @@
   # generate custom msg headers
   set(LIVOX_INTERFACES livox_interfaces2)
   rosidl_generate_interfaces(${LIVOX_INTERFACES}
-    "msg/CustomPoint.msg"
-    "msg/CustomMsg.msg"
+    "msg/CustomPoint.idl"
+    "msg/CustomMsg.idl"
     DEPENDENCIES builtin_interfaces std_msgs
     LIBRARY_NAME ${PROJECT_NAME}
   )

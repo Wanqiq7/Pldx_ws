@@ -10,7 +10,7 @@ ROS2功能包，用于将Livox自定义点云消息转换为标准的sensor_msgs
 
 ## 依赖
 
-- ROS2 (Humble或更高版本)
+- ROS2 Jazzy或更高版本
 - rclcpp
 - sensor_msgs
 - livox_ros_driver2

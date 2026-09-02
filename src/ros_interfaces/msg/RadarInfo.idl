@@ -1,0 +1,32 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from ros_interfaces/msg/RadarInfo.msg
+// generated code does not contain a copyright notice
+
+#include "ros_interfaces/msg/EnemyRobotStatus.idl"
+#include "std_msgs/msg/Header.idl"
+
+module ros_interfaces {
+  module msg {
+    typedef ros_interfaces::msg::EnemyRobotStatus ros_interfaces__msg__EnemyRobotStatus;
+    typedef ros_interfaces__msg__EnemyRobotStatus ros_interfaces__msg__EnemyRobotStatus__6[6];
+    struct RadarInfo {
+      std_msgs::msg::Header header;
+
+      @verbatim (language="comment", text=
+        "雷达检测到的机器人信息列表，最多6个机器人")
+      ros_interfaces__msg__EnemyRobotStatus__6 enemies;
+
+      @verbatim (language="comment", text=
+        "敌方剩余金币数量")
+      uint16 enemy_coin_left;
+
+      @verbatim (language="comment", text=
+        "敌方累计获得金币数量")
+      uint16 enemy_coin_accumulated;
+
+      @verbatim (language="comment", text=
+        "敌方前哨站是否被雷达识别到")
+      boolean is_enemy_outpost_sensed;
+    };
+  };
+};

@@ -32,6 +32,9 @@
   <depend>livox_ros_driver2</depend>
   <depend>libunwind-dev</depend>
   <depend>libgoogle-glog-dev</depend>
+  <depend>eigen3_cmake_module</depend>
+  <depend>libomp-dev</depend>
+  <depend>python3-dev</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

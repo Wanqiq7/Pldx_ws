@@ -19,9 +19,8 @@ namespace Sentry_BT {
 namespace {
 inline void tickTreeExactlyOnce(BT::Tree & tree)
 {
-  // BehaviorTree.CPP v3 in this workspace does not expose Tree::tickExactlyOnce().
-  // tickRoot() here is used as a compatible exact-once tick wrapper.
-  tree.tickRoot();
+  // BehaviorTree.CPP v4 exposes a public single-tick wrapper.
+  tree.tickOnce();
 }
 }  // namespace
 

@@ -1,8 +1,50 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-source /opt/ros/humble/setup.bash
-# source ../ws_livox/install/setup.bash
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
+
+# TargetObservation is owned by the vision workspace.  Source it explicitly
+# when it is not already present in the ROS environment.
+PLDX_VISION_WS="${PLDX_VISION_WS:-}"
+if [[ -n "${PLDX_VISION_WS}" ]]; then
+	PLDX_VISION_SETUP="${PLDX_VISION_WS%/}/install/setup.bash"
+	if [[ ! -f "${PLDX_VISION_SETUP}" ]]; then
+		echo "PLDX_VISION_WS does not contain install/setup.bash: ${PLDX_VISION_WS}" >&2
+		exit 1
+	fi
+	source "${PLDX_VISION_SETUP}"
+fi
+if ! ros2 pkg prefix pldx_vision_interfaces >/dev/null 2>&1; then
+	echo "pldx_vision_interfaces is unavailable. Set PLDX_VISION_WS to a built vision workspace." >&2
+	exit 1
+fi
+
+workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ros2_libxr_package_xml="${workspace_dir}/src/navigation/ros2_libxr/src/ros2_libxr/package.xml"
+if [[ ! -f "${ros2_libxr_package_xml}" ]]; then
+	echo "ROS2_LIBXR submodule is not initialized: ${workspace_dir}/src/navigation/ros2_libxr" >&2
+	echo "Run: git submodule update --init --recursive" >&2
+	exit 1
+fi
+colcon_path_args=()
+case "${workspace_dir}" in
+  *[![:ascii:]]*)
+    ascii_workspace_link="/tmp/navi_minco_bit_jazzy_workspace"
+    ln -sfn "${workspace_dir}" "${ascii_workspace_link}"
+    cd "${ascii_workspace_link}"
+    colcon_path_args=(
+      --base-paths "${ascii_workspace_link}"
+      # Keep build outputs persistent: --symlink-install makes install hooks
+      # point into this directory, so a /tmp build tree breaks after cleanup.
+      --build-base "${workspace_dir}/build"
+      --install-base "${workspace_dir}/install"
+    )
+    ;;
+  *)
+    cd "${workspace_dir}"
+    ;;
+esac
 
 set -u
 
@@ -65,22 +107,29 @@ cmake_args=(
 )
 
 serial_packages=(
-	ros_interfaces
-	livox_ros_driver2
-	rog_map
-	icp_relocalization
-	point_lio
-	dbscan_cluster
-	communication
-	bt_manager
-	minco_planner
-	minco_controller
+  ros_interfaces
+  livox_ros_driver2
+  rog_map
+  icp_relocalization
+  point_lio
+  dbscan_cluster
+  bt_manager
+  minco_planner
+  minco_controller
+)
+
+# Communication is provided by the QDU-VRobot ROS2_LIBXR submodule under
+# src/navigation/ros2_libxr. Keep the legacy communication package excluded
+# from the default build until it is restored against the frozen contract.
+local_communication_packages=(
+  communication
 )
 
 echo "[build] Stage 1/2: build critical packages one-by-one"
 for pkg in "${serial_packages[@]}"; do
 	echo "[build] Serial build package: ${pkg}"
 	colcon build \
+		"${colcon_path_args[@]}" \
 		--symlink-install \
 		--parallel-workers 1 \
 		--packages-select "${pkg}" \
@@ -90,8 +139,9 @@ done
 
 echo "[build] Stage 2/2: build remaining packages in parallel"
 colcon build \
-	--symlink-install \
-	--parallel-workers "$parallel_workers" \
-	--packages-skip "${serial_packages[@]}" \
+  "${colcon_path_args[@]}" \
+  --symlink-install \
+  --parallel-workers "$parallel_workers" \
+  --packages-skip "${serial_packages[@]}" "${local_communication_packages[@]}" \
 	--cmake-args "${cmake_args[@]}" \
 	--event-handlers console_direct+ status+

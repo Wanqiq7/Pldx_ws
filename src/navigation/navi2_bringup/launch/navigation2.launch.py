@@ -3,6 +3,7 @@ import launch
 import launch_ros
 from ament_index_python.packages import get_package_share_directory
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.conditions import IfCondition
 
 def generate_launch_description():
     # 获取与拼接默认路径
@@ -14,15 +15,14 @@ def generate_launch_description():
         DreamChaser_dir,'config', 'our.rviz')
     
     # 创建 Launch 配置
-    use_sim_time = launch.substitutions.LaunchConfiguration(
-        'use_sim_time', default='False')
+    use_sim_time = launch.substitutions.LaunchConfiguration('use_sim_time')
     
-    map_yaml_path = launch.substitutions.LaunchConfiguration(
-        'map', default=os.path.join(DreamChaser_dir, 'maps', '2026/rmuc2026.yaml'))
+    map_yaml_path = launch.substitutions.LaunchConfiguration('map')
         # 'map', default=os.path.join(DreamChaser_dir, 'maps', '2026/rmul2026.yaml'))
         # 'map', default=os.path.join(DreamChaser_dir, 'maps', 'first_floor/first_floor.yaml'))
-    nav2_param_path = launch.substitutions.LaunchConfiguration(
-        'params_file', default=os.path.join(DreamChaser_dir, 'params', 'sentry1.yaml'))
+    nav2_param_path = launch.substitutions.LaunchConfiguration('params_file')
+    use_rviz = launch.substitutions.LaunchConfiguration('use_rviz')
+    controller_odom_topic = launch.substitutions.LaunchConfiguration('controller_odom_topic')
 
     return launch.LaunchDescription([
         # 静态TF: map -> camera_init
@@ -68,12 +68,17 @@ def generate_launch_description():
         #     arguments=['0', '0.20', '0', '0', '0', '0', 'body', 'base_link'],
         #     output='screen'),
         # 声明新的 Launch 参数
-        launch.actions.DeclareLaunchArgument('use_sim_time', default_value=use_sim_time,
+            launch.actions.DeclareLaunchArgument('use_sim_time', default_value='False',
                                              description='Use simulation (Gazebo) clock if true'),
-        launch.actions.DeclareLaunchArgument('map', default_value=map_yaml_path,
+        launch.actions.DeclareLaunchArgument('map', default_value=os.path.join(DreamChaser_dir, 'maps', '2026/rmuc2026.yaml'),
                                              description='Full path to map file to load'),
-        launch.actions.DeclareLaunchArgument('params_file', default_value=nav2_param_path,
+        launch.actions.DeclareLaunchArgument('params_file', default_value=os.path.join(DreamChaser_dir, 'params', 'sentry1.yaml'),
                                              description='Full path to param file to load'),
+        launch.actions.DeclareLaunchArgument('use_rviz', default_value='True',
+                                             description='Whether to start RViz'),
+        launch.actions.DeclareLaunchArgument(
+            'controller_odom_topic', default_value='/aft_mapped_to_init',
+            description='Controller-only remap target for the raw odometry topic'),
 
         launch.actions.IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -84,7 +89,8 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
                 'params_file': nav2_param_path,
                 'log_level': 'info',
-                'planner_container_name': 'livox_pointlio_container'}.items(),
+                'planner_container_name': 'livox_pointlio_container',
+                'controller_odom_topic': controller_odom_topic}.items(),
         ),       
         launch.actions.IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -100,6 +106,7 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             name='rviz2',
+            condition=IfCondition(use_rviz),
             arguments=['-d', rviz_config_dir],
             parameters=[{'use_sim_time': use_sim_time}],
             output='screen'),

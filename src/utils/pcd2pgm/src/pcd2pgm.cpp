@@ -44,7 +44,7 @@ void PCLFiltersNode::publishMap()
 
 void PCLFiltersNode::declareParameters()
 {
-  declare_parameter("file_directory", "/home/lihanchen/Downloads/pcd2pgm/");
+  declare_parameter("file_directory", "");
   declare_parameter("file_name", "RMUC");
   declare_parameter("thre_z_min", 0.5);
   declare_parameter("thre_z_max", 2.0);

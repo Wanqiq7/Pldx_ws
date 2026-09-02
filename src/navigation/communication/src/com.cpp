@@ -303,15 +303,16 @@ void Communication::stm32_read_cb(ByteArray arr)
       }
 
       case ENUM_PACKET_SENTRY_SELF_DATA: {
+        if (header->data_len != sizeof(SentryInfoOffline)) {
+          std::cerr << RED << "[COM] Rejecting offline_info payload with length "
+                    << static_cast<int>(header->data_len) << ", expected "
+                    << sizeof(SentryInfoOffline) << RESET << std::endl;
+          break;
+        }
         const SentryInfoOffline * sentry_self_data =
           (const SentryInfoOffline *)(buf + sizeof(PacketHeader));
 #ifdef COM_DEBUG
         LOG_DEBUG_BLOCK(std::string(REDPURPLE) + "[COM][Sof] ",
-          NV(sentry_self_data->armor_num),
-          NV(static_cast<float>(sentry_self_data->armor_pos[0])),
-          NV(static_cast<float>(sentry_self_data->armor_pos[1])),
-          NV(static_cast<float>(sentry_self_data->armor_pos[2])),
-          NV(sentry_self_data->is_get),
           NV(sentry_self_data->is_transformable),
           NV(sentry_self_data->lifter_current_pos),
           NV(sentry_self_data->transform_state),

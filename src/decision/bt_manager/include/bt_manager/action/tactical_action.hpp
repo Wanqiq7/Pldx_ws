@@ -1,6 +1,6 @@
 #pragma once
 
-#include <behaviortree_cpp_v3/action_node.h>
+#include <behaviortree_cpp/action_node.h>
 
 #include "bt_manager/utils/nav_zone.hpp"
 

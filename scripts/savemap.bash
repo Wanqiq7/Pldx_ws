@@ -29,9 +29,10 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 if ! command -v ros2 >/dev/null 2>&1; then
-  if [[ -f /opt/ros/humble/setup.bash ]]; then
+  ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+  if [[ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
     # shellcheck disable=SC1091
-    source /opt/ros/humble/setup.bash
+    source "/opt/ros/${ROS_DISTRO}/setup.bash"
   fi
 fi
 

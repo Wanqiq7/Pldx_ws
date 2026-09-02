@@ -1,6 +1,6 @@
 #pragma once
 
-#include <behaviortree_cpp_v3/action_node.h>
+#include <behaviortree_cpp/action_node.h>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 

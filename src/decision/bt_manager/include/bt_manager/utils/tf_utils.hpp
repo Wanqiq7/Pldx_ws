@@ -27,6 +27,14 @@ public:
     geometry_msgs::msg::Pose & output_pose,
     const std::string & child_frame);
 
+  // Transform using the observation timestamp instead of the latest available TF.
+  bool transformPoseToMap(const geometry_msgs::msg::Pose & input_pose,
+    geometry_msgs::msg::Pose & output_pose,
+    const std::string & child_frame,
+    const rclcpp::Time & stamp,
+    const rclcpp::Duration & timeout,
+    const std::string & target_frame = "map");
+
   // 视觉世界系转换函数：原点跟随底盘平移，yaw 在 map/world 下保持恒定。
   bool transformGimbalToMap(
     const geometry_msgs::msg::Pose & input_pose, geometry_msgs::msg::Pose & output_pose);

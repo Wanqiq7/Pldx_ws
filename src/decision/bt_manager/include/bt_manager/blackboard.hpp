@@ -1,8 +1,8 @@
 #pragma once
 
 #include "bt_manager/utils/nav_zone.hpp"
-#include <behaviortree_cpp_v3/blackboard.h>
-#include <behaviortree_cpp_v3/bt_factory.h>
+#include <behaviortree_cpp/blackboard.h>
+#include <behaviortree_cpp/bt_factory.h>
 #include <cstdint>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose.hpp>
@@ -108,7 +108,7 @@ public:
     blackboard_->set("transform_state", 0.0f);                                   // 变形状态
     blackboard_->set("target_pose", geometry_msgs::msg::Pose());                 // 目标位置
     blackboard_->set("target_armor_id", -1);                                     // 目标装甲板ID
-    blackboard_->set<uint8_t>("capacitor_capacity", static_cast<uint8_t>(100));  // 电容容量百分比
+    blackboard_->set<uint8_t>("capacitor_capacity", static_cast<uint8_t>(0));    // 无有效电容遥测时保守为 0%
 
     // --- Sentry Online Info ---
     blackboard_->set("health", 100.0f);                   // 初始生命值(百分比)

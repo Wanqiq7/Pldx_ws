@@ -38,6 +38,7 @@ def generate_launch_description():
     container_name = LaunchConfiguration('container_name')
     container_name_full = (namespace, '/', container_name)
     planner_container_name = LaunchConfiguration('planner_container_name')
+    controller_odom_topic = LaunchConfiguration('controller_odom_topic')
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
 
@@ -106,6 +107,11 @@ def generate_launch_description():
         default_value='livox_pointlio_container',
         description='Container that planner_server will load into for Point-LIO to ROGMap intra-process cloud path')
 
+    declare_controller_odom_topic_cmd = DeclareLaunchArgument(
+        'controller_odom_topic',
+        default_value='/aft_mapped_to_init',
+        description='Controller-only remap target for the raw odometry topic')
+
     declare_use_respawn_cmd = DeclareLaunchArgument(
         'use_respawn', default_value='False',
         description='Whether to respawn if a node crashes. Applied when composition is disabled.')
@@ -125,7 +131,8 @@ def generate_launch_description():
                 respawn_delay=2.0,
                 parameters=[configured_params],
                 arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')]),
+                remappings=remappings + [('/aft_mapped_to_init', controller_odom_topic),
+                                         ('cmd_vel', 'cmd_vel_nav')]),
             Node(
                 package='nav2_smoother',
                 executable='smoother_server',
@@ -178,6 +185,16 @@ def generate_launch_description():
                 remappings=remappings +
                         [('cmd_vel', 'cmd_vel_nav'), ('cmd_vel_smoothed', 'cmd_vel')]),
             Node(
+                package='nav2_planner',
+                executable='planner_server',
+                name='planner_server',
+                output='screen',
+                respawn=use_respawn,
+                respawn_delay=2.0,
+                parameters=[configured_params],
+                arguments=['--ros-args', '--log-level', log_level],
+                remappings=remappings),
+            Node(
                 package='nav2_lifecycle_manager',
                 executable='lifecycle_manager',
                 name='lifecycle_manager_navigation',
@@ -198,7 +215,8 @@ def generate_launch_description():
                 plugin='nav2_controller::ControllerServer',
                 name='controller_server',
                 parameters=[configured_params],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')]),
+                remappings=remappings + [('/aft_mapped_to_init', controller_odom_topic),
+                                         ('cmd_vel', 'cmd_vel_nav')]),
             ComposableNode(
                 package='nav2_smoother',
                 plugin='nav2_smoother::SmootherServer',
@@ -241,6 +259,7 @@ def generate_launch_description():
     )
 
     load_planner_into_pointlio_container = LoadComposableNodes(
+        condition=IfCondition(use_composition),
         target_container=planner_container_name,
         composable_node_descriptions=[
             ComposableNode(
@@ -267,6 +286,7 @@ def generate_launch_description():
     ld.add_action(declare_use_composition_cmd)
     ld.add_action(declare_container_name_cmd)
     ld.add_action(declare_planner_container_name_cmd)
+    ld.add_action(declare_controller_odom_topic_cmd)
     ld.add_action(declare_use_respawn_cmd)
     ld.add_action(declare_log_level_cmd)
     # Add the actions to launch all of the navigation nodes

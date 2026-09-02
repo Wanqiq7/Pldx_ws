@@ -156,7 +156,7 @@ x, y, z, intensity, tag, line, offset_time
 ## 构建
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 colcon build --packages-select livox_ros_driver2
 ```
 

@@ -1,0 +1,73 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from ros_interfaces/msg/Behavior.msg
+// generated code does not contain a copyright notice
+
+
+module ros_interfaces {
+  module msg {
+    module Behavior_Constants {
+      const uint8 STANCE_ATTACK = 1;
+      const uint8 STANCE_DEFEND = 2;
+      const uint8 STANCE_MOVE = 3;
+      const uint8 STANCE_ENHANCED_ATTACK = 4;
+      const uint8 STANCE_ENHANCED_DEFEND = 5;
+      const uint8 STANCE_ENHANCED_MOVE = 6;
+      const uint8 CONTROL_AUTO = 0;
+      const uint8 CONTROL_MANUAL = 1;
+      const uint8 LIFTER_TOP = 0;
+      const uint8 LIFTER_BOTTOM = 1;
+      const uint8 LIFTER_MIDDLE = 2;
+      const uint8 PITCH_TOP = 0;
+      const uint8 PITCH_BOTTOM = 1;
+    };
+    struct Behavior {
+      uint8 desired_stance;
+
+      uint8 control_mode;
+
+      boolean use_gyro_mode;
+
+      float gyro_vel;
+
+      uint8 desire_lifter_pos;
+
+      uint16 ammo_purchase_request;
+
+      uint8 revive_request;
+
+      uint8 remote_revive_request;
+
+      uint8 remote_ammo_request;
+
+      uint8 remote_health_request;
+
+      boolean use_limited_scan;
+
+      float scan_yaw_min;
+
+      float scan_yaw_max;
+
+      uint8 pitch_mode;
+
+      boolean not_aim_enemy;
+
+      boolean use_capacitor;
+
+      boolean tunnel_escape_active;
+
+      float tunnel_escape_vx;
+
+      float tunnel_escape_vy;
+
+      float tunnel_escape_wz;
+
+      boolean tunnel_prepare_active;
+
+      boolean tunnel_ready;
+
+      boolean tunnel_align_active;
+
+      float tunnel_align_angle_deg;
+    };
+  };
+};

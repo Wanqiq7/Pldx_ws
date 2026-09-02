@@ -20,10 +20,11 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(ros_interfaces REQUIRED)
+find_package(pldx_vision_interfaces REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-find_package(behaviortree_cpp_v3 REQUIRED)
+find_package(behaviortree_cpp REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(nav2_behavior_tree REQUIRED)
@@ -49,10 +50,11 @@ ament_target_dependencies(bt_manager_node
   nav_msgs
   visualization_msgs
   ros_interfaces
+  pldx_vision_interfaces
   tf2
   tf2_ros
   tf2_geometry_msgs
-  behaviortree_cpp_v3
+  behaviortree_cpp
   nav2_msgs
   ament_index_cpp
   nav2_behavior_tree

@@ -21,19 +21,19 @@ find_package(sensor_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 # Declare ROS2 message, service, and action files
-set(msg_files
-  "msg/cluster/DynamicObstacle.msg"
-  "msg/cluster/DynamicObstacleArray.msg"
-  "msg/minco_traj/PositionCommand.msg"
-  "msg/minco_traj/MpcPositionCommand.msg"
-  "msg/Behavior.msg"
-  "msg/EnemyRobotStatus.msg"
-  "msg/RadarInfo.msg"
-  "msg/AllyRobotStatus.msg"
-  "msg/TeamInformation.msg"
-  "msg/GameInfo.msg"
-  "msg/SentryInfoOffline.msg"
-  "msg/SentryInfoOnline.msg"
+set(idl_files
+  "msg/DynamicObstacle.idl"
+  "msg/DynamicObstacleArray.idl"
+  "msg/PositionCommand.idl"
+  "msg/MpcPositionCommand.idl"
+  "msg/Behavior.idl"
+  "msg/EnemyRobotStatus.idl"
+  "msg/RadarInfo.idl"
+  "msg/AllyRobotStatus.idl"
+  "msg/TeamInformation.idl"
+  "msg/GameInfo.idl"
+  "msg/SentryInfoOffline.idl"
+  "msg/SentryInfoOnline.idl"
 )
 
 # set(srv_files
@@ -42,8 +42,7 @@ set(msg_files
 
 # Generate interfaces
 rosidl_generate_interfaces(${PROJECT_NAME}
-  ${msg_files}
-  ${srv_files}
+  ${idl_files}
   DEPENDENCIES std_msgs geometry_msgs nav_msgs sensor_msgs
 )
 

@@ -1509,7 +1509,7 @@ def run_monitor(args: argparse.Namespace) -> int:
     except ImportError as exc:
         print(
             f"[ERROR] ROS 2 Python dependency unavailable: {exc}\n"
-            "Run: source /opt/ros/humble/setup.bash && source install/setup.bash",
+            "Run: source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash && source install/setup.bash",
             file=sys.stderr,
         )
         return 2

@@ -17,7 +17,7 @@ flowchart LR
   O["/aft_mapped_to_init"] --> Y[odom 与底盘 IMU 时间匹配]
   S[STM32 串口接收] --> P[协议解析]
   P --> Y
-  Y --> D[delta_yaw / 世界系速度映射]
+  Y --> D[delta_yaw / 车体系速度映射]
   C --> D
   D --> T[10 ms 通信循环 / NAV 与 Behavior 打包]
   T --> S
@@ -31,7 +31,7 @@ MPC 世界系速度和行为树指令分别写入缓存；odom 以最新状态�
 
 ## 🧪 技术方向
 
-- `/cmd_vel_mpc` 保持世界坐标系速度语义，communication 结合 `delta_yaw` 转换为当前底盘协议需要的方向。
+- `/cmd_vel_mpc` 保持世界坐标系速度语义；communication 恒发 `use_speed_control=true`，并结合 `delta_yaw` 将 vx/vy 转到底盘 IMU 车体系。
 - `delta_yaw` 使用 odom stamp 与有界底盘 IMU yaw 历史做最近时间匹配；未初始化时抑制平移命令，避免用错误航向发送世界系速度。
 - 串口由 `FdManager` 与 timer manager 独立线程维护，ROS callback 与通信循环使用不同 callback group。
 - 裁判/底盘协议字段通过 `ros_interfaces` 暴露给 BT Manager；协议位段、枚举、打包和 blackboard 需要同步修改。
@@ -59,7 +59,7 @@ MPC 世界系速度和行为树指令分别写入缓存；odom 以最新状态�
 | Topic | 内容 |
 |---|---|
 | `/sentry/game_info` | 比赛阶段、剩余时间、资源、人工点与敌方前哨站/基地血量 |
-| `/sentry/offline_info` | 底盘离线数据、装甲板、升降、姿态与底盘 IMU |
+| `/sentry/offline_info` | 底盘离线数据、升降、姿态、云台 yaw 与底盘 IMU；视觉目标不再经此话题传递 |
 | `/sentry/online_info` | 血量、弹量、热量和能量等在线信息 |
 | `/sentry/team_info` | 友方机器人、基地和前哨站状态 |
 | `/sentry/radar_info` | 敌方机器人与雷达信息 |
@@ -108,6 +108,11 @@ CSV 写入：
 - 性能诊断主要覆盖 NAV 发送和时间匹配，不等于完整串口链路追踪；网络丢包、内核串口缓冲和下位机解析仍需外部证据。
 
 ## 🚀 启动与检查
+
+导航正式视觉输入只有 `vision/target_observation`（`pldx_vision_interfaces/msg/TargetObservation`）。
+该话题由视觉工程发布，BT 单一消费；导航发布 `base_link -> gimbal -> vision_gimbal`，BT 用最新 TF 转到 map。
+MCU 不中继视觉目标。`/sentry/offline_info` 必须保持单一 ROS 发布者，`communication` 与
+`ros2_libxr` 不得同时运行。
 
 ```bash
 ros2 launch communication com.launch.py

@@ -20,6 +20,7 @@ def generate_launch_description():
     namespace = LaunchConfiguration("namespace")
     use_rviz = LaunchConfiguration("rviz")
     point_lio_cfg_dir = LaunchConfiguration("point_lio_cfg_dir")
+    imu_topic = LaunchConfiguration("imu_topic")
 
     point_lio_dir = get_package_share_directory("point_lio")
 
@@ -39,13 +40,16 @@ def generate_launch_description():
         description="Path to the Point-LIO config file",
     )
 
+    declare_imu_topic = DeclareLaunchArgument(
+        "imu_topic", default_value="", description="Override Point-LIO IMU topic")
+
     start_point_lio_node = Node(
         package="point_lio",
         executable="pointlio_mapping",
         respawn=True,
         respawn_delay=5.0,
         namespace=namespace,
-        parameters=[point_lio_cfg_dir],
+        parameters=[point_lio_cfg_dir, {"common.imu_topic": imu_topic}],
         remappings=remappings,
         output="screen",
     )
@@ -69,6 +73,7 @@ def generate_launch_description():
     ld.add_action(declare_namespace)
     ld.add_action(declare_rviz)
     ld.add_action(declare_point_lio_cfg_dir)
+    ld.add_action(declare_imu_topic)
     ld.add_action(start_point_lio_node)
     ld.add_action(start_rviz_node)
 

@@ -4,7 +4,7 @@
 #include "bt_manager/ros_interface.hpp"
 #include "bt_manager/utils/log.hpp"
 #include "bt_manager/utils/nav_zone.hpp"
-#include <behaviortree_cpp_v3/action_node.h>
+#include <behaviortree_cpp/action_node.h>
 
 #include <chrono>
 #include <geometry_msgs/msg/pose.hpp>

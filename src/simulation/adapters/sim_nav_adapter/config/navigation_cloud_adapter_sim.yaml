@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+    input_frame: camera_init
+    output_frame: sim_odom
+    registered_input_topic: /cloud_registered
+    registered_output_topic: /simulation/cloud_registered_nav
+    registered_full_input_topic: /cloud_registered_full
+    registered_full_output_topic: /simulation/cloud_registered_full_nav
+    # Publish only after the downstream STVL sensor-origin transform exists at
+    # the unchanged cloud timestamp.
+    readiness_frame: front_mid360
+    pending_queue_size: 8
+    retry_period_sec: 0.005
+    transform_timeout_sec: 0.05
+    warning_period_sec: 2.0

@@ -93,7 +93,19 @@ void TransformUtils::publishDynamicTransform()
 
   // 发布动态变换
   tf_broadcaster_->sendTransform(dynamic_transform);
-  // RCLCPP_INFO(this->get_logger(), "Published dynamic transform from base_link to gimbal");
+
+  geometry_msgs::msg::TransformStamped vision_gimbal_transform;
+  vision_gimbal_transform.header.stamp = dynamic_transform.header.stamp;
+  vision_gimbal_transform.header.frame_id = "gimbal";
+  vision_gimbal_transform.child_frame_id = "vision_gimbal";
+  vision_gimbal_transform.transform.translation.x = 0.0;
+  vision_gimbal_transform.transform.translation.y = 0.0;
+  vision_gimbal_transform.transform.translation.z = 0.0;
+  vision_gimbal_transform.transform.rotation.x = 0.0;
+  vision_gimbal_transform.transform.rotation.y = 0.0;
+  vision_gimbal_transform.transform.rotation.z = 0.0;
+  vision_gimbal_transform.transform.rotation.w = 1.0;
+  tf_broadcaster_->sendTransform(vision_gimbal_transform);
 }
 
 bool TransformUtils::transformPoseToMap(const geometry_msgs::msg::Pose & input_pose,
@@ -109,6 +121,22 @@ bool TransformUtils::transformPoseToMap(const geometry_msgs::msg::Pose & input_p
 
     return true;
   } catch (const tf2::TransformException & ex) {
+    return false;
+  }
+}
+
+bool TransformUtils::transformPoseToMap(const geometry_msgs::msg::Pose & input_pose,
+  geometry_msgs::msg::Pose & output_pose,
+  const std::string & child_frame,
+  const rclcpp::Time & stamp,
+  const rclcpp::Duration & timeout,
+  const std::string & target_frame)
+{
+  try {
+    const auto transform_stamped = tf_buffer_->lookupTransform(target_frame, child_frame, stamp, timeout);
+    tf2::doTransform(input_pose, output_pose, transform_stamped);
+    return true;
+  } catch (const tf2::TransformException &) {
     return false;
   }
 }
