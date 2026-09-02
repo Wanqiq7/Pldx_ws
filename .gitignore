@@ -1,35 +1,72 @@
+# Colcon / CMake
 build/
 install/
+install*/
+install3/
 log/
-.DS_Store
-__pycache__/
-*.pyc
-*.tar.gz
-*.egg-info/
 cmake-build-*/
 build-*/
-.cache
-.vscode
+compile_commands.txt
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+COLCON_IGNORE
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE / local agent tooling
+.vscode/
+.idea/
+.cache/
+.cursor/
+.claude/
+.codex/
+.agents/
+.codegraph/
+.marscode/
+.docs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime logs, bags, and generated tables
 *.csv
 *.db
 *.sqlite
-*.png
-.venv/
+*.bag
+*.bag.index
+rosbag2_*/
 .log/
+
+# Generated ROS IDL copies (keep src/**/msg/*.idl used by CMake)
+src/ros_interfaces/idl/
+src/**/srv/*.idl
+
+# Point-LIO runtime dumps
+src/perception/Point-LIO/PCD/scans.pcd
+src/perception/Point-LIO/Log/*.txt
+src/perception/Point-LIO/Log/*.csv
+
+# tf2_tools frame dumps
+frames_*.gv
+frames_*.pdf
+*.gv
+
+# Archives / local scratch
+*.tar.gz
+*.orig
+*~
 .bash
-.cursor/
-.codegraph/
-.docs/
-.agents/
-.codex/
-.claude/
-docs/
+
+# Local notes not part of the workspace contract
+CLAUDE.md
 paper/
 paper_revision_outputs/
 latex_article_final/
 award/
-# AGENTS.md
-CLAUDE.md
-src/perception/Point-LIO/PCD/scans.pcd
-
-/src/perception/Point-LIO/Log/*.txt
