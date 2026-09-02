@@ -40,8 +40,8 @@ if [[ -n "${ROS2_LIBXR_WS}" ]]; then
 fi
 if [[ "${ROS2_LIBXR_ENABLE}" == "1" ]]; then
   if ! ros2 pkg prefix ros2_libxr >/dev/null 2>&1; then
-    echo "ros2_libxr is not available. Initialize the submodule and run ./build.bash first." >&2
-    echo "Run: git submodule update --init --recursive" >&2
+    echo "ros2_libxr is not available. Build this workspace with ./build.bash first." >&2
+    echo "Run: ./build.bash" >&2
     exit 1
   fi
 
