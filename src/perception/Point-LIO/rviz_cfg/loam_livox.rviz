@@ -43,7 +43,7 @@ Visualization Manager:
       Offset:
         X: 0
         Y: 0
-        Z: 0
+        Z: -0.537619
       Plane: XY
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
@@ -77,8 +77,8 @@ Visualization Manager:
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /Laser_map
+        Reliability Policy: Best Effort
+        Value: /cloud_registered_full
       Use Fixed Frame: true
       Use rainbow: true
       Value: true

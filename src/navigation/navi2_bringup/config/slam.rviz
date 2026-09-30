@@ -84,8 +84,6 @@ Visualization Manager:
           Value: true
         map:
           Value: true
-        slambase:
-          Value: true
       Marker Scale: 1
       Name: TF
       Show Arrows: true
@@ -94,12 +92,11 @@ Visualization Manager:
       Tree:
         map:
           camera_init:
-            base_link:
-              {}
             body:
-              {}
-            slambase:
-              {}
+              livox_frame:
+                {}
+              base_link:
+                {}
       Update Interval: 0
       Value: true
     - Alpha: 1

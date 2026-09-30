@@ -75,7 +75,7 @@ LiDAR/IMU 回调先写入 pending 队列，mapping worker 完成同步、预处�
 | `/Laser_map` | `camera_init` | 累积地图 |
 | `/path` | `camera_init` | 里程计路径 |
 
-启用 TF 发布后，模块发布 `camera_init → body`，并按项目约定提供 `camera_init → base_link`、`camera_init → slambase`。这些变换含项目特定安装补偿，改变雷达位置时必须核对源码与下游 frame 约定。
+启用 TF 发布后，模块只发布 `camera_init → body`（雷达 IMU，与云台 yaw 同轴）。底盘 `base_link` 由 `body` 与关节逆合成，不再由 Point-LIO 直接发布。雷达外参挂在 `body → livox_frame`；2D 航向直接用 `body` 的 yaw。
 
 ## ⚙️ 关键配置
 

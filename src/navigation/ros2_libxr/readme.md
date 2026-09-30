@@ -76,11 +76,11 @@ ros2 launch ros2_libxr ros2_libxr_launch.py
 
 ```cpp
 uart_client = std::make_unique<LibXR::LinuxUART>(
-    "16d0", "1492", "XRUSB Navigation Control", 921600,
+    "16d0", "1492", "XRUSB CDC Control", 921600,
     LibXR::LinuxUART::Parity::NO_PARITY, 8, 1);
 ```
 
-参数依次为：USB VID（`16d0`）、PID（`1492`）、CDC 控制接口名称（`XRUSB Navigation Control`）、波特率（`921600`）、校验位、数据位、停止位。控制接口名称用于在同一个 USB Composite 设备的多个 CDC 中选中导航链路，不能写成 `ttyACM0` 或未限定的 VID/PID。
+参数依次为：USB VID（`16d0`）、PID（`1492`）、CDC 控制接口名称（`XRUSB CDC Control`）、波特率（`921600`）、校验位、数据位、停止位。控制接口名称用于在同一个 USB Composite 设备的多个 CDC 中选中导航链路，不能写成 `ttyACM0` 或未限定的 VID/PID。
 
 节点还会启动一个 LibXR 终端线程（`Terminal`），可通过它在运行时查看接收速率等调试信息。
 
@@ -110,7 +110,7 @@ uart_client = std::make_unique<LibXR::LinuxUART>(
 说明：
 
 - 每 10 ms 保留最新 ROS 快照并发送一次 `ChassisTarget`（45 B，`use_speed_control=true`）和一次 `BehaviorData`（26 B，末尾 `use_gyro_mode`）。
-- `/aft_mapped_to_init` 与 `SentryInfoOffline.chassis_imu_yaw` 用于时间匹配 `delta_yaw`；已初始化时把 map/odom vx/vy 转到底盘 IMU 车体系，未初始化时抑制平移和 x/y 力。`vw` 保持 MPC `angular.z`（rad/s）。
+- 用 `θ = yaw(lookup(camera_init, base_link))` 把 map/odom vx/vy 折到 MCU 车体：`vx = vx_w·sinθ − vy_w·cosθ`（右），`vy = vx_w·cosθ + vy_w·sinθ`（前）。该 TF 不可用时抑制平移和 x/y 力。`vw` 保持 MPC `angular.z`（rad/s）。小陀螺由 `use_gyro_mode` 走 ROTOR。
 
 ## 如何新增话题
 

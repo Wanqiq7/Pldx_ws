@@ -6,9 +6,6 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <tf2/LinearMath/Quaternion.hpp>
-#include <tf2/LinearMath/Transform.hpp>
-#include <tf2/LinearMath/Vector3.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
@@ -19,7 +16,6 @@
 #include <deque>
 #include <filesystem>
 #include <limits>
-#include <vector>
 #include <memory>
 #include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/path.hpp>
@@ -27,6 +23,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <thread>
+#include <vector>
 
 #include "li_initialization.h"
 #include "runtime_statistics.h"
@@ -246,8 +243,7 @@ PointType transformFullPointForward(const StateSnapshot & anchor, const FullClou
   return output;
 }
 
-void processFullCloudSegmentWithSnapshot(
-  const StateSnapshot & current_snapshot)
+void processFullCloudSegmentWithSnapshot(const StateSnapshot & current_snapshot)
 {
   if (!std::isfinite(current_snapshot.stamp)) {
     return;
@@ -295,8 +291,7 @@ void processFullCloudSegmentWithSnapshot(
 }
 
 void publishAccumulatedFullCloudWorld(
-  const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & pub,
-  double stamp)
+  const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr & pub, double stamp)
 {
   if (!pub || !full_cloud_world || full_cloud_world->empty()) {
     return;
@@ -523,8 +518,7 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
   std::shared_ptr<tf2_ros::TransformBroadcaster> & tf_br)
 {
   static point_lio::SensorTimeRateLimiter odom_rate_limiter;
-  const double odom_sensor_time =
-    publish_odometry_without_downsample ? time_current : lidar_end_time;
+  const double odom_sensor_time = publish_odometry_without_downsample ? time_current : lidar_end_time;
   if (!odom_rate_limiter.should_publish(odom_sensor_time, orig_odom_freq)) {
     return;
   }
@@ -553,15 +547,6 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
   odomAftMapped.child_frame_id = "body";
   odomAftMapped.header.stamp = get_ros_time(odom_sensor_time);
   set_posestamp(odomAftMapped.pose.pose);
-
-  tf2::Quaternion q_pose(odomAftMapped.pose.pose.orientation.x,
-    odomAftMapped.pose.pose.orientation.y,
-    odomAftMapped.pose.pose.orientation.z,
-    odomAftMapped.pose.pose.orientation.w);
-  double roll_pose = 0.0;
-  double pitch_pose = 0.0;
-  double yaw_pose = 0.0;
-  tf2::Matrix3x3(q_pose).getRPY(roll_pose, pitch_pose, yaw_pose);
 
   // odom_pub_count_in_window++;
   // if (!yaw_initialized) {
@@ -655,50 +640,6 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     transform.transform.rotation.z = odomAftMapped.pose.pose.orientation.z;
     transform.header.stamp = odomAftMapped.header.stamp;
     tf_br->sendTransform(transform);
-
-    geometry_msgs::msg::TransformStamped transform_inverse;
-    transform_inverse.header.frame_id = "camera_init";
-    transform_inverse.child_frame_id = "base_link";
-    tf2::Quaternion q;
-    q.setRPY(0, 0, yaw_pose);
-    // tf2::Vector3 offset_vec(0.0, 0.15, 0.0);
-    tf2::Vector3 offset_vec(0.0, 0.20, 0.0);  // 变形哨
-    tf2::Vector3 base_pose =
-      tf2::Vector3(odomAftMapped.pose.pose.position.x, odomAftMapped.pose.pose.position.y, odomAftMapped.pose.pose.position.z) +
-      tf2::quatRotate(q, offset_vec);
-    // tf2::Quaternion q(
-    //   odomAftMapped.pose.pose.orientation.x,
-    //   odomAftMapped.pose.pose.orientation.y,
-    //   odomAftMapped.pose.pose.orientation.z,
-    //   odomAftMapped.pose.pose.orientation.w);
-    // tf2::Quaternion q_inv = q.inverse();
-
-    // transform_inverse.transform.rotation.w = q_inv.w();
-    // transform_inverse.transform.rotation.x = q_inv.x();
-    // transform_inverse.transform.rotation.y = q_inv.y();
-    // transform_inverse.transform.rotation.z = q_inv.z();
-    transform_inverse.transform.translation.x = base_pose.x();
-    transform_inverse.transform.translation.y = base_pose.y();
-    transform_inverse.transform.translation.z = base_pose.z();
-    transform_inverse.transform.rotation.w = 1;
-    transform_inverse.transform.rotation.x = 0;
-    transform_inverse.transform.rotation.y = 0;
-    transform_inverse.transform.rotation.z = 0;
-    transform_inverse.header.stamp = odomAftMapped.header.stamp;
-    tf_br->sendTransform(transform_inverse);
-
-    geometry_msgs::msg::TransformStamped transform_slam_base;
-    transform_slam_base.header.frame_id = "camera_init";
-    transform_slam_base.child_frame_id = "slambase";
-    transform_slam_base.transform.translation.x = odomAftMapped.pose.pose.position.x;
-    transform_slam_base.transform.translation.y = odomAftMapped.pose.pose.position.y;
-    transform_slam_base.transform.translation.z = odomAftMapped.pose.pose.position.z;
-    transform_slam_base.transform.rotation.w = q.w();
-    transform_slam_base.transform.rotation.x = q.x();
-    transform_slam_base.transform.rotation.y = q.y();
-    transform_slam_base.transform.rotation.z = q.z();
-    transform_slam_base.header.stamp = odomAftMapped.header.stamp;
-    tf_br->sendTransform(transform_slam_base);
   }
 }
 
@@ -748,8 +689,11 @@ private:
     readParameters(*this);
     if (blind_center_enable && blind_center.size() == 3U) {
       p_pre->setBlindCenter(blind_center[0], blind_center[1], blind_center[2]);
-      RCLCPP_INFO(get_logger(), "[Point-LIO] Blind center enabled: [%.3f, %.3f, %.3f]",
-        blind_center[0], blind_center[1], blind_center[2]);
+      RCLCPP_INFO(get_logger(),
+        "[Point-LIO] Blind center enabled: [%.3f, %.3f, %.3f]",
+        blind_center[0],
+        blind_center[1],
+        blind_center[2]);
     } else {
       if (blind_center_enable) {
         RCLCPP_WARN(get_logger(),
@@ -802,9 +746,11 @@ private:
     }
     const std::filesystem::path log_dir =
       resolveLogDirectory(runtime_log_path, std::filesystem::path(root_dir));
-    if (!RuntimeStatistics::instance().initialize(
-        runtime_pos_log, log_dir, print_cloud_input_fps, debug_pose_update_detail,
-        statistics_print_period)) {
+    if (!RuntimeStatistics::instance().initialize(runtime_pos_log,
+          log_dir,
+          print_cloud_input_fps,
+          debug_pose_update_detail,
+          statistics_print_period)) {
       RCLCPP_ERROR(get_logger(),
         "[Point-LIO] Failed to initialize runtime statistics under %s. Runtime logging disabled.",
         log_dir.c_str());
@@ -894,8 +840,7 @@ void LaserMappingNode::processingLoop()
     if (sync_packages(Measures)) {
       const bool statistics_enabled = RuntimeStatistics::instance().enabled();
       const auto process_wall_start =
-        statistics_enabled ? std::chrono::steady_clock::now()
-                           : std::chrono::steady_clock::time_point{};
+        statistics_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       RuntimeStatistics::instance().recordRate(RuntimeRateEvent::SyncInput);
       RuntimeStatistics::instance().beginFrame(
         Measures.lidar_beg_time, Measures.lidar ? Measures.lidar->size() : 0);
@@ -1520,8 +1465,7 @@ void LaserMappingNode::processingLoop()
         if (enable_prior_pcd) {
           sleep_time++;
           if (sleep_time > 200) {
-            const double map_incremental_start =
-              statistics_enabled ? omp_get_wtime() : 0.0;
+            const double map_incremental_start = statistics_enabled ? omp_get_wtime() : 0.0;
             MapIncremental();
             if (statistics_enabled) {
               map_incremental_ms = (omp_get_wtime() - map_incremental_start) * 1000.0;
@@ -1529,8 +1473,7 @@ void LaserMappingNode::processingLoop()
             map_incremental_called = true;
           }
         } else {
-          const double map_incremental_start =
-            statistics_enabled ? omp_get_wtime() : 0.0;
+          const double map_incremental_start = statistics_enabled ? omp_get_wtime() : 0.0;
           MapIncremental();
           if (statistics_enabled) {
             map_incremental_ms = (omp_get_wtime() - map_incremental_start) * 1000.0;

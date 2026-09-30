@@ -86,13 +86,15 @@ Visualization Manager:
           Value: true
         camera_init:
           Value: true
-        gimbal:
+        livox_frame:
           Value: true
         map:
           Value: true
         minimap:
           Value: true
-        slambase:
+        vision_gimbal:
+          Value: true
+        base_link_fake:
           Value: true
       Marker Scale: 1
       Name: TF
@@ -102,13 +104,14 @@ Visualization Manager:
       Tree:
         map:
           camera_init:
-            base_link:
-              gimbal:
-                {}
             body:
-              {}
-            slambase:
-              {}
+              livox_frame:
+                {}
+              vision_gimbal:
+                {}
+              base_link:
+                base_link_fake:
+                  {}
           minimap:
             {}
       Update Interval: 0

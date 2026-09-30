@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,6 +13,8 @@
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include <ros_interfaces/msg/behavior.hpp>
 #include <ros_interfaces/msg/game_info.hpp>
@@ -27,6 +28,7 @@
 #include "app_framework.hpp"
 #include "linux_uart.hpp"
 #include "message.hpp"
+#include "ros2_libxr/timed_command.hpp"
 #include "thread.hpp"
 #include "uart.hpp"
 
@@ -137,11 +139,10 @@ public:
 
 private:
   void publish_chassis();
-  void update_delta_yaw_locked();
   void publish_team(const TeamInfo & data);
   void publish_game(const GameInfo & data);
   void publish_online(const SentryInfoOnline & data);
-  void publish_offline(const SentryInfoOffline & data, const LibXR::RawData & raw);
+  void publish_offline(const SentryInfoOffline & data);
   void publish_radar(const RadarInfo & data);
 
   std::unique_ptr<LibXR::RamFS> ramfs_;
@@ -151,15 +152,13 @@ private:
   LibXR::Topic nav_data_topic_, behavior_data_topic_, team_info_topic_, game_info_topic_,
     online_info_topic_, offline_info_topic_, radar_info_topic_;
 
-  geometry_msgs::msg::Twist cmd_vel_{};
-  geometry_msgs::msg::WrenchStamped cmd_force_{};
+  TimedCommand<geometry_msgs::msg::Twist> cmd_vel_;
+  TimedCommand<geometry_msgs::msg::WrenchStamped> cmd_force_;
   nav_msgs::msg::Odometry odom_{};
-  ros_interfaces::msg::Behavior behavior_{};
-  std::deque<std::pair<rclcpp::Time, float>> imu_yaw_history_;
-  float delta_yaw_{0.0F};
-  bool delta_yaw_initialized_{false};
-  int64_t imu_yaw_window_ms_{40};
+  TimedCommand<ros_interfaces::msg::Behavior> behavior_;
   std::mutex state_mutex_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr cmd_force_sub_;

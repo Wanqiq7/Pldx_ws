@@ -8,10 +8,9 @@
 
 权威来源按以下顺序排列：
 
-1. `src/navigation/communication/README.md` 的模块职责、ROS 接口、单位和时序说明；
-2. `src/navigation/communication/include/utils/custom_protocol.hpp` 的枚举、结构体和字段顺序；
-3. `src/navigation/communication/include/utils/protocol.hpp` 的旧帧格式和校验实现；
-4. `src/navigation/communication/include/com_interface_ros.hpp` 与 `src/navigation/communication/src/com.cpp` 的实际打包、解析和 ROS 映射行为。
+1. `src/navigation/ros2_libxr` 的接口、单位和时序实现；
+2. `src/navigation/ros2_libxr/src/ros2_libxr/include/ros2_libxr/ros2libxr.hpp` 的结构体和字段顺序；
+3. `src/navigation/ros2_libxr/src/ros2_libxr/src/ros2libxr.cpp` 的实际打包、解析和 ROS 映射行为。
 
 `PLDX_Template` 中的 `NavLinkProtocol.hpp` 和 `pldx_ws` 中的旧 XR bridge 不是本契约的协议来源。它们只能用于后续兼容性对照或复用 LibXR/Linux 实现。
 
@@ -27,7 +26,7 @@
 
 ```text
 ROS 2 输入
-  -> communication_sentry
+  -> ros2_libxr
   -> 控制/行为/odom 快照
   -> 10 ms 通信循环
   -> 串口协议打包
@@ -36,7 +35,7 @@ ROS 2 输入
 STM32 串口数据
   -> 帧解析
   -> payload 解析
-  -> communication_sentry
+  -> ros2_libxr
   -> ROS 2 输出
 ```
 
@@ -46,8 +45,10 @@ STM32 串口数据
 
 | 项目 | 当前值 |
 |---|---|
-| 设备路径 | `/dev/ttyACM0`（源码静态值） |
-| 波特率 | `115200` |
+| USB 设备 | VID `16d0` / PID `1492`，产品 `MainCtrl`，厂商 `QDU-Future` |
+| CDC 接口 | 控制接口 `XRUSB CDC Control`，Linux 驱动 `cdc_acm` |
+| 稳定设备路径 | `/dev/serial/by-id/usb-QDU-Future_MainCtrl_QDU-Future-MainCtrl-89ABCDEF0123456701234567420058000A50485939373620-if00`（当前枚举 `/dev/ttyACM0`） |
+| 波特率 | `921600` |
 | 数据位 | 8 |
 | 停止位 | 1 |
 | 校验位 | 无（`N`） |
@@ -55,7 +56,7 @@ STM32 串口数据
 | 全局路径辅助周期 | 1 s，但当前发送调用被注释 |
 | 启动发送延迟 | 2 s |
 
-设备路径是实车绑定值，不代表硬件枚举事实。迁移到 XR 时必须重新确认实际 Linux 设备节点，并将路径参数化或使用稳定 USB selector。
+设备节点和序列号为本次连接 C 板的实测值；运行时通过 VID/PID 和 CDC 接口名称匹配，避免依赖会变化的 `ttyACM0` 编号。
 
 ## 3. 当前旧串口帧格式
 
@@ -120,8 +121,8 @@ XR 迁移时的默认解释为：保留下文 payload 的语义和字段布局�
 
 | 顺序 | 字段 | 类型 | 当前语义 |
 |---:|---|---|---|
-| 1 | `vx_mps` | `float` | 前进方向速度，m/s |
-| 2 | `vy_mps` | `float` | 左侧方向速度，m/s |
+| 1 | `vx_mps` | `float` | 底盘右向速度，m/s（MCU `target_vx_`，D 正） |
+| 2 | `vy_mps` | `float` | 底盘前向速度，m/s（MCU `target_vy_`，W 正） |
 | 3 | `vw_rad_s` | `float` | 目标偏航角速度，rad/s |
 | 4 | `current_yaw` | `float` | 当前底盘航向，rad |
 | 5 | `current_vx` | `float` | odom 当前线速度 x |
@@ -131,7 +132,7 @@ XR 迁移时的默认解释为：保留下文 payload 的语义和字段布局�
 | 9 | `fy_global` | `float` | `/cmd_force_mpc.force.y` |
 | 10 | `fw_global` | `float` | `/cmd_force_mpc.torque.z` |
 | 11 | `use_speed_control` | `bool` | 速度控制/力控制标志；当前发送代码固定为 `true` |
-| 12 | `delta_yaw` | `float` | odom 与底盘 IMU yaw 匹配得到的航向差 |
+| 12 | `delta_yaw` | `float` | 线协议保留字段；主机填 `yaw(camera_init→base_link)`，底盘速度环不依赖它做旋转变换 |
 
 当前构造行为：
 
@@ -139,9 +140,9 @@ XR 迁移时的默认解释为：保留下文 payload 的语义和字段布局�
 - odom 的线速度和角速度直接写入 `current_vx/current_vy/current_vw`；
 - `/cmd_force_mpc` 的 x/y 力和 z 力矩直接写入 `fx_global/fy_global/fw_global`；
 - 主机恒发 `use_speed_control=true`，下位机走速度外环；`false` 时下位机才直接执行全局系合力/力矩。
-- yaw 从 odom 四元数计算；
-- 隧道覆盖 vx/vy/vw 在旋转前执行；`delta_yaw` 已初始化时，将 map/odom 系 vx/vy 转到底盘 IMU 车体系：θ = current_yaw - delta_yaw，vx_b = vx·cosθ + vy·sinθ，vy_b = -vx·sinθ + vy·cosθ；
-- `delta_yaw` 未初始化时，将平移速度和 x/y 力清零；
+- `current_yaw` 取 `yaw(lookup(camera_init, base_link))`，即 LIO yaw 与关节逆的合成；
+- 隧道覆盖 vx/vy/vw 在旋转前执行；TF 可用时将 map/odom 系 vx/vy 折到 MCU 车体：θ = yaw(camera_init→base_link)，vx_mcu = vx·sinθ − vy·cosθ（右），vy_mcu = vx·cosθ + vy·sinθ（前）；
+- TF 超时时将平移速度和 x/y 力清零；
 - tunnel escape、tunnel prepare 等逻辑在通信循环中覆盖或修改待发送值。
 
 ### 5.2 `BehaviorData`
@@ -245,7 +246,7 @@ XR 迁移时的默认解释为：保留下文 payload 的语义和字段布局�
 | `chassis_imu_yaw` | `float` | 底盘 IMU yaw |
 | `tunnel_yaw_aligned` | `bool` | 底盘航向是否完成对齐 |
 
-`chassis_imu_yaw` 会进入有界历史队列，并与 odom stamp 在 `communication.imu_yaw_window_ms`（默认 40 ms）内做最近时间匹配，生成 `delta_yaw`。底盘 IMU 无效时发送 NaN，导航端不得将该样本加入历史队列。
+`chassis_imu_yaw` 仍映射到 `/sentry/offline_info`，但主机不再用它与 LIO yaw 做时间匹配。底盘车体速度由 `camera_init → base_link` 的 yaw 折算。
 
 revision 3 删除了由 `vision/target_observation` 提供的视觉目标字段。`bool` 按单字节
 编码，字段顺序和偏移必须与 MCU 固件一致；revision 2 的 30 B payload 不得被 revision 3
@@ -280,7 +281,7 @@ revision 3 删除了由 `vision/target_observation` 提供的视觉目标字段�
 |---|---|---|
 | `/cmd_vel_mpc` | `geometry_msgs/msg/Twist` | 缓存世界系速度，通信循环读取 |
 | `/cmd_force_mpc` | `geometry_msgs/msg/WrenchStamped` | 缓存力/力矩兼容输入 |
-| `/aft_mapped_to_init` | `nav_msgs/msg/Odometry` | 更新 odom 和 yaw 时间匹配状态 |
+| `/aft_mapped_to_init` | `nav_msgs/msg/Odometry` | 更新 odom 速度快照；底盘航向改从 TF 读取 |
 | `/sentry/behaivor_send` | `ros_interfaces/msg/Behavior` | 缓存行为、资源和隧道指令 |
 
 ### 7.2 输出
@@ -290,16 +291,16 @@ revision 3 删除了由 `vision/target_observation` 提供的视觉目标字段�
 | `/sentry/team_info` | `TeamInfo` | 队友数组、前哨站和基地直接映射 |
 | `/sentry/game_info` | `GameInfo` | 字段直接映射 |
 | `/sentry/online_info` | `SentryInfoOnline` | 位置字段写入 `geometry_msgs/Point` |
-| `/sentry/offline_info` | `SentryInfoOffline` | 发布机构、云台 yaw 和底盘 IMU 状态，并记录 IMU yaw 历史 |
+| `/sentry/offline_info` | `SentryInfoOffline` | 发布机构、云台 yaw 和底盘 IMU 状态 |
 | `/sentry/radar_info` | `RadarInfo` | 敌方坐标 cm 转 m，其余字段直接映射 |
 
 迁移时保留这些 topic 和消息类型，ROS 控制器、行为树和算法节点不应感知 XR 实现细节。
 
 ## 8. 坐标、单位和时序约束
 
-- `/cmd_vel_mpc` 在 README 中定义为世界坐标系速度。
-- communication / `ros2_libxr` 在 `use_speed_control=true` 时结合 `delta_yaw` 将 vx/vy 转到底盘 IMU 车体系后再下发。
-- `delta_yaw` 由 odom stamp 与底盘 IMU yaw 历史做最近时间匹配；未初始化时抑制平移命令。
+- `/cmd_vel_mpc` 在 README 中定义为世界坐标系速度（`camera_init` 的 +X/+Y）。
+- communication / `ros2_libxr` 在 `use_speed_control=true` 时用 `θ = yaw(camera_init→base_link)` 折到 MCU 车体后再下发：`vx_mcu = vx·sinθ − vy·cosθ`（右），`vy_mcu = vx·cosθ + vy·sinθ`（前）。下位机 Omni 的 `vx` 是右、`vy` 是前，与 ROS 的前/左不同。
+- `camera_init → base_link` 不可用时抑制平移命令。
 - `cmd_vel.angular.z` 和 `vw_rad_s` 均为 rad/s；不再进行 rpm 转换。
 - 当前主循环每 10 ms 发送一次 NAV payload 和一次 Behavior payload，两次发送之间 sleep 2 ms。
 - 控制和行为消息只保留最新值；odom 使用 KeepLast(1)、best effort、volatile。
@@ -348,6 +349,6 @@ std::is_trivially_copyable<all wire payloads>
 - 保留本文件定义的 payload 字段、单位、方向和 ROS 映射；
 - 只替换外层串口承载、生命周期、设备选择和校验实现；
 - 不修改 MINCO、Nav2、行为树、规划器或 ROS 消息定义；
-- 旧 `communication` 包继续可作为回滚实现；
+- 当前仅保留 `ros2_libxr` 作为主机通信实现；
 - 新 XR 节点与旧节点不能同时打开同一串口；
 - 在当前下位机未实现对应 XR topic/payload 之前，只能完成主机侧和模拟链路验证，不能宣称已具备实车互通能力。

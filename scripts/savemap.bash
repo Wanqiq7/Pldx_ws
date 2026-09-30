@@ -58,8 +58,7 @@ save_map() {
   if [[ -n "$REQUESTED_MAP_NAME" ]]; then
     map_name="$REQUESTED_MAP_NAME"
   else
-    # map_name="${WORKSPACE_DIR}/src/navigation/navi2_bringup/maps/2026/slam_$(date +%Y%m%d_%H%M%S)"
-    map_name="pgm/slam"
+    map_name="${WORKSPACE_DIR}/src/navigation/navi2_bringup/maps/2026/slam_$(date +%Y%m%d_%H%M%S)"
   fi
 
   # map_saver_cli expects a path prefix, not a .yaml/.pgm/.png filename.

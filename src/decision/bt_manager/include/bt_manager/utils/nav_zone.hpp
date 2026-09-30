@@ -131,19 +131,26 @@ template <std::size_t N, typename T = Point2D> struct AreaPolygon
     for (std::size_t i = 0, j = N - 1; i < N; j = i++) {
       const T & a = vertices[j];
       const T & b = vertices[i];
+      const double ax = a.x;
+      const double ay = a.y;
+      const double bx = b.x;
+      const double by = b.y;
+      const double ptx = pt.x;
+      const double pty = pt.y;
 
-      const double min_y = std::min(a.y, b.y);
-      const double max_y = std::max(a.y, b.y);
+      const double min_y = std::min(ay, by);
+      const double max_y = std::max(ay, by);
 
       // Fast y-range rejection before expensive intersection math.
-      if (pt.y < (min_y - eps) || pt.y > (max_y + eps)) {
+      // Copy dependent members first so `pty < ...` is not parsed as a template.
+      if (pty < (min_y - eps) || pty > (max_y + eps)) {
         continue;
       }
 
-      const double abx = b.x - a.x;
-      const double aby = b.y - a.y;
-      const double apx = pt.x - a.x;
-      const double apy = pt.y - a.y;
+      const double abx = bx - ax;
+      const double aby = by - ay;
+      const double apx = ptx - ax;
+      const double apy = pty - ay;
 
       // Boundary-inclusive check for colinear points on edges.
       const double cross = abx * apy - aby * apx;
@@ -156,14 +163,14 @@ template <std::size_t N, typename T = Point2D> struct AreaPolygon
       }
 
       // Vertex-safe crossing rule with strict x-intersection test.
-      const bool intersects = ((b.y > pt.y) != (a.y > pt.y));
+      const bool intersects = ((by > pty) != (ay > pty));
       if (intersects) {
-        const double denom = a.y - b.y;
+        const double denom = ay - by;
         if (std::fabs(denom) <= eps) {
           continue;
         }
-        const double x_intersection = (a.x - b.x) * (pt.y - b.y) / denom + b.x;
-        if (pt.x < x_intersection - eps) {
+        const double x_intersection = (ax - bx) * (pty - by) / denom + bx;
+        if (ptx < x_intersection - eps) {
           inside = !inside;
         }
       }

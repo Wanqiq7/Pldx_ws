@@ -25,7 +25,7 @@
 |---|---|
 | ROS 话题 | `/sentry/offline_info` |
 | 类型 | `ros_interfaces/msg/SentryInfoOffline` |
-| 发布者 | `communication` 或 `ros2_libxr`，两者均从 MCU/LibXR 接收后发布 |
+| 发布者 | `ros2_libxr`，从 MCU/LibXR 接收后发布 |
 | 直接消费者 | `decision/bt_manager` |
 | MCU 状态字段 | `yaw_camerainit_to_gimbal`、升降、变形、电容、隧道航向、底盘 IMU yaw |
 
@@ -38,16 +38,15 @@
 
 - `lifter_current_pos`、`is_transformable`、`transform_state`、`tunnel_yaw_aligned` 写入对应状态；
 - `yaw_camerainit_to_gimbal` 更新 `TransformUtils` 的云台初始 yaw；
-- `chassis_imu_yaw` 在通信层用于 `delta_yaw` 时间匹配，不发布为视觉目标。
+- `chassis_imu_yaw` 仍出现在 `/sentry/offline_info`，通信层不再用它做速度旋转变换。
 
 证据：[ros_interface.cpp](/home/wanqiq/桌面/navi_minco_bit_jazzy/src/decision/bt_manager/src/ros_interface.cpp:323)、
 [tf_utils.cpp](/home/wanqiq/桌面/navi_minco_bit_jazzy/src/decision/bt_manager/src/utils/tf_utils.cpp:116)。
 
-`/sentry/offline_info` 的发布者是导航自己的 `communication` 或 `ros2_libxr` 节点：
+`/sentry/offline_info` 的发布者是导航自己的 `ros2_libxr` 节点：
 它们从 STM32/LibXR 的 `SentryInfoOffline` payload 读取字段后再发布 ROS 话题，源码并未证明
 这个 payload 一定由当前 `PLDX_Sentry_Vision` ROS 进程提供。因此这里是“当前 BT 使用的视觉
 相关数据边界”，不是两个工程已经建立的直接 ROS 链路。旧通信映射见
-[com_interface_ros.hpp](/home/wanqiq/桌面/navi_minco_bit_jazzy/src/navigation/communication/include/com_interface_ros.hpp:93)，
 XR 映射见
 [ros2libxr.cpp](/home/wanqiq/桌面/navi_minco_bit_jazzy/src/navigation/ros2_libxr/src/ros2_libxr/src/ros2libxr.cpp:113)。
 

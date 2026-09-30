@@ -8,7 +8,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     config = os.path.join(
         get_package_share_directory('pcd2pgm'), 'config', 'pcd.yaml')
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
     pcd2pgm_node = Node(
         package='pcd2pgm',

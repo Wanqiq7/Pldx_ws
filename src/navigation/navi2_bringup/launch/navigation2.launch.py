@@ -25,6 +25,18 @@ def generate_launch_description():
     controller_odom_topic = launch.substitutions.LaunchConfiguration('controller_odom_topic')
 
     return launch.LaunchDescription([
+        launch.actions.DeclareLaunchArgument('use_sim_time', default_value='False',
+                                             description='Use simulation (Gazebo) clock if true'),
+        launch.actions.DeclareLaunchArgument('map', default_value=os.path.join(DreamChaser_dir, 'maps', '2026/output.yaml'),
+                                             description='Full path to map file to load'),
+        launch.actions.DeclareLaunchArgument('params_file', default_value=os.path.join(DreamChaser_dir, 'params', 'sentry1.yaml'),
+                                             description='Full path to param file to load'),
+        launch.actions.DeclareLaunchArgument('use_rviz', default_value='True',
+                                             description='Whether to start RViz'),
+        launch.actions.DeclareLaunchArgument(
+            'controller_odom_topic', default_value='/aft_mapped_to_init',
+            description='Controller-only remap target for the raw odometry topic'),
+
         # 静态TF: map -> camera_init
         # launch_ros.actions.Node(
         #     package='tf2_ros',
@@ -41,6 +53,23 @@ def generate_launch_description():
         #     # 蓝方启动点
         #     arguments=['4.234', '7.1', '0', '0.04', '0', '0', 'map', 'camera_init'],
         #     output='screen'),
+
+        launch_ros.actions.Node(
+            package='fake_vel_transform',
+            executable='fake_vel_transform_node',
+            name='fake_vel_transform',
+            output='screen',
+            parameters=[{
+                'use_sim_time': use_sim_time,
+                'odom_frame': 'camera_init',
+                'body_frame': 'body',
+                'robot_base_frame': 'base_link',
+                'fake_robot_base_frame': 'base_link_fake',
+                'joint_yaw_sign': 1.0,
+                'body_to_base_x': 0.0,
+                'body_to_base_y': 0.0,
+                'body_to_base_z': -0.5,
+            }]),
 
         # 静态TF: map -> minimap
         launch_ros.actions.Node(
@@ -67,18 +96,6 @@ def generate_launch_description():
         #     name='static_tf_body_to_base_link',
         #     arguments=['0', '0.20', '0', '0', '0', '0', 'body', 'base_link'],
         #     output='screen'),
-        # 声明新的 Launch 参数
-            launch.actions.DeclareLaunchArgument('use_sim_time', default_value='False',
-                                             description='Use simulation (Gazebo) clock if true'),
-        launch.actions.DeclareLaunchArgument('map', default_value=os.path.join(DreamChaser_dir, 'maps', '2026/rmuc2026.yaml'),
-                                             description='Full path to map file to load'),
-        launch.actions.DeclareLaunchArgument('params_file', default_value=os.path.join(DreamChaser_dir, 'params', 'sentry1.yaml'),
-                                             description='Full path to param file to load'),
-        launch.actions.DeclareLaunchArgument('use_rviz', default_value='True',
-                                             description='Whether to start RViz'),
-        launch.actions.DeclareLaunchArgument(
-            'controller_odom_topic', default_value='/aft_mapped_to_init',
-            description='Controller-only remap target for the raw odometry topic'),
 
         launch.actions.IncludeLaunchDescription(
             PythonLaunchDescriptionSource(

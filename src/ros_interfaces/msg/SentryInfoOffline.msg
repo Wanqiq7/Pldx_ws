@@ -5,5 +5,6 @@ uint8 lifter_current_pos         # 0 -- kTop 1 -- kBottom 2 -- kMiddle
 bool is_transformable            # 是否能够进行变形（不止变形中不能变形，升降卡住后也无法进行变形）
 float32 transform_state          # 变形状态，0-1，0%为未变形，100%为完全变形，过渡状态根据实际情况变化
 uint8 capacitor_capacity         # 电容容量百分比；255 表示数据不可用
+float32 chassis_imu_yaw          # 底盘 IMU 航向角（rad）
 
 bool tunnel_yaw_aligned          # 底盘航向是否完成对齐

@@ -58,7 +58,9 @@ public:
     }
 
     TacticalMode tactical_mode = TacticalMode::BALANCED;
-    blackboard->get<TacticalMode>("tactical_mode", tactical_mode);
+    if (!blackboard->get<TacticalMode>("tactical_mode", tactical_mode)) {
+      tactical_mode = TacticalMode::BALANCED;
+    }
     auto branch = blackboard->get<int>("patrol_branch");
 
     // --- 根据战术模式和分支索引查找对应的巡逻点列表 ---

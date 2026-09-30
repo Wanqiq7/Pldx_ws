@@ -1,12 +1,14 @@
 /pcd2pgm:
   ros__parameters:
-    file_directory: src/perception/Point-LIO/PCD/
-    file_name: scans
+    file_directory: /home/nvidia/navi_minco_bit_jazzy/src/perception/Point-LIO/PCD/
+    file_name: output
+    # false keeps points inside [thre_z_min, thre_z_max]. The Point-LIO
+    # camera_init origin is at the sensor, 0.537619 m above the ground.
     flag_pass_through: false
     map_resolution: 0.05
     map_topic_name: map
-    thre_radius: 0.5
-    thre_z_max: 1.5
-    thre_z_min: 0.00
-    thres_point_count: 10
+    thre_radius: 0.15
+    thre_z_max: 0.96
+    thre_z_min: -0.44
+    thres_point_count: 3
     use_sim_time: false

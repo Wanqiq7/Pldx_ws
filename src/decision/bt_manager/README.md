@@ -33,13 +33,13 @@ flowchart TD
 
 ### 流程概述
 
-ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写入共享 blackboard。主循环以 10 Hz tick 多棵行为树；每棵树按 XML 中当前未注释节点和响应式控制节点的顺序评估，写回战术模式、导航目标、姿态、资源或云台指令。导航目标交给 Nav2，姿态/资源等指令经 communication 发送到底盘和裁判链路。
+ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写入共享 blackboard。主循环以 10 Hz tick 多棵行为树；每棵树按 XML 中当前未注释节点和响应式控制节点的顺序评估，写回战术模式、导航目标、姿态、资源或云台指令。导航目标交给 Nav2，姿态/资源等指令经 ros2_libxr 发送到底盘和裁判链路。
 
 ## 🧪 技术方向
 
 - 行为树 XML 是策略主入口，C++ 插件实现 condition/action/decorator，blackboard 是跨子树状态契约。
 - `ReactiveFallback` 的节点顺序即优先级；`ReactiveSequence` 中任一 condition 失败会阻断后续 action。
-- 裁判协议、blackboard 枚举、XML 端口和 communication 打包共同组成跨模块接口，不能只修改其中一处。
+- 裁判协议、blackboard 枚举、XML 端口和 ros2_libxr 打包共同组成跨模块接口，不能只修改其中一处。
 - 行为树负责“选择行为”，不长期替代 Planner/Controller 的连续闭环。
 
 ## ⚡ 性能方向
@@ -117,7 +117,7 @@ Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、�
 | `/sentry/area_markers` | 战术区域可视化 |
 
 视觉部署必须提供导航所需的 `map <- vision_gimbal`（或消息实际 frame）TF。
-BT 发布 `base_link -> gimbal` 以及 `gimbal -> vision_gimbal` 单位姿，并用最新 TF 把观测转到 map。
+`body -> base_link` 和 `base_link_fake` 由 Nav2 侧的 `fake_vel_transform` 发布，不依赖 BT。`body -> vision_gimbal` 由 launch 发静态单位姿。视觉 `transformPoseToMap(..., "vision_gimbal")` 沿 TF 链到 map。
 `not_aim_enemy==true` 时 `VisionTargetDirective.valid=true` 且 `restrict_to_preferred_targets=true`、
 列表为空、`source_mask=SOURCE_NAVIGATION`；否则 `valid=false`。
 
@@ -132,6 +132,8 @@ BT 发布 `base_link -> gimbal` 以及 `gimbal -> vision_gimbal` 单位姿，并
 | `bt_debug_logs` | `true` | 输出节点状态转移日志 |
 | `bt_debug_log_to_file` | `false` | 是否将转移日志写入文件 |
 | `bt_debug_log_file` | `logs/bt_transition.log` | 文件日志路径 |
+| `joint_yaw_sign` | `1.0` | `body → base_link` 关节符号 s，yaw=`-s·joint` |
+| `body_to_base_z` | `-0.5` | `body → base_link` 平移 z（m） |
 
 比赛运行时不建议开启高频、逐 tick 的详细日志。调试优先使用“条件变化 + 节点转移”信息，以免影响回调调度。
 

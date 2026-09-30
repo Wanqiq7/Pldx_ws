@@ -29,6 +29,8 @@ module ros_interfaces {
         "电容容量百分比")
       uint8 capacitor_capacity;
 
+      float chassis_imu_yaw;
+
       @verbatim (language="comment", text=
         "底盘航向是否完成对齐")
       boolean tunnel_yaw_aligned;

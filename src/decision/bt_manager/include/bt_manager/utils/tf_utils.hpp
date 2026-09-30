@@ -19,7 +19,6 @@ public:
   TransformUtils();
   ~TransformUtils() override = default;
 
-  // 发布动态TF变换（从base_link到gimbal）
   void publishDynamicTransform();
 
   // 坐标转换函数（从child系转换到map系）
@@ -58,11 +57,10 @@ private:
   std::mutex gimbal_to_map_mutex_;
   std::array<double, 4> gimbal_to_map_rotation_{1.0, 0.0, 0.0, 1.0};
 
-  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;  // 动态发布器
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  rclcpp::TimerBase::SharedPtr tf_publish_timer_;
   std::atomic<float> latest_gimbal_yaw_deg_{0.0f};
   std::atomic<bool> gimbal_yaw_initialized_{false};
 };

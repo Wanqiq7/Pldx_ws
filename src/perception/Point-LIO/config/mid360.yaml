@@ -14,8 +14,7 @@
 
         common:
             lid_topic: "livox/lidar"
-            # imu_topic: "livox/imu"
-            imu_topic: "livox/imu_192_168_1_135"
+            imu_topic: "livox/imu"
             con_frame: False                                # True: if you need to combine several LiDAR frames into one
             con_frame_num: 1                                # the number of frames combined
             cut_frame: False                                # True: if you need to cut one LiDAR frame into several subframes
@@ -27,6 +26,8 @@
             time_diff_lidar_to_imu: 0.0                     # Time offset between LiDAR and IMU calibrated by other algorithms, e.g., LI-Init (find in Readme)
 
         prior_pcd:
+            # Single-radar real-vehicle startup performs live mapping. A prior
+            # map must only be enabled when prior_pcd_map_path is non-empty.
             enable: False
             prior_pcd_map_path: ""
             init_pose: [ 0.0, 0.0, 0.0 ]
@@ -35,9 +36,9 @@
             lidar_type: 1                                   # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR
             scan_line: 4
             timestamp_unit: 3                               # the unit of time/t field in the PointCloud2 rostopic: 0-second, 1-milisecond, 2-microsecond, 3-nanosecond.
-            blind: 0.35
+            blind: 0.60
             blind_center_enable: True
-            blind_center: [ 0.0, 0.20, 0.0 ]
+            blind_center: [ -0.039512, 0.0, 0.537619 ]
 
         mapping:
             imu_en: True
@@ -63,6 +64,8 @@
             gravity: [ 0.0, 0.0, -9.810 ]                   # [0.0, 9.810, 0.0] # gravity to be aligned
             gravity_init: [ 0.0, 0.0, -9.810 ]              # [0.0, 9.810, 0.0] # # preknown gravity in the first IMU body frame, use when imu_en is False or start from a non-stationary state
             extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+            # LiDAR-to-built-in-IMU rotation. Mounting orientation relative to
+            # the gimbal IMU is published separately as body -> livox_frame.
             extrinsic_R: [ 1.0, 0.0, 0.0,
                            0.0, 1.0, 0.0,
                            0.0, 0.0, 1.0 ]
@@ -73,7 +76,7 @@
 
         publish:
             path_en: True                                   # False: close the path output
-            scan_publish_en: True                           # False: close all the point cloud output
+            scan_apublish_en: True                           # False: close all the point cloud output
             scan_bodyframe_pub_en: False                    # True: output the point cloud scans in IMU-body-frame
             tf_send_en: True                                # True: send transform from 'camera_init' to 'aft_mapped'
 
