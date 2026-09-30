@@ -33,7 +33,7 @@ def generate_launch_description():
         name='pointcloud_to_laserscan',
         output='screen',
         parameters=[{
-            'target_frame': 'slambase',
+            'target_frame': 'body',
             'transform_tolerance': 0.01,
             'queue_size': 1,
             'min_height': -0.1,

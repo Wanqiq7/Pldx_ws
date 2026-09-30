@@ -22,6 +22,7 @@ find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -65,6 +66,7 @@ ament_target_dependencies(${PROJECT_NAME}
   sensor_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
   std_srvs
   visualization_msgs
   std_msgs
@@ -87,6 +89,15 @@ rclcpp_components_register_node(${PROJECT_NAME}
 # -----------------------------------------------------------------------------
 # 5. 安装
 # -----------------------------------------------------------------------------
+
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(command_freshness_test test/command_freshness_test.cpp)
+  target_include_directories(command_freshness_test PRIVATE include)
+  ament_target_dependencies(command_freshness_test geometry_msgs ros_interfaces)
+  target_compile_options(command_freshness_test PRIVATE -UNDEBUG)
+  add_test(NAME command_freshness_test COMMAND command_freshness_test)
+endif()
 
 # ament_auto_package 宏会自动处理头文件、库文件和可执行文件的安装
 ament_auto_package(

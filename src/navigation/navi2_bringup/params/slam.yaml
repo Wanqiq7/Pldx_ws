@@ -10,7 +10,7 @@ slam_toolbox:
     # ROS Parameters
     odom_frame: camera_init
     map_frame: map
-    base_frame: slambase
+    base_frame: body
     scan_topic: /scan
     mode: mapping # localization
     scan_queue_size: 1

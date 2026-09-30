@@ -31,15 +31,14 @@
 
 1. 当前注册表使用 `nav_data`、`behavior_data`、`team_info`、`game_info`、`online_info`、`offline_info`、`radar_info`。这些名称是本工程适配约定，仍必须与固件确认的 LibXR domain 和版本逐项核对。
 2. 使用独立的 wire header 定义上述七个 payload，固定 `#pragma pack(1)`、小端序、IEEE-754 float、`bool` 的单字节表示，并加入 `sizeof`、`offsetof`、`std::is_trivially_copyable` 的静态断言或测试。
-3. ROS 输入只保留最新快照。订阅 `/cmd_vel_mpc`、`/cmd_force_mpc`、`/aft_mapped_to_init` 和 `/sentry/behaivor_send`，在 10 ms 定时器中构造 `ChassisTarget` 与 `BehaviorData` 后分别 `Publish`。必须复现契约中的速度外环、map/odom 到车体系 vx/vy 旋转、`delta_yaw` 时间匹配和未初始化时抑制平移/力指令的行为。
-4. 为每个接收 topic 注册长度检查回调，将 payload 映射回 `ros_interfaces` 的五个 `/sentry/*` 消息。雷达坐标按契约从 cm 转 m；revision 3 的 `SentryInfoOffline` 仅映射机构、云台 yaw 和底盘 IMU 状态，`chassis_imu_yaw` 需要进入 `delta_yaw` 的有界历史队列。
+3. ROS 输入只保留最新快照。订阅 `/cmd_vel_mpc`、`/cmd_force_mpc`、`/aft_mapped_to_init` 和 `/sentry/behaivor_send`，在 10 ms 定时器中构造 `ChassisTarget` 与 `BehaviorData` 后分别 `Publish`。世界系 vx/vy 用 `θ = yaw(camera_init→base_link)` 折到 MCU 车体：`vx_mcu = vx·sinθ − vy·cosθ`（右），`vy_mcu = vx·cosθ + vy·sinθ`（前）。该 TF 不可用时抑制平移/力指令。
+4. 为每个接收 topic 注册长度检查回调，将 payload 映射回 `ros_interfaces` 的五个 `/sentry/*` 消息。雷达坐标按契约从 cm 转 m；revision 3 的 `SentryInfoOffline` 仅映射机构、云台 yaw 和底盘 IMU 状态。`chassis_imu_yaw` 不再参与主机速度旋转变换。
 5. 让串口 VID/PID、selector、波特率和周期成为 ROS 参数。官方当前硬编码 `16d0:1492`、selector `navigation`、115200 8N1；这些值只能作为默认值，必须用实车枚举结果确认。
-6. 在协议双方完成前只做回环/模拟测试。主机和固件不能同时运行旧 `communication` 与新 XR 节点抢占同一串口。
+6. 在协议双方完成前只做回环/模拟测试。
 
 ## 当前仓库状态
 
-- `build.bash` 默认只跳过仍保留的旧 `communication` 包，不再引用已删除的 `communication_xr` 和 `communication_protocol` 目录。
-- 旧 `communication` 已将冻结 payload 定义内置回来，可以作为串口回退实现单独编译；它不应与 `ros2_libxr_node` 同时启动。
+- `build.bash` 默认构建 `ros2_libxr`，不保留旧通信节点的排除或回退路径。
 - `ros2_libxr` 子模块已修改为本工程主机侧适配实现；未获得下位机 XR topic/payload 定义前，仍不能宣称已完成实车适配。
 
 完成适配的验收顺序应为：payload 布局测试 -> LibXR 主机/固件回环 -> ROS topic 映射测试 -> 串口实测；每一步都应检查 topic 名、payload 长度和 CRC/传输错误。

@@ -6,6 +6,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    # Dual-Livox bringup. If a livox_frame static TF is added later, parent it
+    # to body/gimbal. Do not hang livox_frame on base_link.
     return LaunchDescription(
         [
             IncludeLaunchDescription(

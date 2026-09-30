@@ -47,7 +47,9 @@ BT::NodeStatus ChangeTacticalAction::tick()
   const TacticalMode tactical_mode = mode ? parseTacticalMode(mode.value()) : TacticalMode::BALANCED;
 
   TacticalMode previous_mode = TacticalMode::BALANCED;
-  blackboard->get<TacticalMode>("tactical_mode", previous_mode);
+  if (!blackboard->get<TacticalMode>("tactical_mode", previous_mode)) {
+    previous_mode = TacticalMode::BALANCED;
+  }
   blackboard->set<TacticalMode>("tactical_mode", tactical_mode);
   if (previous_mode != tactical_mode) {
     std::cout << "ChangeTacticalAction => " << tacticalModeName(previous_mode) << " -> "
@@ -74,7 +76,9 @@ BT::NodeStatus SetTacticalMode::tick()
   const TacticalMode tactical_mode = mode ? parseTacticalMode(mode.value()) : TacticalMode::BALANCED;
 
   TacticalMode previous_mode = TacticalMode::BALANCED;
-  blackboard->get<TacticalMode>("tactical_mode", previous_mode);
+  if (!blackboard->get<TacticalMode>("tactical_mode", previous_mode)) {
+    previous_mode = TacticalMode::BALANCED;
+  }
   blackboard->set<TacticalMode>("tactical_mode", tactical_mode);
   if (previous_mode != tactical_mode) {}
   return BT::NodeStatus::SUCCESS;

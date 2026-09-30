@@ -119,11 +119,7 @@ serial_packages=(
 )
 
 # Communication is provided by the QDU-VRobot ROS2_LIBXR submodule under
-# src/navigation/ros2_libxr. Keep the legacy communication package excluded
-# from the default build until it is restored against the frozen contract.
-local_communication_packages=(
-  communication
-)
+# src/navigation/ros2_libxr.
 
 echo "[build] Stage 1/2: build critical packages one-by-one"
 for pkg in "${serial_packages[@]}"; do
@@ -142,6 +138,6 @@ colcon build \
   "${colcon_path_args[@]}" \
   --symlink-install \
   --parallel-workers "$parallel_workers" \
-  --packages-skip "${serial_packages[@]}" "${local_communication_packages[@]}" \
+  --packages-skip "${serial_packages[@]}" \
 	--cmake-args "${cmake_args[@]}" \
 	--event-handlers console_direct+ status+

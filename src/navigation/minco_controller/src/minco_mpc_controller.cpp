@@ -43,8 +43,7 @@ double MincoMpcController::normalizeYaw(double yaw)
   return std::atan2(std::sin(yaw), std::cos(yaw));
 }
 
-void MincoMpcController::configureMpcPerfLogging(
-  const rclcpp_lifecycle::LifecycleNode::SharedPtr & node)
+void MincoMpcController::configureMpcPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node)
 {
   const std::string default_mpc_csv_path = "/tmp/mpc_perf_detailed.csv";
 
@@ -216,9 +215,8 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
 
   // 订阅里程计：用于延迟补偿和mpc输入状态
   auto odom_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
-  odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>("/aft_mapped_to_init",
-    odom_qos,
-    std::bind(&MincoMpcController::onOdom, this, std::placeholders::_1));
+  odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
+    "/aft_mapped_to_init", odom_qos, std::bind(&MincoMpcController::onOdom, this, std::placeholders::_1));
 
   mpc_predict_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_predict_path", 1);
   mpc_real_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_real_path", 1);
@@ -654,7 +652,8 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   nav2_core::GoalChecker * goal_checker)
 {
   const bool record_perf = mpc_perf_monitor_.detailedCsvEnabled();
-  const auto cycle_start = record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  const auto cycle_start =
+    record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   auto node = node_.lock();
 
   const rclcpp::Time now = node->now();
@@ -690,7 +689,8 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     latest_odom = latest_odom_;
   }
 
-  // 1) 构造当前状态（基于 pose + 最新里程计速度，用于延迟补偿）
+  // 1) 构造当前状态：位置与航向来自 robot_base_frame（base_link_fake），
+  // 世界系速度由 LIO 机体系速度按 body yaw 旋出。
   State curr;
   curr.x = pose.pose.position.x;
   curr.y = pose.pose.position.y;
@@ -699,14 +699,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     double vx = latest_odom->twist.twist.linear.x;
     double vy = latest_odom->twist.twist.linear.y;
     double omega = latest_odom->twist.twist.angular.z;
-    double yaw = normalizeYaw(tf2::getYaw(latest_odom->pose.pose.orientation));
-    // extractGlobalVelocityAndYaw(latest_odom, vx, vy, omega, yaw);
-    compensateLeverArm(vx, vy, omega, yaw, curr.vx, curr.vy, curr.omega);
-
-    // curr.yaw = normalizeYaw(yaw);
-    // curr.vx = vx;
-    // curr.vy = vy;
-    // curr.omega = omega;
+    double yaw_lio = normalizeYaw(tf2::getYaw(latest_odom->pose.pose.orientation));
+    double omega_global = 0.0;
+    compensateLeverArm(vx, vy, omega, yaw_lio, curr.vx, curr.vy, omega_global);
+    curr.omega = 0.0;
 
     const double noise_threshold = 0.03;
     if (std::abs(curr.vx) < noise_threshold) {
@@ -778,7 +774,8 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   // 3) 调用 MPC 求解（输出 global_frame_ 系速度，此处为 camera_init）
   Control u_global;
   std::vector<State> pred_states;
-  const auto solve_start = record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  const auto solve_start =
+    record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 #ifdef MINCO_DEBUG
   auto t_start = std::chrono::high_resolution_clock::now();
 #endif

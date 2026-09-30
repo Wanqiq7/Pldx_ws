@@ -24,6 +24,28 @@ def generate_launch_description():
             'publish_area_markers',
             default_value='true',
             description='Whether to publish area markers for visualization'),
+        DeclareLaunchArgument(
+            'joint_yaw_sign',
+            default_value='1.0',
+            description='Sign s for body→base_link yaw: yaw = -s * joint'),
+        DeclareLaunchArgument(
+            'body_to_base_x',
+            default_value='0.0',
+            description='body → base_link translation x (m)'),
+        DeclareLaunchArgument(
+            'body_to_base_y',
+            default_value='0.0',
+            description='body → base_link translation y (m)'),
+        DeclareLaunchArgument(
+            'body_to_base_z',
+            default_value='-0.5',
+            description='body → base_link translation z (m)'),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='static_tf_body_to_vision_gimbal',
+            arguments=['0', '0', '0', '0', '0', '0', '1', 'body', 'vision_gimbal'],
+            output='screen'),
         Node(
             package='bt_manager',
             executable='bt_manager_node',
@@ -35,5 +57,13 @@ def generate_launch_description():
                     LaunchConfiguration('bt_debug_log_to_file'), value_type=bool),
                 'bt_debug_log_file': LaunchConfiguration('bt_debug_log_file'),
                 'publish_area_markers': ParameterValue(LaunchConfiguration('publish_area_markers'), value_type=bool),
+                'joint_yaw_sign': ParameterValue(
+                    LaunchConfiguration('joint_yaw_sign'), value_type=float),
+                'body_to_base_x': ParameterValue(
+                    LaunchConfiguration('body_to_base_x'), value_type=float),
+                'body_to_base_y': ParameterValue(
+                    LaunchConfiguration('body_to_base_y'), value_type=float),
+                'body_to_base_z': ParameterValue(
+                    LaunchConfiguration('body_to_base_z'), value_type=float),
             }]),
     ])

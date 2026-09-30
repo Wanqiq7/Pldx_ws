@@ -13,6 +13,16 @@ int main(int argc, char const * argv[])
   auto blackboard = std::make_shared<Sentry_BT::Blackboard>();
   auto ros_interface_node = std::make_shared<Sentry_BT::ros_interface>(blackboard);
   auto transform_utils_node = std::make_shared<Sentry_BT::TransformUtils>();
+  const double joint_yaw_sign = ros_interface_node->declare_parameter<double>("joint_yaw_sign", 1.0);
+  const double body_to_base_x = ros_interface_node->declare_parameter<double>("body_to_base_x", 0.0);
+  const double body_to_base_y = ros_interface_node->declare_parameter<double>("body_to_base_y", 0.0);
+  const double body_to_base_z = ros_interface_node->declare_parameter<double>("body_to_base_z", -0.5);
+  transform_utils_node->set_parameters({
+    rclcpp::Parameter("joint_yaw_sign", joint_yaw_sign),
+    rclcpp::Parameter("body_to_base_x", body_to_base_x),
+    rclcpp::Parameter("body_to_base_y", body_to_base_y),
+    rclcpp::Parameter("body_to_base_z", body_to_base_z),
+  });
   const bool bt_debug_logs = ros_interface_node->declare_parameter<bool>("bt_debug_logs", true);
   const bool bt_debug_log_to_file =
     ros_interface_node->declare_parameter<bool>("bt_debug_log_to_file", false);

@@ -272,7 +272,9 @@ BT::NodeStatus SelectPatrolPoint::tick()
   }
 
   TacticalMode tactical_mode = TacticalMode::BALANCED;
-  blackboard->get<TacticalMode>("tactical_mode", tactical_mode);
+  if (!blackboard->get<TacticalMode>("tactical_mode", tactical_mode)) {
+    tactical_mode = TacticalMode::BALANCED;
+  }
 
   int branch = 0;
   // if (tactical_mode == TacticalMode::DEFENSIVE) {
@@ -350,7 +352,9 @@ BT::NodeStatus Wait::onStart()
   auto blackboard = config().blackboard;
   auto patrol_index = blackboard->get<int>("patrol_index");
   TacticalMode tactical_mode = TacticalMode::BALANCED;
-  blackboard->get<TacticalMode>("tactical_mode", tactical_mode);
+  if (!blackboard->get<TacticalMode>("tactical_mode", tactical_mode)) {
+    tactical_mode = TacticalMode::BALANCED;
+  }
   auto branch = blackboard->get<int>("patrol_branch");
 
   const auto tactical_map_it = Sentry_BT::tactical_patrol_branches.find(tactical_mode);

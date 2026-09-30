@@ -8,15 +8,11 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"
 PLDX_VISION_WS="${PLDX_VISION_WS:-}"
 if [[ -n "${PLDX_VISION_WS}" ]]; then
   PLDX_VISION_SETUP="${PLDX_VISION_WS%/}/install/setup.bash"
-  if [[ ! -f "${PLDX_VISION_SETUP}" ]]; then
-    echo "PLDX_VISION_WS does not contain install/setup.bash: ${PLDX_VISION_WS}" >&2
-    exit 1
+  if [[ -f "${PLDX_VISION_SETUP}" ]]; then
+    source "${PLDX_VISION_SETUP}"
+  else
+    echo "[start] Vision workspace not found, continuing without it: ${PLDX_VISION_SETUP}" >&2
   fi
-  source "${PLDX_VISION_SETUP}"
-fi
-if ! ros2 pkg prefix pldx_vision_interfaces >/dev/null 2>&1; then
-  echo "pldx_vision_interfaces is unavailable. Set PLDX_VISION_WS to a built vision workspace." >&2
-  exit 1
 fi
 if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
   echo "Navigation workspace is not built: ${WORKSPACE_DIR}/install/setup.bash" >&2
@@ -27,9 +23,45 @@ source "${WORKSPACE_DIR}/install/setup.bash"
 cd "${WORKSPACE_DIR}"
 set -u
 
-# ros2_libxr is the default host-side comm bridge. Set ROS2_LIBXR_ENABLE=0 to skip it.
+# Real-vehicle single-Livox startup. Optional stages can be disabled with 0.
 ROS2_LIBXR_WS="${ROS2_LIBXR_WS:-}"
 ROS2_LIBXR_ENABLE="${ROS2_LIBXR_ENABLE:-1}"
+PTP_ENABLE="${PTP_ENABLE:-1}"
+BT_MANAGER_ENABLE="${BT_MANAGER_ENABLE:-1}"
+# /cloud_registered_full is published only after Point-LIO IMU gravity alignment.
+POINT_LIO_CLOUD_WAIT_S="${POINT_LIO_CLOUD_WAIT_S:-40}"
+POINT_LIO_SETTLE_S="${POINT_LIO_SETTLE_S:-3}"
+
+if ! command -v gnome-terminal >/dev/null 2>&1; then
+  echo "gnome-terminal is required to start the chain in separate terminals." >&2
+  exit 1
+fi
+
+run_terminal() {
+  local title="$1"
+  shift
+  gnome-terminal --title="${title}" -- bash -lc \
+    "cd '${WORKSPACE_DIR}'; source /opt/ros/${ROS_DISTRO}/setup.bash; source '${WORKSPACE_DIR}/install/setup.bash'; $*; exec bash"
+}
+
+wait_for_topic_message() {
+  local topic="$1"
+  local timeout_s="$2"
+  local field="${3:-header}"
+  echo "[start] Waiting up to ${timeout_s}s for ${topic} (Point-LIO publishes this after IMU init)"
+  if ros2 topic echo \
+    --once \
+    --timeout "${timeout_s}" \
+    --qos-profile sensor_data \
+    --field "${field}" \
+    "${topic}" >/dev/null 2>&1; then
+    echo "[start] Received ${topic}"
+    return 0
+  fi
+  echo "[start] Timed out waiting for ${topic} after ${timeout_s}s; starting GICP anyway" >&2
+  return 0
+}
+
 if [[ -n "${ROS2_LIBXR_WS}" ]]; then
   ROS2_LIBXR_SETUP="${ROS2_LIBXR_WS%/}/install/setup.bash"
   if [[ ! -f "${ROS2_LIBXR_SETUP}" ]]; then
@@ -45,33 +77,46 @@ if [[ "${ROS2_LIBXR_ENABLE}" == "1" ]]; then
     exit 1
   fi
 
-  gnome-terminal -- bash -c "ros2 run ros2_libxr ros2_libxr_node; exec bash"
+  run_terminal "ROS2 LIBXR" "ros2 run ros2_libxr ros2_libxr_node"
   sleep 3
 else
   echo "[start] ROS2_LIBXR disabled (ROS2_LIBXR_ENABLE=${ROS2_LIBXR_ENABLE})"
 fi
 
 # PTP Sync
-gnome-terminal -- bash -c "sudo ./scripts/ptp_sync.bash; exec bash"
-sleep 8
+if [[ "${PTP_ENABLE}" == "1" ]]; then
+  run_terminal "PTP Sync" "sudo ./scripts/ptp_sync.bash"
+  sleep 8
+fi
 
-# Driver + SLAM
-# gnome-terminal -- bash -c "ros2 launch point_lio single_livox_pointlio_intra_process.launch.py; exec bash"
-gnome-terminal -- bash -c "ros2 launch point_lio mixed_livox_pointlio_intra_process.launch.py; exec bash"
-sleep 5
+# Single Livox MID-360 + Point-LIO
+run_terminal "Single Livox Point-LIO" \
+  "ros2 launch point_lio single_livox_pointlio_intra_process.launch.py"
+echo "[start] Keep the vehicle stationary until GICP finishes power-on alignment"
+wait_for_topic_message "/cloud_registered_full" "${POINT_LIO_CLOUD_WAIT_S}"
+echo "[start] Settling ${POINT_LIO_SETTLE_S}s so the first GICP window is after gravity alignment"
+sleep "${POINT_LIO_SETTLE_S}"
 
 # ICP
-gnome-terminal -- bash -c "ros2 launch icp_relocalization gicp_relocalization.launch.py; exec bash"
+run_terminal "GICP Relocalization" \
+  "ros2 launch icp_relocalization gicp_relocalization.launch.py"
 sleep 1
 
 # Navigation2
-gnome-terminal -- bash -c "ros2 launch navi2 navigation2.launch.py; exec bash"
-# gnome-terminal -- bash -c "ros2 launch navi2 slam.launch.py; exec bash"
+run_terminal "Navigation2 and RViz" \
+  "ros2 launch navi2 navigation2.launch.py"
 sleep 5
 
-# Decision
-gnome-terminal -- bash -c "ros2 launch bt_manager bt_manager.launch.py; exec bash"
-sleep 3
+# Decision. Nav-only bringup still needs a Behavior heartbeat so the MCU
+# accepts chassis commands; without it ros2_libxr sends stance=0.
+if [[ "${BT_MANAGER_ENABLE}" == "1" ]]; then
+  run_terminal "BT Manager" "ros2 launch bt_manager bt_manager.launch.py"
+  sleep 3
+else
+  echo "[start] BT Manager disabled; publishing default DEFEND behavior for chassis enable"
+  run_terminal "Default Behavior" \
+    "ros2 topic pub -r 10 /sentry/behaivor_send ros_interfaces/msg/Behavior '{desired_stance: 2, desire_lifter_pos: 0, pitch_mode: 0, scan_yaw_min: -180.0, scan_yaw_max: 180.0}'"
+fi
 
 # Rosbag record
 ROSBAG_TOPICS=(

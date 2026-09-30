@@ -78,7 +78,6 @@
 | `navi2`                            | Nav2 bringup、先验地图、参数与 RViz      | Navigation2、STVL                               |
 | `bt_manager`                       | 比赛决策中枢                             | BehaviorTree.CPP v3、共享 blackboard            |
 | `ros2_libxr`                       | 裁判系统 / 底盘通信桥                    | LibXR、SharedTopic                              |
-| `communication`                    | 旧版通信节点（默认不启动）               | 自定义协议                                      |
 | `dbscan_cluster`                   | 实验性点云聚类（默认未启用）             | DBSCAN、Kalman 跟踪                             |
 | `pcd2pgm` / `pcd2esdf` / `pcd2ele` | 地图工具                                 | PCD → PGM / ESDF / 高程                        |
 
@@ -86,7 +85,6 @@
 
 - [MincoPlanner](src/navigation/minco_planner/README.md)
 - [MincoMpcController](src/navigation/minco_controller/README.md)
-- [Communication](src/navigation/communication/README.md)
 - [bt_manager](src/decision/bt_manager/README.md)
 - [Point-LIO](src/perception/Point-LIO/README.md)
 - [ROGMap](src/perception/rog_map/README.md)
@@ -236,7 +234,7 @@ bash start.bash
 5. Nav2 + ROGMap + MincoPlanner + MincoMpcController
 6. bt_manager
 
-`start.bash` 默认启用 XR 桥（`ROS2_LIBXR_ENABLE=1`），不启动旧 `communication` 包。如需使用另一个已安装且兼容的 ROS2_LIBXR 工作区，可设置 `ROS2_LIBXR_WS`。
+`start.bash` 默认启用 XR 桥（`ROS2_LIBXR_ENABLE=1`）。如需使用另一个已安装且兼容的 ROS2_LIBXR 工作区，可设置 `ROS2_LIBXR_WS`。
 
 ### 先验地图
 
@@ -389,11 +387,14 @@ publish:
 | -------------------------- | ---------------------------- | ----------------------------- |
 | `/aft_mapped_to_init`      | `camera_init` → `body`      | LIO odometry                  |
 | `/cloud_registered[_full]` | `camera_init`                | 世界系配准点云                |
-| TF                         | `camera_init` → `body`      | 完整 LIO 姿态                 |
-| TF                         | `camera_init` → `base_link` | 平面姿态 +`[0, 0.20, 0]` 平移 |
+| TF                         | `camera_init` → `body`      | 完整 LIO 姿态（雷达 IMU = 云台 yaw） |
+| TF                         | `body` → `livox_frame`      | 雷达相对 IMU 的静态外参       |
+| TF                         | `body` → `vision_gimbal`    | 静态单位姿                    |
+| TF                         | `body` → `base_link`        | 关节逆，由 `tf_utils` 发布    |
+| TF                         | `base_link` → `base_link_fake` | 取消底盘 yaw，供 Nav2/MPC  |
 
 > [!CAUTION]
-> `camera_init → base_link` 的平移偏置当前硬编码在 `laserMapping.cpp`，不是 YAML 参数。不要额外启动同名静态 TF。
+> `camera_init → base_link` 由 `camera_init → body` 与 `body → base_link` 自动链成，Point-LIO 不再直接发布底盘 TF。不要再启动 `base_link → livox_frame`、`base_link → gimbal` 或独立的 `gimbal`/`slambase`。
 
 ### 3. Planner / Controller 杆臂
 
@@ -424,7 +425,7 @@ rog_map:
 | 前雷达 IP         | Livox JSON/YAML、Point-LIO IMU topic | `192.168.1.135` |
 | 后雷达 IP         | Livox JSON/YAML                      | `192.168.1.122` |
 | 近场关注中心      | `Point-LIO preprocess.blind_center`  | `[0, 0.20, 0]`  |
-| LIO 到底盘中心 TF | `laserMapping.cpp offset_vec`        | `[0, 0.20, 0]`  |
+| 云台 IMU 到底盘 TF | `tf_utils` `body → base_link`        | `(0, 0, -0.5)`、yaw=`-s·joint` |
 | ROGMap 滑窗中心   | `rog_map.map_sliding.center_offset`  | `[0, 0.20, 0]`  |
 | 速度杆臂          | planner/controller`lidar_offset_*`   | `[0, -0.20]`    |
 
@@ -557,18 +558,24 @@ flowchart TB
 
 ```text
 map
-└── camera_init              # GICP 重定位 / 静态初始变换
-    ├── body                 # Point-LIO 完整姿态
-    └── base_link            # 平面导航参考点
+├── minimap
+└── camera_init                    # GICP / LIO odom
+     └── body                      # Point-LIO：雷达 IMU = 云台 yaw
+          ├── livox_frame          # 雷达相对 IMU 的小外参
+          ├── vision_gimbal        # 与 body 同 yaw，单位姿
+          └── base_link            # 关节逆，真底盘
+               └── base_link_fake  # 取消 yaw，供 Nav2/MPC
 ```
 
 - `map`：先验全局地图坐标系
 - `camera_init`：Point-LIO 世界坐标系，也是 ROGMap 工作坐标系
-- `body`：LIO / IMU 机体参考
-- `base_link`：Nav2 机器人基座参考
+- `body`：雷达 IMU / 云台 yaw（同轴）
+- `vision_gimbal`：视觉目标帧，与 `body` 单位姿
+- `base_link`：底盘（由关节逆得到）
+- `base_link_fake`：Nav2 规划用假车头，在 `camera_init` 中朝 +X
 - `minimap`：裁判系统小地图坐标系（红蓝方变换在 launch 中配置）
 
-如果 `tf2_tools view_frames` 出现跳变，优先检查 `map → camera_init` 和 `camera_init → base_link` 是否存在重复发布者。
+如果 `tf2_tools view_frames` 出现跳变或成环，优先检查是否仍有 `camera_init → base_link`、`base_link → gimbal`、独立 `gimbal`/`slambase` 或 `base_link → livox_frame` 的旧发布者。
 
 ## 📂 文件结构
 
@@ -578,8 +585,8 @@ navi_minco_bit_jazzy/
 │   ├── decision/
 │   │   └── bt_manager/                 # 行为树、比赛策略、blackboard
 │   ├── navigation/
-│   │   ├── communication/              # 旧版裁判系统与底盘通信
 │   │   ├── ros2_libxr/                 # 内置 QDU-VRobot ROS2_LIBXR 源码
+│   │   ├── fake_vel_transform/         # base_link_fake，给 Nav2 假车头
 │   │   ├── minco_controller/           # Nav2 SE(2) MPC controller plugin
 │   │   ├── minco_planner/              # 搜索、MINCO、FSM、安全恢复
 │   │   └── navi2_bringup/              # Nav2 launch、地图、参数、RViz
@@ -605,7 +612,7 @@ navi_minco_bit_jazzy/
 ## ⚠️ 注意事项
 
 - 当前配置与 launch 包含实车 IP、雷达外参、地图路径、红蓝方小地图 TF 和赛场初始位姿，尚未抽象成通用硬件 profile。
-- `camera_init → base_link` 平移偏置仍在 Point-LIO 源码中硬编码。
+- `body → base_link` 的关节符号 `joint_yaw_sign`（默认 `+1`）需在实车上标定；反了只翻该参数。
 - `start.bash` 假设 GNOME 桌面和可用 sudo，不是通用服务管理器。
 - 实车使用 `ros2_libxr` 前，必须确认下位机实现了相同的 XR topic、domain、payload 布局和版本。
 - 修改速度、加速度、TF、外参、QoS 或恢复策略后，请依次完成静态检查、离线回放、架空轮测试、低速空场测试，再进入对抗环境。

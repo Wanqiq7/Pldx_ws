@@ -11,19 +11,16 @@
 namespace Sentry_BT {
 
 TransformUtils::TransformUtils()
-: Node("transform_utils_" +
-         std::to_string(std::chrono::system_clock::now().time_since_epoch().count() % 10000),
-    rclcpp::NodeOptions().use_global_arguments(false))
+: Node("transform_utils", rclcpp::NodeOptions().use_global_arguments(false))
 {
+  this->declare_parameter<double>("joint_yaw_sign", 1.0);
+  this->declare_parameter<double>("body_to_base_x", 0.0);
+  this->declare_parameter<double>("body_to_base_y", 0.0);
+  this->declare_parameter<double>("body_to_base_z", -0.5);
+
   tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-
-  tf_publish_timer_ = this->create_wall_timer(std::chrono::milliseconds(10), [this]() {
-    this->publishDynamicTransform();
-  });
-
-  publishDynamicTransform();
 }
 
 void TransformUtils::updateCurrentPose(const geometry_msgs::msg::Pose & pose)
@@ -72,40 +69,6 @@ void TransformUtils::NormalizeAngle(float & angle)
 }
 void TransformUtils::publishDynamicTransform()
 {
-  // 创建从base_link到gimbal的动态变换
-  geometry_msgs::msg::TransformStamped dynamic_transform;
-
-  // 设置时间戳为当前时间
-  dynamic_transform.header.stamp =
-    this->now() - rclcpp::Duration(0, 10000000);  // 减去10ms，确保tf2能正确处理
-  dynamic_transform.header.frame_id = "base_link";
-  dynamic_transform.child_frame_id = "gimbal";
-
-  // 设置变换参数（根据实际机器人结构调整）
-  dynamic_transform.transform.translation.x = 0.0;
-  dynamic_transform.transform.translation.y = 0.0;
-  dynamic_transform.transform.translation.z = 0.5;
-
-  const float yaw_deg = latest_gimbal_yaw_deg_.load(std::memory_order_relaxed);
-  tf2::Quaternion quat;
-  quat.setRPY(0, 0, yaw_deg / 180 * M_PI);
-  dynamic_transform.transform.rotation = tf2::toMsg(quat);
-
-  // 发布动态变换
-  tf_broadcaster_->sendTransform(dynamic_transform);
-
-  geometry_msgs::msg::TransformStamped vision_gimbal_transform;
-  vision_gimbal_transform.header.stamp = dynamic_transform.header.stamp;
-  vision_gimbal_transform.header.frame_id = "gimbal";
-  vision_gimbal_transform.child_frame_id = "vision_gimbal";
-  vision_gimbal_transform.transform.translation.x = 0.0;
-  vision_gimbal_transform.transform.translation.y = 0.0;
-  vision_gimbal_transform.transform.translation.z = 0.0;
-  vision_gimbal_transform.transform.rotation.x = 0.0;
-  vision_gimbal_transform.transform.rotation.y = 0.0;
-  vision_gimbal_transform.transform.rotation.z = 0.0;
-  vision_gimbal_transform.transform.rotation.w = 1.0;
-  tf_broadcaster_->sendTransform(vision_gimbal_transform);
 }
 
 bool TransformUtils::transformPoseToMap(const geometry_msgs::msg::Pose & input_pose,

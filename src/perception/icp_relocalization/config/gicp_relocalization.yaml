@@ -2,7 +2,7 @@ gicp_relocalization_node:
   ros__parameters:
     # General Configuration
     mode: "initial_guess" # Options: "multi_guess", "initial_guess"
-    target_pcd_file: "src/perception/icp_relocalization/pcd/cloudlab_processed_blue.pcd"
+    target_pcd_file: "/home/nvidia/navi_minco_bit_jazzy/src/perception/Point-LIO/PCD/output.pcd"
     # target_pcd_file: "src/perception/icp_relocalization/pcd/cloudlab_processed_red.pcd"
     # target_pcd_file: "src/perception/Point-LIO/PCD/scans_1.pcd"
     map_frame: "map"
@@ -19,7 +19,7 @@ gicp_relocalization_node:
       normalized_score_threshold: 0.2  # raw score / GICP inliers
       min_inlier_ratio: 0.5            # GICP inliers / downsampled source points
       min_overlap_ratio: 0.5           # source points within max correspondence distance
-      # Coarse 0.5 m alignment is followed by a stricter 0.2 m refinement.
+      # Coarse 0.25 m then fine 0.2 m. 0.5 m coarse was sliding yaw into 15/25 deg wall matches.
       fine_alignment:
         enable: true
         coarse_first_window_only: true  # later stability windows use the accepted pose for fine-only GICP
@@ -31,7 +31,7 @@ gicp_relocalization_node:
       target_voxel_leaf_size: 0.05
       source_voxel_leaf_size: 0.05  # keep the 0.05 m map while reducing full-cloud source cost
       local_map_radius: 12.0        # covers the +/-8 m source ROI with margin
-      max_correspondence_distance: 0.5
+      max_correspondence_distance: 0.25
       max_iterations: 100
       transformation_epsilon: 0.01
       euclidean_fitness_epsilon: 0.01
@@ -45,7 +45,7 @@ gicp_relocalization_node:
     initial_pose_guard:
       enable: true
       max_translation_correction: 0.4  # meter, XY only
-      max_yaw_correction: 0.2         # rad
+      max_yaw_correction: 0.15         # rad, ~8.6 deg; rejects 14-22 deg wall-slide basins
 
     # Switchable CSV output for real-vehicle threshold verification.
     results:
@@ -59,13 +59,16 @@ gicp_relocalization_node:
       max_translation_jump: 0.1  # meter
       max_yaw_jump: 0.1         # rad
 
-    timeout_seconds: 10.0  # 超时时间（秒）
+    timeout_seconds: 30.0  # 超时时间（秒）；start.bash 已等到 Point-LIO 出云后再启动本节点
     # default_pose_on_timeout: [5.0, 7.0, 0.0, 0.0, 0.0, 0.0]  # 超时后发布的默认位姿
-    default_pose_on_timeout: [4.234, 7.3, 0.0, 0.0, 0.0, 0.0]  # 超时后发布的默认位姿
+    default_pose_on_timeout: [0.2223, -0.5772, 0.0621, 0.0, 0.0, -0.1473]  # 与 initial_pose 保持一致
     # default_pose_on_timeout: [13.5, 4.8, 0.0, 0.0, 0.0, 3.14]  # 超时后发布的默认位姿
 
     # Initial Pose (x, y, z, roll, pitch, yaw) - Used if mode is "initial_guess"
-    initial_pose: [4.234, 7.3, 0.0, 0.0, 0.0, 0.04]
+    # Last confirmed lock from gicp_relocalization_results.csv (localized=1).
+    initial_pose: [0.2223, -0.5772, 0.0621, 0.0, 0.0, -0.1473]
+    # initial_pose: [0.05, -0.80, 0.0, 0.0, 0.0, 0.0]
+    # initial_pose: [-0.0169, -0.968, 0.00197, 0.0, 0.0, 0.0]
     # initial_pose: [13.5, 4.8, 0.0, 0.0, 0.0, 3.14]
     # initial_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     # Multi-Guess Parameters

@@ -18,7 +18,7 @@ struct State
 };
 
 // 控制量：速度命令 (vx, vy, omega)
-// 约定：对外输出为全局系 (map) 下速度；插件层再转换到 base_link。
+// 约定：对外输出为全局系 (camera_init/map) 下速度；ros2_libxr 再按底盘 yaw 折到车体。
 struct Control
 {
   double vx{0.0};
