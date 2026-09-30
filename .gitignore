@@ -71,3 +71,6 @@ paper/
 paper_revision_outputs/
 latex_article_final/
 award/
+
+# External repository (no write access)
+src/nav-simulation/
