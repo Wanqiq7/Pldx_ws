@@ -15,8 +15,6 @@ cd "${WORKSPACE_DIR}"
 set -u
 
 # Real-vehicle single-Livox startup. Optional stages can be disabled with 0.
-ROS2_LIBXR_WS="${ROS2_LIBXR_WS:-}"
-ROS2_LIBXR_ENABLE="${ROS2_LIBXR_ENABLE:-1}"
 PTP_ENABLE="${PTP_ENABLE:-1}"
 BT_MANAGER_ENABLE="${BT_MANAGER_ENABLE:-1}"
 # /cloud_registered_full is published only after Point-LIO IMU gravity alignment.
@@ -53,27 +51,6 @@ wait_for_topic_message() {
   return 0
 }
 
-if [[ -n "${ROS2_LIBXR_WS}" ]]; then
-  ROS2_LIBXR_SETUP="${ROS2_LIBXR_WS%/}/install/setup.bash"
-  if [[ ! -f "${ROS2_LIBXR_SETUP}" ]]; then
-    echo "ROS2_LIBXR_WS does not contain install/setup.bash: ${ROS2_LIBXR_WS}" >&2
-    exit 1
-  fi
-  source "${ROS2_LIBXR_SETUP}"
-fi
-if [[ "${ROS2_LIBXR_ENABLE}" == "1" ]]; then
-  if ! ros2 pkg prefix ros2_libxr >/dev/null 2>&1; then
-    echo "ros2_libxr is not available. Build this workspace with ./build.bash first." >&2
-    echo "Run: ./build.bash" >&2
-    exit 1
-  fi
-
-  run_terminal "ROS2 LIBXR" "ros2 run ros2_libxr ros2_libxr_node"
-  sleep 3
-else
-  echo "[start] ROS2_LIBXR disabled (ROS2_LIBXR_ENABLE=${ROS2_LIBXR_ENABLE})"
-fi
-
 # PTP Sync
 if [[ "${PTP_ENABLE}" == "1" ]]; then
   run_terminal "PTP Sync" "sudo ./scripts/ptp_sync.bash"
@@ -98,8 +75,8 @@ run_terminal "Navigation2 and RViz" \
   "ros2 launch navi2 navigation2.launch.py"
 sleep 5
 
-# Decision. Nav-only bringup still needs a Behavior heartbeat so the MCU
-# accepts chassis commands; without it ros2_libxr sends stance=0.
+# Decision. The vision process owns the USB transport; navigation publishes
+# behavior and chassis topics only.
 if [[ "${BT_MANAGER_ENABLE}" == "1" ]]; then
   run_terminal "BT Manager" "ros2 launch bt_manager bt_manager.launch.py"
   sleep 3

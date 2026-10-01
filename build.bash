@@ -9,12 +9,6 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"
 # needed.  The vision project consumes it from this workspace's install/.
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ros2_libxr_package_xml="${workspace_dir}/src/navigation/ros2_libxr/src/ros2_libxr/package.xml"
-if [[ ! -f "${ros2_libxr_package_xml}" ]]; then
-	echo "ROS2_LIBXR submodule is not initialized: ${workspace_dir}/src/navigation/ros2_libxr" >&2
-	echo "Run: git submodule update --init --recursive" >&2
-	exit 1
-fi
 colcon_path_args=()
 case "${workspace_dir}" in
   *[![:ascii:]]*)
@@ -107,8 +101,8 @@ serial_packages=(
   minco_controller
 )
 
-# Communication is provided by the QDU-VRobot ROS2_LIBXR submodule under
-# src/navigation/ros2_libxr.
+# USB transport is owned by PLDX_Sentry_Vision. Navigation builds ROS2
+# algorithms and topic interfaces only.
 
 echo "[build] Stage 1/2: build critical packages one-by-one"
 for pkg in "${serial_packages[@]}"; do

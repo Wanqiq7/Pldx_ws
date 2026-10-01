@@ -1,3 +1,0 @@
-# 让 Git 识别文本并在仓库内规范化为 LF
-* text=auto
-*.sh text eol=lf
