@@ -18,7 +18,7 @@ struct State
 };
 
 // 控制量：速度命令 (vx, vy, omega)
-// 约定：对外输出为全局系 (camera_init/map) 下速度；ros2_libxr 再按底盘 yaw 折到车体。
+// 约定：对外输出为全局系 (camera_init/map) 下速度；视觉 transport owner 负责下位机坐标转换。
 struct Control
 {
   double vx{0.0};

@@ -1,8 +1,8 @@
-# ROS2_LIBXR 与导航通信契约的适配边界
+# 导航通信契约
 
 ## 结论
 
-`src/navigation/ros2_libxr` 已改为本工程契约的主机侧适配实现：ROS 接口、LibXR topic 注册和 payload 布局均按本工程契约组织。当前为通信协议 revision 3，`SentryInfoOffline` 已移除视觉目标字段并缩短为 16 B。是否能与实车互通仍取决于下位机是否实现完全相同的 XR topic、domain、payload 和版本；`/cmd_vel` remap 单独不能解决字节布局或数据语义。
+导航工程只保留 ROS2 topic 和 payload 契约。LibXR topic 注册、USB CDC 收发和下位机反馈发布由 `PLDX_Sentry_Vision` 负责。当前为通信协议 revision 3，`SentryInfoOffline` 已移除视觉目标字段并缩短为 16 B。
 
 当前节点使用：
 
@@ -27,7 +27,7 @@
 
 ## 正确适配方式
 
-适配应在 QDU-VRobot/ROS2_LIBXR 的 fork（或一个新的本地 ROS2 包）中完成，保持上游子模块可复现。主机侧需要：
+视觉侧适配需要保持以下约束：
 
 1. 当前注册表使用 `nav_data`、`behavior_data`、`team_info`、`game_info`、`online_info`、`offline_info`、`radar_info`。这些名称是本工程适配约定，仍必须与固件确认的 LibXR domain 和版本逐项核对。
 2. 使用独立的 wire header 定义上述七个 payload，固定 `#pragma pack(1)`、小端序、IEEE-754 float、`bool` 的单字节表示，并加入 `sizeof`、`offsetof`、`std::is_trivially_copyable` 的静态断言或测试。
@@ -38,7 +38,7 @@
 
 ## 当前仓库状态
 
-- `build.bash` 默认构建 `ros2_libxr`，不保留旧通信节点的排除或回退路径。
-- `ros2_libxr` 子模块已修改为本工程主机侧适配实现；未获得下位机 XR topic/payload 定义前，仍不能宣称已完成实车适配。
+- 导航工程不构建或启动 USB 通信节点。
+- 视觉工程只创建一个 `LinuxUART`，并注册完整导航 payload topic。
 
 完成适配的验收顺序应为：payload 布局测试 -> LibXR 主机/固件回环 -> ROS topic 映射测试 -> 串口实测；每一步都应检查 topic 名、payload 长度和 CRC/传输错误。
