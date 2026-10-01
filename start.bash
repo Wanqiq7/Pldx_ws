@@ -5,18 +5,9 @@ WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 
-PLDX_VISION_WS="${PLDX_VISION_WS:-}"
-if [[ -n "${PLDX_VISION_WS}" ]]; then
-  PLDX_VISION_SETUP="${PLDX_VISION_WS%/}/install/setup.bash"
-  if [[ -f "${PLDX_VISION_SETUP}" ]]; then
-    source "${PLDX_VISION_SETUP}"
-  else
-    echo "[start] Vision workspace not found, continuing without it: ${PLDX_VISION_SETUP}" >&2
-  fi
-fi
 if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
   echo "Navigation workspace is not built: ${WORKSPACE_DIR}/install/setup.bash" >&2
-  echo "Run PLDX_VISION_WS=/path/to/vision_ws ./build.bash first." >&2
+  echo "Run ./build.bash first." >&2
   exit 1
 fi
 source "${WORKSPACE_DIR}/install/setup.bash"

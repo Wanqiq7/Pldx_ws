@@ -4,21 +4,9 @@ set -eo pipefail
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 
-# TargetObservation is owned by the vision workspace.  Source it explicitly
-# when it is not already present in the ROS environment.
-PLDX_VISION_WS="${PLDX_VISION_WS:-}"
-if [[ -n "${PLDX_VISION_WS}" ]]; then
-	PLDX_VISION_SETUP="${PLDX_VISION_WS%/}/install/setup.bash"
-	if [[ ! -f "${PLDX_VISION_SETUP}" ]]; then
-		echo "PLDX_VISION_WS does not contain install/setup.bash: ${PLDX_VISION_WS}" >&2
-		exit 1
-	fi
-	source "${PLDX_VISION_SETUP}"
-fi
-if ! ros2 pkg prefix pldx_vision_interfaces >/dev/null 2>&1; then
-	echo "pldx_vision_interfaces is unavailable. Set PLDX_VISION_WS to a built vision workspace." >&2
-	exit 1
-fi
+# pldx_vision_interfaces (vision <-> navigation messages) lives in
+# src/interfaces and is built first in Stage 1, so no external overlay is
+# needed.  The vision project consumes it from this workspace's install/.
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ros2_libxr_package_xml="${workspace_dir}/src/navigation/ros2_libxr/src/ros2_libxr/package.xml"
@@ -107,6 +95,7 @@ cmake_args=(
 )
 
 serial_packages=(
+  pldx_vision_interfaces
   ros_interfaces
   livox_ros_driver2
   rog_map
