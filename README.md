@@ -62,7 +62,7 @@
 - **MINCO 双模式规划**：`PRIORMAP` 利用 Nav2 先验地图全局引导；`EXPLORATION` 直接在 ROGMap 有效边界内搜索。
 - **SE(2) MPC**：状态 `[x, y, yaw]`，控制 `[vx, vy, omega]`，qpOASES 求解凝聚 QP，输出世界系速度。
 - **比赛行为树**：BehaviorTree.CPP XML 定义战术、导航、姿态、资源、云台和恢复策略。
-- **裁判 / 底盘通信**：默认使用 `ros2_libxr` 桥接，按工程协议契约适配 XR topic 与 payload。
+- **裁判 / 底盘通信**：由 `PLDX_Sentry_Vision` 独占 USB CDC；本工程只发布和订阅 ROS2 topic。
 
 ## 🧩 功能模块
 
@@ -77,7 +77,6 @@
 | `minco_controller`                 | Nav2 控制器插件：SE(2) MPC 跟踪          | qpOASES、延迟/杆臂补偿                          |
 | `navi2`                            | Nav2 bringup、先验地图、参数与 RViz      | Navigation2、STVL                               |
 | `bt_manager`                       | 比赛决策中枢                             | BehaviorTree.CPP v3、共享 blackboard            |
-| `ros2_libxr`                       | 裁判系统 / 底盘通信桥                    | LibXR、SharedTopic                              |
 | `dbscan_cluster`                   | 实验性点云聚类（默认未启用）             | DBSCAN、Kalman 跟踪                             |
 | `pcd2pgm` / `pcd2esdf` / `pcd2ele` | 地图工具                                 | PCD → PGM / ESDF / 高程                        |
 
