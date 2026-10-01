@@ -25,7 +25,7 @@
 |---|---|
 | ROS 话题 | `/sentry/offline_info` |
 | 类型 | `ros_interfaces/msg/SentryInfoOffline` |
-| 发布者 | `ros2_libxr`，从 MCU/LibXR 接收后发布 |
+| 发布者 | `PLDX_Sentry_Vision`，从 MCU/LibXR 接收后发布 |
 | 直接消费者 | `decision/bt_manager` |
 | MCU 状态字段 | `yaw_camerainit_to_gimbal`、升降、变形、电容、隧道航向、底盘 IMU yaw |
 
@@ -43,7 +43,7 @@
 证据：[ros_interface.cpp](/home/wanqiq/桌面/navi_minco_bit_jazzy/src/decision/bt_manager/src/ros_interface.cpp:323)、
 [tf_utils.cpp](/home/wanqiq/桌面/navi_minco_bit_jazzy/src/decision/bt_manager/src/utils/tf_utils.cpp:116)。
 
-`/sentry/offline_info` 的发布者是导航自己的 `ros2_libxr` 节点：
+`/sentry/offline_info` 的发布者是视觉工程的 LibXR 通信节点：
 它们从 STM32/LibXR 的 `SentryInfoOffline` payload 读取字段后再发布 ROS 话题，源码并未证明
 这个 payload 一定由当前 `PLDX_Sentry_Vision` ROS 进程提供。因此这里是“当前 BT 使用的视觉
 相关数据边界”，不是两个工程已经建立的直接 ROS 链路。旧通信映射见

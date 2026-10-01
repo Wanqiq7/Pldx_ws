@@ -2,7 +2,9 @@
 set -eo pipefail
 
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
+[[ -f "${ROS_SETUP}" ]] || { echo "ROS setup not found: ${ROS_SETUP}" >&2; exit 1; }
+source "${ROS_SETUP}"
 
 # pldx_vision_interfaces (vision <-> navigation messages) lives in
 # src/interfaces and is built first in Stage 1, so no external overlay is

@@ -3,7 +3,9 @@ set -eo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
-source "/opt/ros/${ROS_DISTRO}/setup.bash"
+ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
+[[ -f "${ROS_SETUP}" ]] || { echo "ROS setup not found: ${ROS_SETUP}" >&2; exit 1; }
+source "${ROS_SETUP}"
 
 if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
   echo "Navigation workspace is not built: ${WORKSPACE_DIR}/install/setup.bash" >&2
@@ -30,7 +32,7 @@ run_terminal() {
   local title="$1"
   shift
   gnome-terminal --title="${title}" -- bash -lc \
-    "cd '${WORKSPACE_DIR}'; source /opt/ros/${ROS_DISTRO}/setup.bash; source '${WORKSPACE_DIR}/install/setup.bash'; $*; exec bash"
+    "cd '${WORKSPACE_DIR}'; source '${ROS_SETUP}'; source '${WORKSPACE_DIR}/install/setup.bash'; $*; exec bash"
 }
 
 wait_for_topic_message() {

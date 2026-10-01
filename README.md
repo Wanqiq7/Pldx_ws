@@ -141,7 +141,7 @@ rosdep install --from-paths src --ignore-src -r -y
 | [small_gicp](https://github.com/koide3/small_gicp#installation)              | GICP 重定位，安装 C++ 版本                          |
 | [Sophus](https://github.com/strasdat/Sophus#how-to-build-sophus-from-source) | 李群库，安装 C++ 版本                               |
 | `src/interfaces/pldx_vision_interfaces`                                      | 视觉 ↔ 导航消息，随本仓库构建                      |
-| `src/navigation/ros2_libxr`                                                  | 内置的 QDU-VRobot ROS2_LIBXR 源码                  |
+| `PLDX_Sentry_Vision/io/gimbal`                                               | 视觉侧 LibXR USB CDC 通信实现                      |
 
 Livox-SDK2 典型安装：
 
@@ -200,7 +200,7 @@ source install/setup.bash
 | `gicp_relocalization.launch.py`                 | GICP 重定位                  | `ros2 launch icp_relocalization gicp_relocalization.launch.py`        |
 | `navigation2.launch.py`                         | Nav2 + ROGMap + MINCO + MPC  | `ros2 launch navi2 navigation2.launch.py`                             |
 | `bt_manager.launch.py`                          | 比赛决策                     | `ros2 launch bt_manager bt_manager.launch.py`                         |
-| `ros2_libxr_node`                               | 裁判 / 底盘通信              | `ros2 run ros2_libxr ros2_libxr_node`                                 |
+| `PLDX_Sentry_Vision`                          | 裁判 / 底盘 / 云台 CDC 通信   | 启动视觉工程的 ROS 2 节点                                      |
 | `start.bash`                                    | 实车一键启动                 | `bash start.bash`                                                     |
 | `simulation.launch.py`                          | Gazebo 仿真                  | `ros2 launch rmu_gazebo_simulator simulation.launch.py`               |
 
@@ -213,7 +213,7 @@ ros2 launch navi2 navigation2.launch.py
 ros2 launch bt_manager bt_manager.launch.py
 ```
 
-当前 MINCO 输出为 `/cmd_vel_mpc`。启用 `ros2_libxr` 时，通信节点直接订阅该话题并发送到底盘；如需修改输入话题，需要同步修改 `ros2_libxr` 节点源码和相关配置。
+当前 MINCO 输出为 `/cmd_vel_mpc`。视觉工程的 `Subscribe2Nav` 订阅该话题并通过唯一的 USB CDC owner 发送 `nav_data` 到下位机。
 
 ### 一键实车启动
 
@@ -223,14 +223,13 @@ bash start.bash
 
 脚本依次启动：
 
-1. `ros2_libxr` 通信节点（`ROS2_LIBXR_ENABLE=0` 时跳过）
-2. PTP 时间同步
-3. 双雷达 + Point-LIO component container
-4. GICP 重定位
-5. Nav2 + ROGMap + MincoPlanner + MincoMpcController
-6. bt_manager
+1. PTP 时间同步
+2. 单雷达 + Point-LIO component container
+3. GICP 重定位
+4. Nav2 + ROGMap + MincoPlanner + MincoMpcController
+5. bt_manager
 
-`start.bash` 默认启用 XR 桥（`ROS2_LIBXR_ENABLE=1`）。如需使用另一个已安装且兼容的 ROS2_LIBXR 工作区，可设置 `ROS2_LIBXR_WS`。
+`start.bash` 只启动导航节点；USB CDC 通信由 `PLDX_Sentry_Vision` 独占。不要在导航工作区再启动第二个 CDC owner。
 
 ### 先验地图
 
@@ -483,7 +482,7 @@ flowchart LR
 
   subgraph Decision[决策与执行]
     BT[BehaviorTree.CPP]
-    COM[ros2_libxr]
+    COM[PLDX_Sentry_Vision]
     MCU[底盘 MCU]
     BT --> N2
     BT <--> COM
@@ -505,7 +504,7 @@ flowchart LR
 | GICP                | TF`map → camera_init`    | Nav2 / 规划                           | 先验地图对齐          |
 | ROGMap              | 进程内`MapQueryInterface` | MincoPlanner                          | 占据、投影、ESDF 查询 |
 | MincoPlanner        | `/opt_path`               | MincoMpcController                    | 优化轨迹前馈          |
-| MincoMpcController  | `/cmd_vel_mpc`            | ros2_libxr / 底盘                     | 世界系速度            |
+| MincoMpcController  | `/cmd_vel_mpc`            | PLDX_Sentry_Vision / 底盘              | 世界系速度            |
 | bt_manager          | Nav2 action / blackboard  | Nav2、通信                            | 比赛策略              |
 
 ## 🏗 软件架构
@@ -538,7 +537,7 @@ flowchart TB
 
   subgraph DecisionLayer[决策层]
     BTM[bt_manager]
-    XR[ros2_libxr]
+    XR[PLDX_Sentry_Vision]
     BTM <--> XR
     BTM --> BTN
   end
@@ -581,7 +580,6 @@ navi_minco_bit_jazzy/
 │   ├── decision/
 │   │   └── bt_manager/                 # 行为树、比赛策略、blackboard
 │   ├── navigation/
-│   │   ├── ros2_libxr/                 # 内置 QDU-VRobot ROS2_LIBXR 源码
 │   │   ├── fake_vel_transform/         # base_link_fake，给 Nav2 假车头
 │   │   ├── minco_controller/           # Nav2 SE(2) MPC controller plugin
 │   │   ├── minco_planner/              # 搜索、MINCO、FSM、安全恢复
@@ -610,7 +608,7 @@ navi_minco_bit_jazzy/
 - 当前配置与 launch 包含实车 IP、雷达外参、地图路径、红蓝方小地图 TF 和赛场初始位姿，尚未抽象成通用硬件 profile。
 - `body → base_link` 的关节符号 `joint_yaw_sign`（默认 `+1`）需在实车上标定；反了只翻该参数。
 - `start.bash` 假设 GNOME 桌面和可用 sudo，不是通用服务管理器。
-- 实车使用 `ros2_libxr` 前，必须确认下位机实现了相同的 XR topic、domain、payload 布局和版本。
+- 实车启动视觉工程前，必须确认下位机实现了相同的 XR topic、domain、payload 布局和版本。
 - 修改速度、加速度、TF、外参、QoS 或恢复策略后，请依次完成静态检查、离线回放、架空轮测试、低速空场测试，再进入对抗环境。
 - 当前主分支为 `master`。提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

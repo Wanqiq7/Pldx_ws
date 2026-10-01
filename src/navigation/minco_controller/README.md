@@ -68,7 +68,7 @@ v_base = v_lidar + ω × r
 |---|---|---|---|
 | 输入 | `/opt_path` | `ros_interfaces/msg/MpcPositionCommand` | MINCO 位置、速度、朝向参考 |
 | 输入 | `/aft_mapped_to_init` | `nav_msgs/msg/Odometry` | 当前位姿、速度与角速度 |
-| 输出 | `/cmd_vel_mpc` | `geometry_msgs/msg/Twist` | 提供给 ros2_libxr / 底盘链路的控制量 |
+| 输出 | `/cmd_vel_mpc` | `geometry_msgs/msg/Twist` | 提供给视觉侧通信节点 / 底盘链路的控制量 |
 | 输出 | `/mpc_predict_path` | `nav_msgs/msg/Path` | MPC 预测轨迹可视化 |
 
 Nav2 标准接口 `setPlan()`、`computeVelocityCommands()` 和 `setSpeedLimit()` 仍由插件实现；项目主链路的高阶轨迹信息来自 `/opt_path`。
@@ -142,7 +142,7 @@ ros2 topic echo /cmd_vel_mpc --once
 - 当前电控速度跟随存在稳态误差，上游 Planner 因而强制保留热启动速度/加速度前馈。该补偿会提高参考速度，但不能替代底盘速度闭环标定；应联合对比 `ref_v*`、`cmd_v*` 与底盘反馈。
 - 模型是速度层 SE(2) 运动学模型，未显式描述轮胎侧滑、电机/底盘执行延迟变化和速度闭环动态；高加速度、坡面或碰撞扰动下模型误差会增大。
 - `/opt_path` 与 odom 使用不同 QoS 语义：轨迹为系统默认 QoS，odom 为 best-effort latest-state。诊断“无控制输出”时必须分别检查两条订阅是否匹配。
-- 预测轨迹用于诊断，不代表底盘真实执行路径；实际闭环效果需结合 odom、ros2_libxr 诊断和下位机反馈判断。
+- 预测轨迹用于诊断，不代表底盘真实执行路径；实际闭环效果需结合 odom、视觉侧通信诊断和下位机反馈判断。
 
 ## 🛠️ 常见问题
 

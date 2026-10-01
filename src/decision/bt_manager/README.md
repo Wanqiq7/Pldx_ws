@@ -33,13 +33,13 @@ flowchart TD
 
 ### 流程概述
 
-ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写入共享 blackboard。主循环以 10 Hz tick 多棵行为树；每棵树按 XML 中当前未注释节点和响应式控制节点的顺序评估，写回战术模式、导航目标、姿态、资源或云台指令。导航目标交给 Nav2，姿态/资源等指令经 ros2_libxr 发送到底盘和裁判链路。
+ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写入共享 blackboard。主循环以 10 Hz tick 多棵行为树；每棵树按 XML 中当前未注释节点和响应式控制节点的顺序评估，写回战术模式、导航目标、姿态、资源或云台指令。导航目标交给 Nav2，姿态/资源等指令经 ROS topic 交给视觉工程，再由唯一的 USB CDC owner 发送到底盘和裁判链路。
 
 ## 🧪 技术方向
 
 - 行为树 XML 是策略主入口，C++ 插件实现 condition/action/decorator，blackboard 是跨子树状态契约。
 - `ReactiveFallback` 的节点顺序即优先级；`ReactiveSequence` 中任一 condition 失败会阻断后续 action。
-- 裁判协议、blackboard 枚举、XML 端口和 ros2_libxr 打包共同组成跨模块接口，不能只修改其中一处。
+- 裁判协议、blackboard 枚举、XML 端口和视觉侧 LibXR payload 共同组成跨模块接口，不能只修改其中一处。
 - 行为树负责“选择行为”，不长期替代 Planner/Controller 的连续闭环。
 
 ## ⚡ 性能方向
