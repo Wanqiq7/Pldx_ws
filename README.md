@@ -141,7 +141,7 @@ rosdep install --from-paths src --ignore-src -r -y
 | [Livox-SDK2](https://github.com/Livox-SDK/Livox-SDK2)                        | 雷达驱动底层 SDK，需安装到系统路径                  |
 | [small_gicp](https://github.com/koide3/small_gicp#installation)              | GICP 重定位，安装 C++ 版本                          |
 | [Sophus](https://github.com/strasdat/Sophus#how-to-build-sophus-from-source) | 李群库，安装 C++ 版本                               |
-| `pldx_vision_interfaces`                                                     | 视觉 overlay，`bt_manager` 消费 `TargetObservation` |
+| `src/interfaces/pldx_vision_interfaces`                                      | 视觉 ↔ 导航消息，随本仓库构建                      |
 | `src/navigation/ros2_libxr`                                                  | 内置的 QDU-VRobot ROS2_LIBXR 源码                  |
 
 Livox-SDK2 典型安装：
@@ -163,12 +163,9 @@ git clone https://github.com/Wanqiq7/Pldx_ws.git navi_minco_bit_jazzy
 cd navi_minco_bit_jazzy
 git checkout master
 
-# 2. 指定视觉 overlay（提供 pldx_vision_interfaces）
+# 2. 构建（pldx_vision_interfaces 在 src/interfaces 中，会最先构建）
 export ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
-export PLDX_VISION_WS="/path/to/vision_ws"
-
-# 3. 构建
 ./build.bash
 source install/setup.bash
 ```
@@ -179,7 +176,7 @@ source install/setup.bash
 MEM_LIMIT_GB=24 MEM_PER_WORKER_GB=2 ./build.bash
 ```
 
-`bt_manager` 直接消费 `vision/target_observation`（`pldx_vision_interfaces/msg/TargetObservation`）。视觉 overlay 在构建和运行时都需要，部署时还需提供带时间戳的 `map ← vision_gimbal` TF。MCU 通信必须保持 `/sentry/offline_info` 的单一发布者。
+`bt_manager` 直接消费 `vision/target_observation`（`pldx_vision_interfaces/msg/TargetObservation`）。消息定义在 `src/interfaces/pldx_vision_interfaces`；视觉工程构建时把 `PLDX_VISION_WS` 指向本仓库根目录即可使用同一份定义。部署时还需提供带时间戳的 `map ← vision_gimbal` TF。MCU 通信必须保持 `/sentry/offline_info` 的单一发布者。
 
 > [!WARNING]
 > `start.bash` 会打开多个 GNOME Terminal、启动 PTP sudo 命令，并可能向底盘发送控制数据。更适合实车桌面环境，不适合无界面服务器。上车前应架空轮组或保证机械急停可用。
