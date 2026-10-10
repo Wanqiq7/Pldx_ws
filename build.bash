@@ -8,10 +8,10 @@ source "${ROS_SETUP}"
 
 # pldx_vision_interfaces (vision <-> navigation messages) lives in
 # src/interfaces and is built first in Stage 1, so no external overlay is
-# needed.  The vision project consumes it from this workspace's install/.
+# needed.  The vision project consumes it from this workspace's install-link/.
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-colcon_path_args=()
+colcon_path_args=(--build-base "${workspace_dir}/build-link" --install-base "${workspace_dir}/install-link")
 case "${workspace_dir}" in
   *[![:ascii:]]*)
     ascii_workspace_link="/tmp/navi_minco_bit_jazzy_workspace"
@@ -21,8 +21,8 @@ case "${workspace_dir}" in
       --base-paths "${ascii_workspace_link}"
       # Keep build outputs persistent: --symlink-install makes install hooks
       # point into this directory, so a /tmp build tree breaks after cleanup.
-      --build-base "${workspace_dir}/build"
-      --install-base "${workspace_dir}/install"
+      --build-base "${workspace_dir}/build-link"
+      --install-base "${workspace_dir}/install-link"
     )
     ;;
   *)
