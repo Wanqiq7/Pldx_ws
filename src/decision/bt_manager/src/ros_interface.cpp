@@ -408,15 +408,23 @@ void ros_interface::visionTargetCallback(
   input_pose.position = msg->position;
   input_pose.orientation.w = 1.0;
   geometry_msgs::msg::Pose target_pose;
-  const bool transformed =
-    tf_utils && tf_utils->transformPoseToMap(input_pose, target_pose, msg->header.frame_id);
+  const auto target_frame = this->get_parameter("vision_target_map_frame").as_string();
+  const auto tf_timeout_ms = this->get_parameter("vision_target_tf_timeout_ms").as_int();
+  const bool transformed = tf_utils && !target_frame.empty() &&
+                           tf_utils->transformPoseToMap(input_pose,
+                             target_pose,
+                             msg->header.frame_id,
+                             stamp,
+                             rclcpp::Duration::from_seconds(std::max<int64_t>(0, tf_timeout_ms) / 1000.0),
+                             target_frame);
   if (!transformed) {
     clearVisionTarget();
     RCLCPP_WARN_THROTTLE(this->get_logger(),
       *this->get_clock(),
       2000,
-      "Vision target TF unavailable for %s -> map (latest)",
-      msg->header.frame_id.c_str());
+      "Vision target TF unavailable for %s -> %s at capture time",
+      msg->header.frame_id.c_str(),
+      target_frame.c_str());
     return;
   }
 
