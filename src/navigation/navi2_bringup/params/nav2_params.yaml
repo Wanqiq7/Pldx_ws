@@ -1,68 +1,124 @@
+# Nav2 基础参数配置
+# 该文件用于定义 AMCL、行为树导航、局部/全局代价地图、地图服务、规划器、恢复行为等核心模块的参数。
+# 参数的设置会直接影响机器人定位、路径规划、避障和恢复能力，因此建议在修改前明确每个参数的设计意图。
+
 amcl:
   ros__parameters:
+    # 是否使用 ROS 时钟，仿真环境通常开启，真实机器人通常与 /clock 无关时可保持 True 或按实际情况控制。
     use_sim_time: True
+    # 里程计运动噪声参数，用于建模旋转/平移对机器人的不确定性影响，数值越大代表更宽松的异常偏差容忍度。
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
     alpha4: 0.2
     alpha5: 0.2
+    # 机器人底盘参考坐标系，AMCL 用于将激光测量与底盘姿态关联。
     base_frame_id: "base_footprint"
+    # 光束跳过距离：当激光测量距离长于该阈值时，跳过该光束参与更新以降低异常点影响。
     beam_skip_distance: 0.5
+    # 激光束跳过误差阈值，若测量值偏离预期过大，则视为异常光束。
     beam_skip_error_threshold: 0.9
+    # 激光束跳过阈值，控制跳过的异常光束比例。
     beam_skip_threshold: 0.3
+    # 是否启用光束跳过机制，用于抵消传感器异常观测。
     do_beamskip: false
+    # 全局地图坐标系，通常是 map。
     global_frame_id: "map"
+    # 短距离观测的似然参数，影响近距离匹配时的权重。
     lambda_short: 0.1
+    # 激光似然函数中最大距离参数，超出该距离的观测将被截断。
     laser_likelihood_max_dist: 2.0
+    # 激光雷达的最大有效测距，超过此值的点会忽略。
     laser_max_range: 100.0
+    # 激光雷达的最小有效测距，低于此值的点通常忽略，-1.0 表示不启用下限。
     laser_min_range: -1.0
+    # 概率模型类型，likelihood_field 适用于大多数 2D 激光定位场景。
     laser_model_type: "likelihood_field"
+    # 每次更新时使用的最大光束数量，越大定位更稳定但计算量更高。
     max_beams: 60
+    # 粒子滤波器的最大粒子数，粒子越多定位更稳但计算耗时更高。
     max_particles: 2000
+    # 粒子滤波器的最小粒子数，用于避免在低置信度状态下粒子数过少。
     min_particles: 500
+    # 里程计坐标系，用于将里程计状态转换到地图中的定位估计。
     odom_frame_id: "odom"
+    # 粒子滤波器误差阈值，影响重采样触发条件。
     pf_err: 0.05
+    # 置信度阈值，决定粒子分布是否足够集中。
     pf_z: 0.99
+    # 快速恢复滤波器参数，通常用于处理定位失效时的低频重置策略。
     recovery_alpha_fast: 0.0
+    # 慢速恢复滤波器参数，适用于长期偏差累积的恢复。
     recovery_alpha_slow: 0.0
+    # 重新采样间隔，控制滤波器更新频率。
     resample_interval: 1
+    # 里程计运动模型类型，差分驱动机器人通常使用此模型。
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
+    # 保存位姿的周期，单位为秒；越低保存越频繁。
     save_pose_rate: 0.5
+    # 激光命中噪声参数，影响命中点对定位的贡献。
     sigma_hit: 0.2
+    # 是否广播 TF，允许 AMCL 将 map->odom 等变换发布到系统。
     tf_broadcast: true
+    # TF 变换容忍时间，超过时间未更新则视为超时。
     transform_tolerance: 1.0
+    # 角度更新最小增量，控制更新频率与稳定性平衡。
     update_min_a: 0.2
+    # 距离更新最小增量，控制平移更新步长。
     update_min_d: 0.25
+    # 命中概率密度参数，反映真实观测命中地图的权重。
     z_hit: 0.5
+    # 最大概率参数，表示不命中区域的惩罚权重。
     z_max: 0.05
+    # 随机噪声概率，模拟未建模的随机观测。
     z_rand: 0.5
+    # 短距离观测概率，控制近距离激光命中带来的权重。
     z_short: 0.05
+    # 订阅的激光话题，AMCL 需要从该话题接收扫描数据。
     scan_topic: scan
 
 bt_navigator:
   ros__parameters:
+    # 是否使用仿真时钟，通常和 ROS 2 /clock 同步。
     use_sim_time: True
+    # 全局坐标系名称，行为树中的目标定位最终映射到该坐标系。
     global_frame: map
+    # 机器人底盘基坐标系，影响导航时的 TF 计算。
     robot_base_frame: "aft_mapped"
+    # 里程计输入话题，导航过程用它来估计当前速度和位姿。
     odom_topic: /odom
+    # 行为树循环周期，单位为毫秒，影响任务状态更新频率。
     bt_loop_duration: 10
+    # 默认行为树服务超时时间，单位为秒。
     default_server_timeout: 20
+    # 等待服务响应的超时，单位为毫秒。
     wait_for_service_timeout: 1000
-    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
-    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
-    # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
-    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
+    # 默认行为树 XML 文件可以使用内置导航模板，也可在启动文件中通过 remap 覆盖。
+    # 例如：navigate_to_pose_w_replanning_and_recovery.xml
+    # 例如：navigate_through_poses_w_replanning_and_recovery.xml
+    # 这两项可以在这里配置，或者由父 launch 文件重写 YAML 参数。
     plugin_lib_names:
+      # 计算到目标点路径的行为节点
       - nav2_compute_path_to_pose_action_bt_node
+      # 计算穿过多个目标点路径的行为节点
       - nav2_compute_path_through_poses_action_bt_node
+      # 路径平滑行为节点
       - nav2_smooth_path_action_bt_node
+      # 跟随路径执行节点
       - nav2_follow_path_action_bt_node
+      # 原地旋转行为节点
       - nav2_spin_action_bt_node
+      # 等待行为节点
       - nav2_wait_action_bt_node
+      # 辅助遥操作行为节点
       - nav2_assisted_teleop_action_bt_node
+      # 后退行为节点
       - nav2_back_up_action_bt_node
+      # 向前/向航向前进节点
       - nav2_drive_on_heading_bt_node
+      # 清空代价地图节点
       - nav2_clear_costmap_service_bt_node
+      # 判断是否卡住的条件节点
       - nav2_is_stuck_condition_bt_node
       - nav2_goal_reached_condition_bt_node
       - nav2_goal_updated_condition_bt_node
@@ -103,72 +159,99 @@ bt_navigator:
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
+    # 穿越多个目标点导航时使用的仿真时钟设置。
     use_sim_time: True
 
 bt_navigator_navigate_to_pose_rclcpp_node:
   ros__parameters:
+    # 导航到单个目标点时的仿真时钟设置。
     use_sim_time: True
 
 controller_server:
   ros__parameters:
-    robot_base_frame:""
+    # 机器人底盘基坐标系，通常需要与实际 TF 一致，空字符串表示未显式指定。
+    robot_base_frame: ""
+    # 是否使用 ROS 时间。
     use_sim_time: True
+    # 控制器执行频率，单位 Hz，越高则更及时响应但计算更重。
     controller_frequency: 20.0
+    # x 方向速度低于该阈值视为停止，避免抖动引发错误状态判定。
     min_x_velocity_threshold: 0.001
+    # y 方向最小速度阈值；二维差分机器人通常 y 方向为 0。
     min_y_velocity_threshold: 0.5
+    # 角速度最小阈值，用于判断是否已达到目标角度。
     min_theta_velocity_threshold: 0.001
+    # 允许控制器在一定误差下继续执行的容忍时间，过小会导致容易重试。
     failure_tolerance: 0.3
+    # 进度检查器插件类型。
     progress_checker_plugin: "progress_checker"
+    # 目标检查器插件列表，可配置 general_goal_checker 或 precise_goal_checker。
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
+    # 当前启用的局部规划器列表。
     controller_plugins: ["FollowPath"]
 
-    # Progress checker parameters
+    # 进度检查器参数，用于判断机器人是否真的在朝目标前进。
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
+      # 在该半径内必须发生运动，否则认为机器人停滞。
       required_movement_radius: 0.5
+      # 在此时间内允许无显著移动，超过则判定为前进失败。
       movement_time_allowance: 10.0
-    # Goal checker parameters
-    #precise_goal_checker:
-    #  plugin: "nav2_controller::SimpleGoalChecker"
-    #  xy_goal_tolerance: 0.25
-    #  yaw_goal_tolerance: 0.25
-    #  stateful: True
+    # 目标检查器参数。
+    # precise_goal_checker:
+    #   plugin: "nav2_controller::SimpleGoalChecker"
+    #   xy_goal_tolerance: 0.25
+    #   yaw_goal_tolerance: 0.25
+    #   stateful: True
     general_goal_checker:
+      # 是否保留状态，便于持续判断是否已接近目标。
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
+      # XY 平面目标容差，单位米。
       xy_goal_tolerance: 0.25
+      # Yaw 角度容差，单位弧度。
       yaw_goal_tolerance: 0.25
-    # DWB parameters
+    # DWB 局部规划器参数，负责生成平滑局部轨迹。
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: True
+      # 最小线速度，通常为正值起点，机器人可后退需由 overall 设置处理。
       min_vel_x: 0.0
       min_vel_y: 0.0
+      # 最大线速度和角速度限制。
       max_vel_x: 0.26
       max_vel_y: 0.0
       max_vel_theta: 1.0
+      # 平面速度上下限与角速度下限。
       min_speed_xy: 0.0
       max_speed_xy: 0.26
       min_speed_theta: 0.0
-      # Add high threshold velocity for turtlebot 3 issue.
-      # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
+      # 加速度限制，控制机器人加减速平滑性。
       acc_lim_x: 2.5
       acc_lim_y: 0.0
       acc_lim_theta: 3.2
       decel_lim_x: -2.5
       decel_lim_y: 0.0
       decel_lim_theta: -3.2
+      # 速度采样点数，越多越细致但计算更大。
       vx_samples: 20
       vy_samples: 5
       vtheta_samples: 20
+      # 轨迹模拟时间，单位秒。
       sim_time: 1.7
+      # 轨迹分辨率，用于近似连续轨迹。
       linear_granularity: 0.05
       angular_granularity: 0.025
+      # 轨迹转换容差，影响 TF 变化容忍度。
       transform_tolerance: 0.2
+      # 目标附近的 XY tolerance。
       xy_goal_tolerance: 0.25
+      # 速度接近 0 的判定阈值。
       trans_stopped_velocity: 0.25
+      # 若轨迹已经明显满足条件则无需进一步评估。
       short_circuit_trajectory_evaluation: True
       stateful: True
+      # 评估轨迹质量的 critic 列表，决定避障、对齐、旋转行为。
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
       BaseObstacle.scale: 0.02
       PathAlign.scale: 32.0
@@ -184,20 +267,32 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
+      # 局部代价地图更新周期，单位 Hz。
       update_frequency: 5.0
+      # 局部代价地图发布周期，单位 Hz。
       publish_frequency: 2.0
+      # 局部地图参考坐标系，通常与 odom 一致。
       global_frame: odom
+      # 机器人基座标系。
       robot_base_frame: base_link
+      # 使用 ROS 时钟。
       use_sim_time: True
+      # 是否使用滚动窗口，适合局部导航场景。
       rolling_window: true
+      # 局部地图尺寸，单位米。
       width: 3
       height: 3
+      # 网格分辨率，越小越精细但越耗资源。
       resolution: 0.05
+      # 机器人半径，影响障碍膨胀和碰撞判定。
       robot_radius: 0.22
+      # 启用的代价地图层，包含 voxel_layer 和 inflation_layer。
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
+        # 膨胀代价因子，影响障碍区域膨胀强度。
         cost_scaling_factor: 3.0
+        # 障碍膨胀半径，单位米。
         inflation_radius: 0.55
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
@@ -227,14 +322,22 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
+      # 全局代价地图更新周期，单位 Hz。
       update_frequency: 1.0
+      # 全局代价地图发布周期。
       publish_frequency: 1.0
+      # 全局地图坐标系，通常为 map。
       global_frame: map
+      # 机器人基座标系。
       robot_base_frame: base_link
       use_sim_time: True
+      # 机器人半径，用于构建障碍和规划的安全边界。
       robot_radius: 0.22
+      # 栅格分辨率.
       resolution: 0.05
+      # 是否保留未知区域，可用于规划中考虑未知空间。
       track_unknown_space: true
+      # 配置静态层、障碍层和膨胀层。
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -261,28 +364,39 @@ global_costmap:
 
 map_server:
   ros__parameters:
+    # 是否使用仿真时钟。
     use_sim_time: True
+    # 地图 YAML 文件路径，通常由 launch 文件注入，默认为空时需在运行前指定。
     # Overridden in launch by the "map" launch configuration or provided default value.
     # To use in yaml, remove the default "map" value in the tb3_simulation_launch.py file & provide full path to map below.
     yaml_filename: ""
 
 map_saver:
   ros__parameters:
+    # 是否使用仿真时钟。
     use_sim_time: True
+    # 保存地图最大等待时间，单位秒。
     save_map_timeout: 5.0
+    # 自由栅格阈值，用于判定地图空白区域。
     free_thresh_default: 0.25
+    # 占用栅格阈值，用于判定障碍区域。
     occupied_thresh_default: 0.65
     map_subscribe_transient_local: True
 
 planner_server:
   ros__parameters:
+    # 规划器更新期望频率，单位 Hz，越高越密集。
     expected_planner_frequency: 20.0
     use_sim_time: True
+    # 当前启用的规划器插件，GridBased 采用 NavFn 全局路径规划。
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
+      # 路径容差，影响结束点周围的容差范围。
       tolerance: 0.5
+      # 是否使用 A* 作为搜索算法，false 时使用更通用的 NavFn 搜索。
       use_astar: false
+      # 是否允许穿越未知区域，true 表示仅规划到可知区域之外。
       allow_unknown: true
 
 smoother_server:
@@ -291,15 +405,22 @@ smoother_server:
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
+      # 路径平滑收敛容差。
       tolerance: 1.0e-10
+      # 最大迭代次数，越大可能更平滑但计算更重。
       max_its: 1000
+      # 是否执行细化/再优化。
       do_refinement: True
 
 behavior_server:
   ros__parameters:
+    # 本地代价地图的原始障碍数据主题。
     costmap_topic: local_costmap/costmap_raw
+    # 发布足迹主题，供恢复行为和状态可视化使用。
     footprint_topic: local_costmap/published_footprint
+    # 行为循环执行频率，单位 Hz。
     cycle_frequency: 10.0
+    # 启用的行为插件列表，包括旋转、倒退、前进等恢复动作。
     behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
@@ -311,41 +432,61 @@ behavior_server:
       plugin: "nav2_behaviors/Wait"
     assisted_teleop:
       plugin: "nav2_behaviors/AssistedTeleop"
+    # 行为恢复中常用的全局坐标系与机器人基坐标系。
     global_frame: odom
     robot_base_frame: base_link
+    # TF 变换允许的误差容差，单位秒或米，根据具体实现可不同。
     transform_tolerance: 0.1
     use_sim_time: true
+    # 规划前预演时间，用于模拟恢复动作的轨迹。
     simulate_ahead_time: 2.0
+    # 旋转运动最大速度与最小速度限制。
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
 
 robot_state_publisher:
   ros__parameters:
+    # 将机器人 TF 状态发布到 ROS 中，供导航和可视化使用。
     use_sim_time: True
 
 waypoint_follower:
   ros__parameters:
+    # 是否使用仿真时钟。
     use_sim_time: True
+    # 路径点跟随的循环频率，单位 Hz。
     loop_rate: 20
+    # 若路径点失败时是否停止继续执行，false 表示继续尝试下一点。
     stop_on_failure: false
+    # 路径点执行器插件类型，wait_at_waypoint 会在每个 waypoint 停留一段时间。
     waypoint_task_executor_plugin: "wait_at_waypoint"
     wait_at_waypoint:
       plugin: "nav2_waypoint_follower::WaitAtWaypoint"
       enabled: True
+      # 每个 waypoint 停留时长，单位毫秒。
       waypoint_pause_duration: 200
 
 velocity_smoother:
   ros__parameters:
+    # 使用 ROS 时钟。
     use_sim_time: True
+    # 平滑器更新频率，单位 Hz。
     smoothing_frequency: 20.0
+    # 是否对 velocity 进行缩放，通常关闭时使用原始控制量。
     scale_velocities: False
+    # 反馈模式，OPEN_LOOP 表示无闭环速度反馈，简化控制实现。
     feedback: "OPEN_LOOP"
+    # 最大和最小速度限制，[vx, vy, omega] 三维速度约束。
     max_velocity: [0.26, 0.0, 1.0]
     min_velocity: [-0.26, 0.0, -1.0]
+    # 最大加速度/减速度约束，控制平滑过渡和制动特性。
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
+    # 里程计话题名称，供速度平滑器估计底盘状态。
     odom_topic: "odom"
+    # 里程计状态有效时长，超时后认为状态失效。
     odom_duration: 0.1
+    # 速度死区，低于该值视作 0 避免抖动。
     deadband_velocity: [0.0, 0.0, 0.0]
+    # 速度超时阈值，单位秒，超过后丢弃速度命令。
     velocity_timeout: 1.0

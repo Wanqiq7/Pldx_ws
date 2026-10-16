@@ -17,14 +17,26 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
   robot_base_frame_ = declare_parameter<std::string>("robot_base_frame", "base_link");
   fake_robot_base_frame_ = declare_parameter<std::string>("fake_robot_base_frame", "base_link_fake");
   joint_yaw_sign_ = declare_parameter<double>("joint_yaw_sign", 1.0);
-  body_to_base_x_ = declare_parameter<double>("body_to_base_x", 0.0);
-  body_to_base_y_ = declare_parameter<double>("body_to_base_y", 0.0);
-  body_to_base_z_ = declare_parameter<double>("body_to_base_z", -0.5);
+  const double body_to_base_x = declare_parameter<double>("body_to_base_x", 0.0);
+  const double body_to_base_y = declare_parameter<double>("body_to_base_y", 0.20);
+  const double body_to_base_z = declare_parameter<double>("body_to_base_z", 0.0);
+  gimbal_frame_ = declare_parameter<std::string>("gimbal_frame", "vision_gimbal");
+  base_to_gimbal_z_ = declare_parameter<double>("base_to_gimbal_z", 0.5);
   const int period_ms = declare_parameter<int>("publish_period_ms", 10);
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  static_tf_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(*this);
+  geometry_msgs::msg::TransformStamped body_to_base;
+  body_to_base.header.stamp = now();
+  body_to_base.header.frame_id = body_frame_;
+  body_to_base.child_frame_id = robot_base_frame_;
+  body_to_base.transform.translation.x = body_to_base_x;
+  body_to_base.transform.translation.y = body_to_base_y;
+  body_to_base.transform.translation.z = body_to_base_z;
+  body_to_base.transform.rotation.w = 1.0;
+  static_tf_broadcaster_->sendTransform(body_to_base);
 
   offline_sub_ = create_subscription<ros_interfaces::msg::SentryInfoOffline>("/sentry/offline_info",
     rclcpp::QoS(10),
@@ -37,32 +49,23 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
 
 void FakeVelTransform::onOfflineInfo(const ros_interfaces::msg::SentryInfoOffline::SharedPtr msg)
 {
-  latest_gimbal_yaw_deg_.store(msg->yaw_camerainit_to_gimbal, std::memory_order_relaxed);
+  if (!std::isfinite(msg->yaw_camerainit_to_gimbal)) {
+    return;
+  }
+  // The feedback angle is relative to the chassis, in degrees.
+  geometry_msgs::msg::TransformStamped gimbal;
+  gimbal.header.stamp = now();
+  gimbal.header.frame_id = robot_base_frame_;
+  gimbal.child_frame_id = gimbal_frame_;
+  gimbal.transform.translation.z = base_to_gimbal_z_;
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, joint_yaw_sign_ * msg->yaw_camerainit_to_gimbal * M_PI / 180.0);
+  gimbal.transform.rotation = tf2::toMsg(q);
+  tf_broadcaster_->sendTransform(gimbal);
 }
 
 void FakeVelTransform::publishTransforms()
 {
-  joint_yaw_sign_ = get_parameter("joint_yaw_sign").as_double();
-  body_to_base_x_ = get_parameter("body_to_base_x").as_double();
-  body_to_base_y_ = get_parameter("body_to_base_y").as_double();
-  body_to_base_z_ = get_parameter("body_to_base_z").as_double();
-
-  const double yaw_joint_rad =
-    static_cast<double>(latest_gimbal_yaw_deg_.load(std::memory_order_relaxed)) * M_PI / 180.0;
-  const double body_to_base_yaw = -joint_yaw_sign_ * yaw_joint_rad;
-
-  geometry_msgs::msg::TransformStamped body_to_base;
-  body_to_base.header.stamp = now() - rclcpp::Duration(0, 10000000);
-  body_to_base.header.frame_id = body_frame_;
-  body_to_base.child_frame_id = robot_base_frame_;
-  body_to_base.transform.translation.x = body_to_base_x_;
-  body_to_base.transform.translation.y = body_to_base_y_;
-  body_to_base.transform.translation.z = body_to_base_z_;
-  tf2::Quaternion body_to_base_q;
-  body_to_base_q.setRPY(0.0, 0.0, body_to_base_yaw);
-  body_to_base.transform.rotation = tf2::toMsg(body_to_base_q);
-  tf_broadcaster_->sendTransform(body_to_base);
-
   geometry_msgs::msg::TransformStamped body_in_odom;
   try {
     body_in_odom = tf_buffer_->lookupTransform(odom_frame_, body_frame_, tf2::TimePointZero);
@@ -70,7 +73,7 @@ void FakeVelTransform::publishTransforms()
     return;
   }
 
-  const double yaw_base = tf2::getYaw(body_in_odom.transform.rotation) + body_to_base_yaw;
+  const double yaw_base = tf2::getYaw(body_in_odom.transform.rotation);
   geometry_msgs::msg::TransformStamped fake;
   fake.header.stamp = body_in_odom.header.stamp;
   fake.header.frame_id = robot_base_frame_;

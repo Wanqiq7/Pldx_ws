@@ -16,23 +16,33 @@ source "${WORKSPACE_DIR}/install/setup.bash"
 cd "${WORKSPACE_DIR}"
 set -u
 
-# Real-vehicle single-Livox startup. Optional stages can be disabled with 0.
-PTP_ENABLE="${PTP_ENABLE:-1}"
+# Real-vehicle single-Livox startup. PTP is intentionally disabled for this
+# chain; set PTP_ENABLE=1 explicitly only when a synchronized-clock test needs it.
+PTP_ENABLE="${PTP_ENABLE:-0}"
 BT_MANAGER_ENABLE="${BT_MANAGER_ENABLE:-1}"
+VISION_ENABLE="${VISION_ENABLE:-1}"
+VISION_ROOT="${VISION_ROOT:-${WORKSPACE_DIR}/../PLDX_Sentry_Vision}"
+VISION_STARTUP_WAIT_S="${VISION_STARTUP_WAIT_S:-30}"
 # /cloud_registered_full is published only after Point-LIO IMU gravity alignment.
 POINT_LIO_CLOUD_WAIT_S="${POINT_LIO_CLOUD_WAIT_S:-40}"
 POINT_LIO_SETTLE_S="${POINT_LIO_SETTLE_S:-3}"
 
-if ! command -v gnome-terminal >/dev/null 2>&1; then
-  echo "gnome-terminal is required to start the chain in separate terminals." >&2
-  exit 1
-fi
+LOG_DIR="${LOG_DIR:-${WORKSPACE_DIR}/log/runtime-$(date +%Y%m%d_%H%M%S)}"
+mkdir -p "$LOG_DIR"
+declare -a CHILD_PIDS=()
+cleanup_children() {
+  trap - EXIT INT TERM
+  for pid in "${CHILD_PIDS[@]}"; do kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true; done
+}
+trap cleanup_children EXIT INT TERM
 
 run_terminal() {
   local title="$1"
   shift
-  gnome-terminal --title="${title}" -- bash -lc \
-    "cd '${WORKSPACE_DIR}'; source '${ROS_SETUP}'; source '${WORKSPACE_DIR}/install/setup.bash'; $*; exec bash"
+  setsid bash -lc "cd '$WORKSPACE_DIR'; source '$ROS_SETUP'; source '$WORKSPACE_DIR/install/setup.bash'; exec $*" \
+    >"$LOG_DIR/${title// /_}.log" 2>&1 &
+  CHILD_PIDS+=("$!")
+  echo "[start] $title pid=${CHILD_PIDS[-1]} log=$LOG_DIR/${title// /_}.log"
 }
 
 wait_for_topic_message() {
@@ -49,9 +59,43 @@ wait_for_topic_message() {
     echo "[start] Received ${topic}"
     return 0
   fi
-  echo "[start] Timed out waiting for ${topic} after ${timeout_s}s; starting GICP anyway" >&2
-  return 0
+  echo "[start] Timed out waiting for ${topic} after ${timeout_s}s" >&2
+  return 1
 }
+
+wait_for_node() {
+  local node="$1"
+  local timeout_s="$2"
+  local deadline=$((SECONDS + timeout_s))
+  echo "[start] Waiting up to ${timeout_s}s for ${node}"
+  while (( SECONDS < deadline )); do
+    if ros2 node list 2>/dev/null | grep -Fxq "${node}"; then
+      echo "[start] Found ${node}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[start] Timed out waiting for ${node}" >&2
+  return 1
+}
+
+# Start the only USB CDC owner before navigation begins publishing commands.
+if [[ "${VISION_ENABLE}" == "1" ]]; then
+  [[ -x "${VISION_ROOT}/build-jazzy/sentry" ]] || {
+    echo "Vision executable not found: ${VISION_ROOT}/build-jazzy/sentry" >&2
+    echo "Run PLDX_Sentry_Vision/tools/build_sentry.sh first, or set VISION_ENABLE=0." >&2
+    exit 1
+  }
+  [[ -f "${VISION_ROOT}/configs/sentry.yaml" ]] || {
+    echo "Vision config not found: ${VISION_ROOT}/configs/sentry.yaml" >&2
+    exit 1
+  }
+  run_terminal "Vision Communication" \
+    "cd '${VISION_ROOT}'; source tools/ros_env.sh; bash tools/run_sentry.sh configs/sentry.yaml"
+  wait_for_node "/nav_subscriber" "${VISION_STARTUP_WAIT_S}"
+else
+  echo "[start] Vision communication disabled (VISION_ENABLE=0)"
+fi
 
 # PTP Sync
 if [[ "${PTP_ENABLE}" == "1" ]]; then

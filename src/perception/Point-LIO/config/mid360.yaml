@@ -64,8 +64,8 @@
             gravity: [ 0.0, 0.0, -9.810 ]                   # [0.0, 9.810, 0.0] # gravity to be aligned
             gravity_init: [ 0.0, 0.0, -9.810 ]              # [0.0, 9.810, 0.0] # # preknown gravity in the first IMU body frame, use when imu_en is False or start from a non-stationary state
             extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
-            # LiDAR-to-built-in-IMU rotation. Mounting orientation relative to
-            # the gimbal IMU is published separately as body -> livox_frame.
+            # LiDAR-to-built-in-IMU extrinsics; also used by body -> livox_frame
+            # in single_livox_pointlio_intra_process.launch.py.
             extrinsic_R: [ 1.0, 0.0, 0.0,
                            0.0, 1.0, 0.0,
                            0.0, 0.0, 1.0 ]

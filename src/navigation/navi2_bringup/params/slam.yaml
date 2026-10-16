@@ -1,70 +1,130 @@
+# slam_toolbox 配置
+# 该文件用于控制激光 SLAM / 里程计回环的关键参数，主要包括扫描匹配、回环检测、位姿图优化和 TF 发布。
+# 调整这些参数会直接影响地图构建质量、定位稳定性和回环闭合效果。
+
 slam_toolbox:
   ros__parameters:
+    # 采用 Ceres 作为优化器，适合非线性最小二乘问题。
     solver_plugin: solver_plugins::CeresSolver
+    # Ceres 线性求解器类型，SPARSE_NORMAL_CHOLESKY 适用于稀疏问题。
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    # 预处理器选择，SCHUR_JACOBI 适合地图和位姿图优化场景。
     ceres_preconditioner: SCHUR_JACOBI
+    # 置信区间求解策略，LEVENBERG_MARQUARDT 常用于稳定收敛。
     ceres_trust_strategy: LEVENBERG_MARQUARDT
+    # Dogleg 类型，此处使用传统梯度投影方案。
     ceres_dogleg_type: TRADITIONAL_DOGLEG
+    # 损失函数，None 表示无鲁棒损失函数。
     ceres_loss_function: None
 
-    # ROS Parameters
+    # ROS 坐标系与话题设置
+    # 里程计坐标系，通常应该和 odom 或局部参考帧一致。
     odom_frame: camera_init
+    # 地图坐标系，SLAM 的全局参考系。
     map_frame: map
+    # 机器人基坐标系，通常是 body 或 base_link。
     base_frame: body
+    # 接收扫描数据的主题。
     scan_topic: /scan
+    # 当前模式：mapping 表示建图；localization 表示定位。
     mode: mapping # localization
+    # 扫描队列大小，影响处理延迟和缓存。
     scan_queue_size: 1
 
-    # Continuing an existing serialized pose graph is opt-in.
+    # 继续加载已有位姿图是可选行为。
     # map_file_name: /home/rm/slam_toolbox_map
     # map_start_pose: [0.0, 0.0, 0.0]
 
+    # 调试与更新频率参数
+    # 是否输出额外 debug 日志，关闭以减少日志压力。
     debug_logging: false
+    # 每次处理前删除多少个扫描，通常保持 1 以避免丢帧。
     throttle_scans: 1
+    # TF 发布周期，单位秒；0 表示永不发布 odom。
     transform_publish_period: 0.02 #if 0 never publishes odometry
+    # 地图更新间隔，单位秒，控制地图刷新频率。
     map_update_interval: 1.0
+    # 地图分辨率，单位 m/cell。
     resolution: 0.05
+    # 激光最小有效距离，低于此值会忽略，需与 pointcloud_to_laserscan 的 range_min 一致。
     min_laser_range: 0.4 # match pointcloud_to_laserscan range_min
+    # 激光最大有效距离，需与 pointcloud_to_laserscan 的 range_max 保持一致。
     max_laser_range: 10.0 # match pointcloud_to_laserscan range_max
+    # 最小更新时间间隔，0 为不强制等待。
     minimum_time_interval: 0.0
+    # TF 变换超时容差，单位秒。
     transform_timeout: 0.1
+    # TF 缓冲区长度，单位秒。
     tf_buffer_duration: 60.
+    # 程序栈大小，较大地图序列化时需要足够内存。
     stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
 
-    # General Parameters
+    # 通用参数
+    # 是否启用 scan matching 进行姿态优化。
     use_scan_matching: true
+    # 是否使用扫描重心对齐，帮助减少偏航误差。
     use_scan_barycenter: true
+    # 最小移动距离阈值，低于该值时不触发新增关键帧。
     minimum_travel_distance: 0.05
+    # 最小转角阈值，低于该值时不触发新的位姿约束。
     minimum_travel_heading: 0.05
+    # 扫描缓冲区大小。
     scan_buffer_size: 10
+    # 扫描缓冲区允许的最大扫描距离。
     scan_buffer_maximum_scan_distance: 10.0
-    link_match_minimum_response_fine: 0.1  
+    # 细粒度匹配最小响应阈值。
+    link_match_minimum_response_fine: 0.1
+    # 连续扫描之间的最大距离，影响回环和关键帧匹配。
     link_scan_maximum_distance: 1.5
+    # 回环搜索最大距离，单位 m。
     loop_search_maximum_distance: 3.0
-    do_loop_closing: true 
+    # 是否启用回环闭合。
+    do_loop_closing: true
+    # 回环最小链长度，防止噪声导致错误闭环。
     loop_match_minimum_chain_size: 10
-    loop_match_maximum_variance_coarse: 3.0  
-    loop_match_minimum_response_coarse: 0.35    
+    # 粗粒度回环匹配方差上限。
+    loop_match_maximum_variance_coarse: 3.0
+    # 粗粒度回环最低响应阈值。
+    loop_match_minimum_response_coarse: 0.35
+    # 细粒度回环最低响应阈值。
     loop_match_minimum_response_fine: 0.45
 
-    # Correlation Parameters - Correlation Parameters
+    # 相关搜索参数
+    # 相关搜索空间维度，控制扫描匹配搜索宽度。
     correlation_search_space_dimension: 0.5
+    # 相关搜索空间分辨率。
     correlation_search_space_resolution: 0.01
-    correlation_search_space_smear_deviation: 0.1 
+    # 相关搜索扩散偏离度，控制点集扩展范围。
+    correlation_search_space_smear_deviation: 0.1
 
-    # Correlation Parameters - Loop Closure Parameters
+    # 回环检测相关参数
+    # 回环搜索空间维度。
     loop_search_space_dimension: 8.0
+    # 回环搜索空间分辨率。
     loop_search_space_resolution: 0.05
+    # 回环搜索扩散偏离度。
     loop_search_space_smear_deviation: 0.03
-    # Scan Matcher Parameters
-    distance_variance_penalty: 0.5      
-    angle_variance_penalty: 1.0    
 
-    fine_search_angle_offset: 0.00349     
-    coarse_search_angle_offset: 0.349   
-    coarse_angle_resolution: 0.0349        
+    # 扫描匹配惩罚参数
+    # 距离误差惩罚因子，控制位置偏差影响。
+    distance_variance_penalty: 0.5
+    # 角度误差惩罚因子，控制航向偏差影响。
+    angle_variance_penalty: 1.0
+
+    # 搜索偏移量和角度分辨率
+    # 精细搜索角偏移量。
+    fine_search_angle_offset: 0.00349
+    # 粗搜索角偏移量。
+    coarse_search_angle_offset: 0.349
+    # 粗搜索角分辨率。
+    coarse_angle_resolution: 0.0349
+    # 最小角度惩罚，控制角度误差不超过容差范围时的稳健性。
     minimum_angle_penalty: 0.9
+    # 最小距离惩罚，控制位置误差的惩罚强度。
     minimum_distance_penalty: 0.5
+    # 是否扩张响应以获取更稳定的局部匹配。
     use_response_expansion: true
+    # 最小通过次数，避免无意义的低质量匹配。
     min_pass_through: 2
+    # 占用栅格阈值，影响地图占用概率的判定边界。
     occupancy_threshold: 0.1

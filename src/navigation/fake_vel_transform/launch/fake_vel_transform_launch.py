@@ -19,7 +19,9 @@ def generate_launch_description():
                 "robot_base_frame": "base_link",
                 "fake_robot_base_frame": "base_link_fake",
                 "joint_yaw_sign": 1.0,
-                "body_to_base_z": -0.5,
+                "body_to_base_x": 0.0,
+                "body_to_base_y": 0.20,
+                "body_to_base_z": 0.0,
             }
         ],
     )

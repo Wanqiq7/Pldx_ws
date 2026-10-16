@@ -14,8 +14,8 @@ def generate_launch_description():
                 executable="static_transform_publisher",
                 name="static_tf_body_to_livox_frame",
                 arguments=[
-                    "0.039512", "0", "0.537619",
-                    "1", "0", "0", "0",
+                    "-0.011", "-0.02329", "0.04412",
+                    "0", "0", "0", "1",
                     "body", "livox_frame",
                 ],
                 output="screen",

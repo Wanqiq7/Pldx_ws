@@ -31,6 +31,8 @@ case "${workspace_dir}" in
 esac
 
 set -u
+BUILD_PROFILE="${BUILD_PROFILE:-full}"
+case "$BUILD_PROFILE" in fast|ci|full) ;; *) echo "BUILD_PROFILE must be fast, ci, or full" >&2; exit 2 ;; esac
 
 # Hard memory budget for build process (GB).
 MEM_LIMIT_GB=${MEM_LIMIT_GB:-14}
@@ -89,24 +91,23 @@ cmake_args=(
 	-DPython3_EXECUTABLE=/usr/bin/python3
 	-DPYTHON_EXECUTABLE=/usr/bin/python3
 )
+if command -v ccache >/dev/null 2>&1; then
+  cmake_args+=( -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache )
+fi
 
-serial_packages=(
-  pldx_vision_interfaces
-  ros_interfaces
-  livox_ros_driver2
-  rog_map
-  icp_relocalization
-  point_lio
-  dbscan_cluster
-  bt_manager
-  minco_planner
-  minco_controller
-)
+serial_packages=()
+if [[ -n "${COLCON_SERIAL_PACKAGES:-}" ]]; then
+  read -r -a serial_packages <<< "$COLCON_SERIAL_PACKAGES"
+fi
 
 # USB transport is owned by PLDX_Sentry_Vision. Navigation builds ROS2
 # algorithms and topic interfaces only.
 
-echo "[build] Stage 1/2: build critical packages one-by-one"
+if [[ "$BUILD_PROFILE" == full ]]; then
+  echo "[build] full profile: serial critical packages"
+else
+  serial_packages=()
+fi
 for pkg in "${serial_packages[@]}"; do
 	echo "[build] Serial build package: ${pkg}"
 	colcon build \
@@ -118,11 +119,24 @@ for pkg in "${serial_packages[@]}"; do
 		--event-handlers console_direct+ status+
 done
 
-echo "[build] Stage 2/2: build remaining packages in parallel"
+package_args=()
+if [[ -n "${COLCON_PACKAGES:-}" ]]; then
+  read -r -a requested_packages <<< "$COLCON_PACKAGES"
+  package_args+=( --packages-up-to "${requested_packages[@]}" )
+elif [[ "$BUILD_PROFILE" != full ]]; then
+  mapfile -t changed_packages < <(git diff --name-only -- src | awk -F/ 'NF > 2 {print $2}' | sort -u)
+  if ((${#changed_packages[@]})); then
+    package_args+=( --packages-up-to "${changed_packages[@]}" )
+  else
+    package_args+=( --packages-up-to pldx_vision_interfaces )
+  fi
+fi
+echo "[build] Stage 2: build selected packages in parallel"
 colcon build \
   "${colcon_path_args[@]}" \
   --symlink-install \
   --parallel-workers "$parallel_workers" \
   --packages-skip "${serial_packages[@]}" \
+	"${package_args[@]}" \
 	--cmake-args "${cmake_args[@]}" \
 	--event-handlers console_direct+ status+

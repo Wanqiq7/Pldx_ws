@@ -59,4 +59,12 @@ install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  enable_testing()
+  add_test(NAME chassis_tf_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/check_chassis_tf.py)
+  set_tests_properties(chassis_tf_test PROPERTIES TIMEOUT 120)
+endif()
+
 ament_package()

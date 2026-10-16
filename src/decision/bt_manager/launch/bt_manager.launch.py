@@ -27,7 +27,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'joint_yaw_sign',
             default_value='1.0',
-            description='Sign s for body→base_link yaw: yaw = -s * joint'),
+            description='Legacy parameter; chassis TF is owned by fake_vel_transform'),
         DeclareLaunchArgument(
             'body_to_base_x',
             default_value='0.0',
@@ -40,12 +40,6 @@ def generate_launch_description():
             'body_to_base_z',
             default_value='-0.5',
             description='body → base_link translation z (m)'),
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='static_tf_body_to_vision_gimbal',
-            arguments=['0', '0', '0', '0', '0', '0', '1', 'body', 'vision_gimbal'],
-            output='screen'),
         Node(
             package='bt_manager',
             executable='bt_manager_node',
