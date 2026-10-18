@@ -7,12 +7,13 @@ ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
 [[ -f "${ROS_SETUP}" ]] || { echo "ROS setup not found: ${ROS_SETUP}" >&2; exit 1; }
 source "${ROS_SETUP}"
 
-if [[ ! -f "${WORKSPACE_DIR}/install/setup.bash" ]]; then
-  echo "Navigation workspace is not built: ${WORKSPACE_DIR}/install/setup.bash" >&2
+NAV_INSTALL_DIR="${NAV_INSTALL_DIR:-${WORKSPACE_DIR}/install-link}"
+if [[ ! -f "${NAV_INSTALL_DIR}/setup.bash" ]]; then
+  echo "Navigation workspace is not built: ${NAV_INSTALL_DIR}/setup.bash" >&2
   echo "Run ./build.bash first." >&2
   exit 1
 fi
-source "${WORKSPACE_DIR}/install/setup.bash"
+source "${NAV_INSTALL_DIR}/setup.bash"
 cd "${WORKSPACE_DIR}"
 set -u
 
@@ -38,7 +39,7 @@ trap cleanup_children EXIT INT TERM
 run_terminal() {
   local title="$1"
   shift
-  setsid bash -lc "cd '$WORKSPACE_DIR'; source '$ROS_SETUP'; source '$WORKSPACE_DIR/install/setup.bash'; exec $*" \
+  setsid bash -lc "cd '$WORKSPACE_DIR'; source '$ROS_SETUP'; source '${NAV_INSTALL_DIR}/setup.bash'; exec $*" \
     >"$LOG_DIR/${title// /_}.log" 2>&1 &
   CHILD_PIDS+=("$!")
   echo "[start] $title pid=${CHILD_PIDS[-1]} log=$LOG_DIR/${title// /_}.log"
