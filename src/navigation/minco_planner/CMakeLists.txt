@@ -148,4 +148,11 @@ ament_export_dependencies(
   rog_map
 )
 ament_export_targets(${library_name})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_goal_deduplication test/test_goal_deduplication.cpp)
+  target_link_libraries(test_goal_deduplication ${library_name})
+endif()
+
 ament_package()

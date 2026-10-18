@@ -619,6 +619,12 @@ void MincoPlanner::cleanup()
   fsm_timer_.reset();
   safety_timer_.reset();
 
+  {
+    std::lock_guard<std::mutex> lk(goal_mutex_);
+    has_pending_goal_ = false;
+    last_accepted_goal_.reset();
+  }
+
   fsm_.reset();
   recovery_server_.reset();
   planner_handle_.reset();
@@ -873,6 +879,7 @@ nav_msgs::msg::Path MincoPlanner::createPlan(
       planning_frame_.c_str());
     std::lock_guard<std::mutex> lk(goal_mutex_);
     has_pending_goal_ = false;
+    last_accepted_goal_.reset();
     return path;
   }
 
@@ -884,6 +891,17 @@ nav_msgs::msg::Path MincoPlanner::createPlan(
 
   {
     std::lock_guard<std::mutex> lk(goal_mutex_);
+    if (last_accepted_goal_) {
+      const auto & previous = last_accepted_goal_->pose.position;
+      const auto & incoming = normalized_goal.pose.position;
+      // Only absorb floating-point noise, not intentional goal adjustments.
+      constexpr double epsilon = 1e-9;
+      if (std::hypot(incoming.x - previous.x, incoming.y - previous.y, incoming.z - previous.z) <=
+          epsilon) {
+        return path;
+      }
+    }
+    last_accepted_goal_ = normalized_goal;
     pending_goal_ = normalized_goal;
     has_pending_goal_ = true;
   }
@@ -1776,6 +1794,7 @@ void MincoPlanner::cancelGoal()
 {
   std::lock_guard<std::mutex> lk(goal_mutex_);
   has_pending_goal_ = false;
+  last_accepted_goal_.reset();
   if (fsm_) {
     fsm_->cancelGoal();
   }

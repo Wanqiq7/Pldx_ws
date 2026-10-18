@@ -5,6 +5,7 @@
 #include "minco_core/performance/planner_performance_monitor.hpp"
 
 #include <limits>
+#include <optional>
 
 namespace rog_map {
 class ROGMapROS;
@@ -202,6 +203,8 @@ private:
   std::vector<geometry_msgs::msg::PoseStamped> latest_global_path_;
   nav_msgs::msg::Odometry latest_odom_;
   geometry_msgs::msg::PoseStamped pending_goal_;
+  // Retained after pending_goal_ is consumed; protected by goal_mutex_.
+  std::optional<geometry_msgs::msg::PoseStamped> last_accepted_goal_;
 
   bool has_last_traj_ = false;
   bool has_last_yaw_traj_ = false;
