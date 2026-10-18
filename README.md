@@ -62,7 +62,7 @@
 - **MINCO 双模式规划**：`PRIORMAP` 利用 Nav2 先验地图全局引导；`EXPLORATION` 直接在 ROGMap 有效边界内搜索。
 - **SE(2) MPC**：状态 `[x, y, yaw]`，控制 `[vx, vy, omega]`，qpOASES 求解凝聚 QP，输出世界系速度。
 - **比赛行为树**：BehaviorTree.CPP XML 定义战术、导航、姿态、资源、云台和恢复策略。
-- **裁判 / 底盘通信**：由 `PLDX_Sentry_Vision` 独占 USB CDC；本工程只发布和订阅 ROS2 topic。
+- **裁判 / 底盘通信**：本工程只发布和订阅 ROS2 topic，不再依赖外部视觉工程的 USB CDC / ROS 启动链路。
 
 ## 🧩 功能模块
 
@@ -140,8 +140,8 @@ rosdep install --from-paths src --ignore-src -r -y
 | [Livox-SDK2](https://github.com/Livox-SDK/Livox-SDK2)                        | 雷达驱动底层 SDK，需安装到系统路径                  |
 | [small_gicp](https://github.com/koide3/small_gicp#installation)              | GICP 重定位，安装 C++ 版本                          |
 | [Sophus](https://github.com/strasdat/Sophus#how-to-build-sophus-from-source) | 李群库，安装 C++ 版本                               |
-| `src/interfaces/pldx_vision_interfaces`                                      | 视觉 ↔ 导航消息，随本仓库构建                      |
-| `PLDX_Sentry_Vision/io/gimbal`                                               | 视觉侧 LibXR USB CDC 通信实现                      |
+| `ros_interfaces`                                                            | 机器人状态、行为和比赛指令的 ROS 消息定义           |
+| `bt_manager`                                                                | 比赛决策中枢                                         |
 
 Livox-SDK2 典型安装：
 
@@ -162,7 +162,7 @@ git clone https://github.com/Wanqiq7/Pldx_ws.git navi_minco_bit_jazzy
 cd navi_minco_bit_jazzy
 git checkout master
 
-# 2. 构建（pldx_vision_interfaces 在 src/interfaces 中，会最先构建）
+# 2. 构建
 export ROS_DISTRO="${ROS_DISTRO:-jazzy}"
 source "/opt/ros/${ROS_DISTRO}/setup.bash"
 ./build.bash
@@ -175,7 +175,7 @@ source install/setup.bash
 MEM_LIMIT_GB=24 MEM_PER_WORKER_GB=2 ./build.bash
 ```
 
-`bt_manager` 直接消费 `vision/target_observation`（`pldx_vision_interfaces/msg/TargetObservation`）。消息定义在 `src/interfaces/pldx_vision_interfaces`；视觉工程构建时把 `PLDX_VISION_WS` 指向本仓库根目录即可使用同一份定义。部署时还需提供带时间戳的 `map ← vision_gimbal` TF。MCU 通信必须保持 `/sentry/offline_info` 的单一发布者。
+当前工程不再依赖外部视觉工程的 ROS 接口、USB CDC 共享链路或启动顺序；行为树与 ROS 通信只依赖当前工作区内的消息定义和本地节点。
 
 > [!WARNING]
 > `start.bash` 会打开多个 GNOME Terminal、启动 PTP sudo 命令，并可能向底盘发送控制数据。更适合实车桌面环境，不适合无界面服务器。上车前应架空轮组或保证机械急停可用。
@@ -200,7 +200,6 @@ source install/setup.bash
 | `gicp_relocalization.launch.py`                 | GICP 重定位                  | `ros2 launch icp_relocalization gicp_relocalization.launch.py`        |
 | `navigation2.launch.py`                         | Nav2 + ROGMap + MINCO + MPC  | `ros2 launch navi2 navigation2.launch.py`                             |
 | `bt_manager.launch.py`                          | 比赛决策                     | `ros2 launch bt_manager bt_manager.launch.py`                         |
-| `PLDX_Sentry_Vision`                          | 裁判 / 底盘 / 云台 CDC 通信   | 启动视觉工程的 ROS 2 节点                                      |
 | `start.bash`                                    | 实车一键启动                 | `bash start.bash`                                                     |
 | `simulation.launch.py`                          | Gazebo 仿真                  | `ros2 launch rmu_gazebo_simulator simulation.launch.py`               |
 
@@ -213,7 +212,7 @@ ros2 launch navi2 navigation2.launch.py
 ros2 launch bt_manager bt_manager.launch.py
 ```
 
-当前 MINCO 输出为 `/cmd_vel_mpc`。视觉工程的 `Subscribe2Nav` 订阅该话题并通过唯一的 USB CDC owner 发送 `nav_data` 到下位机。
+当前 MINCO 输出为 `/cmd_vel_mpc`，供导航控制链路和底盘通信阶段继续使用。
 
 ### 一键实车启动
 
@@ -229,7 +228,7 @@ bash start.bash
 4. Nav2 + ROGMap + MincoPlanner + MincoMpcController
 5. bt_manager
 
-`start.bash` 只启动导航节点；USB CDC 通信由 `PLDX_Sentry_Vision` 独占。不要在导航工作区再启动第二个 CDC owner。
+`start.bash` 只启动本工作区中的导航节点，不再拉起或等待外部视觉工程进程。
 
 ### 先验地图
 
@@ -299,9 +298,7 @@ ros2 launch rmu_gazebo_simulator simulation.launch.py use_rviz:=false headless:=
 | `/sentry/radar_info`        | `ros_interfaces/msg/RadarInfo`                     | 订阅 | 雷达站信息      |
 | `/sentry/offline_info`      | `ros_interfaces/msg/SentryInfoOffline`             | 订阅 | 下位机离线状态  |
 | `/sentry/online_info`       | `ros_interfaces/msg/SentryInfoOnline`              | 订阅 | 裁判在线状态    |
-| `vision/target_observation` | `pldx_vision_interfaces/msg/TargetObservation`     | 订阅 | 视觉目标观测    |
 | `/sentry/behaivor_send`     | `ros_interfaces/msg/Behavior`                      | 发布 | 行为 / 姿态指令 |
-| `vision/target_directive`   | `pldx_vision_interfaces/msg/VisionTargetDirective` | 发布 | 视觉目标指令    |
 | `/sentry/area_markers`      | `visualization_msgs/msg/MarkerArray`               | 发布 | 区域可视化      |
 
 ### Nav2 Action
@@ -482,11 +479,9 @@ flowchart LR
 
   subgraph Decision[决策与执行]
     BT[BehaviorTree.CPP]
-    COM[PLDX_Sentry_Vision]
     MCU[底盘 MCU]
     BT --> N2
-    BT <--> COM
-    MPC -->|/cmd_vel_mpc| COM --> MCU
+    MPC -->|/cmd_vel_mpc| MCU
   end
 
   PL -->|/aft_mapped_to_init| N2
@@ -504,7 +499,7 @@ flowchart LR
 | GICP                | TF`map → camera_init`    | Nav2 / 规划                           | 先验地图对齐          |
 | ROGMap              | 进程内`MapQueryInterface` | MincoPlanner                          | 占据、投影、ESDF 查询 |
 | MincoPlanner        | `/opt_path`               | MincoMpcController                    | 优化轨迹前馈          |
-| MincoMpcController  | `/cmd_vel_mpc`            | PLDX_Sentry_Vision / 底盘              | 世界系速度            |
+| MincoMpcController  | `/cmd_vel_mpc`            | 底盘 / 后端控制链路                   | 世界系速度            |
 | bt_manager          | Nav2 action / blackboard  | Nav2、通信                            | 比赛策略              |
 
 ## 🏗 软件架构
@@ -537,8 +532,6 @@ flowchart TB
 
   subgraph DecisionLayer[决策层]
     BTM[bt_manager]
-    XR[PLDX_Sentry_Vision]
-    BTM <--> XR
     BTM --> BTN
   end
 
@@ -546,7 +539,6 @@ flowchart TB
   LIO --> GICP
   LIO --> PLN
   LIO --> CTL
-  CTL --> XR
 ```
 
 典型 TF：

@@ -6,10 +6,6 @@ ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
 [[ -f "${ROS_SETUP}" ]] || { echo "ROS setup not found: ${ROS_SETUP}" >&2; exit 1; }
 source "${ROS_SETUP}"
 
-# pldx_vision_interfaces (vision <-> navigation messages) lives in
-# src/interfaces and is built first in Stage 1, so no external overlay is
-# needed.  The vision project consumes it from this workspace's install/.
-
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 colcon_path_args=()
 case "${workspace_dir}" in
@@ -100,9 +96,6 @@ if [[ -n "${COLCON_SERIAL_PACKAGES:-}" ]]; then
   read -r -a serial_packages <<< "$COLCON_SERIAL_PACKAGES"
 fi
 
-# USB transport is owned by PLDX_Sentry_Vision. Navigation builds ROS2
-# algorithms and topic interfaces only.
-
 if [[ "$BUILD_PROFILE" == full ]]; then
   echo "[build] full profile: serial critical packages"
 else
@@ -127,8 +120,6 @@ elif [[ "$BUILD_PROFILE" != full ]]; then
   mapfile -t changed_packages < <(git diff --name-only -- src | awk -F/ 'NF > 2 {print $2}' | sort -u)
   if ((${#changed_packages[@]})); then
     package_args+=( --packages-up-to "${changed_packages[@]}" )
-  else
-    package_args+=( --packages-up-to pldx_vision_interfaces )
   fi
 fi
 echo "[build] Stage 2: build selected packages in parallel"

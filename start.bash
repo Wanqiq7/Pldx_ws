@@ -20,9 +20,8 @@ set -u
 # chain; set PTP_ENABLE=1 explicitly only when a synchronized-clock test needs it.
 PTP_ENABLE="${PTP_ENABLE:-0}"
 BT_MANAGER_ENABLE="${BT_MANAGER_ENABLE:-1}"
-VISION_ENABLE="${VISION_ENABLE:-1}"
-VISION_ROOT="${VISION_ROOT:-${WORKSPACE_DIR}/../PLDX_Sentry_Vision}"
-VISION_STARTUP_WAIT_S="${VISION_STARTUP_WAIT_S:-30}"
+# Vision startup is intentionally disabled in the navigation workspace.
+# The navigation stack no longer owns or waits for the external vision process.
 # /cloud_registered_full is published only after Point-LIO IMU gravity alignment.
 POINT_LIO_CLOUD_WAIT_S="${POINT_LIO_CLOUD_WAIT_S:-40}"
 POINT_LIO_SETTLE_S="${POINT_LIO_SETTLE_S:-3}"
@@ -78,24 +77,6 @@ wait_for_node() {
   echo "[start] Timed out waiting for ${node}" >&2
   return 1
 }
-
-# Start the only USB CDC owner before navigation begins publishing commands.
-if [[ "${VISION_ENABLE}" == "1" ]]; then
-  [[ -x "${VISION_ROOT}/build-jazzy/sentry" ]] || {
-    echo "Vision executable not found: ${VISION_ROOT}/build-jazzy/sentry" >&2
-    echo "Run PLDX_Sentry_Vision/tools/build_sentry.sh first, or set VISION_ENABLE=0." >&2
-    exit 1
-  }
-  [[ -f "${VISION_ROOT}/configs/sentry.yaml" ]] || {
-    echo "Vision config not found: ${VISION_ROOT}/configs/sentry.yaml" >&2
-    exit 1
-  }
-  run_terminal "Vision Communication" \
-    "cd '${VISION_ROOT}'; source tools/ros_env.sh; bash tools/run_sentry.sh configs/sentry.yaml"
-  wait_for_node "/nav_subscriber" "${VISION_STARTUP_WAIT_S}"
-else
-  echo "[start] Vision communication disabled (VISION_ENABLE=0)"
-fi
 
 # PTP Sync
 if [[ "${PTP_ENABLE}" == "1" ]]; then

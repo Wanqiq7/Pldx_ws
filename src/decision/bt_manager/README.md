@@ -96,30 +96,17 @@ Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、�
 - `/aft_mapped_to_init`：定位状态。
 - `/opt_path`：当前优化轨迹。
 - `/cmd_vel`：底盘速度状态。
-- `vision/target_observation`：正式视觉目标输入，消息类型为
-  `pldx_vision_interfaces/msg/TargetObservation`。目标位置单位为米，通常使用
-  `header.frame_id=vision_gimbal`；默认 QoS 为 Reliable + KeepLast(1)。
+- `/sentry/offline_info`：升降、变形、电容、隧道和云台反馈等底盘/机器人状态。
 
-视觉回调只在 `valid=true`、ID 为 `1..8`、置信度不低于 `0.4`、坐标有限、消息年龄不超过
-`200 ms` 且 `map <- header.frame_id` 的**最新** TF（`TimePointZero`）可用时更新 `target_valid`、
-`target_pose` 和 `target_armor_id`。任何校验或 TF 失败都会立即清空这三个键，并按秒节流告警。
-
-`/sentry/offline_info` 仍提供升降、变形、电容、隧道和云台反馈，但其中历史视觉字段不再
-影响 BT。`auto_aim_target_pos` 是兼容接口，不属于导航正式输入；MCU 不中继视觉目标。
+当前导航栈已不再依赖外部视觉进程或 `vision/*` ROS 话题；如有目标锁定/瞄准相关状态，需由当前节点自己的 ROS 输入或内部黑板更新，而不是外部视觉通信链路。
 
 ### 输出
 
 | Topic | 说明 |
 |---|---|
 | `/sentry/behaivor_send` | 哨兵行为、资源与姿态指令；名称沿用现有接口拼写 |
-| `vision/target_directive` | `pldx_vision_interfaces/msg/VisionTargetDirective`；与行为话题同一 10 Hz 定时器 |
 | `/cmd_vel` | 明确恢复/接管场景中的速度指令链路 |
 | `/sentry/area_markers` | 战术区域可视化 |
-
-视觉部署必须提供导航所需的 `map <- vision_gimbal`（或消息实际 frame）TF。
-`body -> base_link` 和 `base_link_fake` 由 Nav2 侧的 `fake_vel_transform` 发布，不依赖 BT。`body -> vision_gimbal` 由 launch 发静态单位姿。视觉 `transformPoseToMap(..., "vision_gimbal")` 沿 TF 链到 map。
-`not_aim_enemy==true` 时 `VisionTargetDirective.valid=true` 且 `restrict_to_preferred_targets=true`、
-列表为空、`source_mask=SOURCE_NAVIGATION`；否则 `valid=false`。
 
 通信协议位段与下位机约定是跨模块接口，不能只修改发送端或单个枚举。
 
