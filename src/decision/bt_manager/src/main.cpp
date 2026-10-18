@@ -28,6 +28,7 @@ int main(int argc, char const * argv[])
     ros_interface_node->declare_parameter<bool>("bt_debug_log_to_file", false);
   const std::string bt_debug_log_file =
     ros_interface_node->declare_parameter<std::string>("bt_debug_log_file", "logs/bt_transition.log");
+  const int groot2_port = ros_interface_node->declare_parameter<int>("groot2_port", 1667);
 
   Sentry_BT::detail::setTransitionLogEnabled(bt_debug_logs);
   if (bt_debug_log_to_file) {
@@ -59,7 +60,11 @@ int main(int argc, char const * argv[])
 
   Sentry_BT::SentryBTManager bt_manager;
   auto pkg_share_dir = ament_index_cpp::get_package_share_directory("bt_manager");
-  if (!bt_manager.initialize(bt_blackboard, pkg_share_dir)) {
+  if (groot2_port < 1 || groot2_port > 65535) {
+    RCLCPP_ERROR(ros_interface_node->get_logger(), "groot2_port must be between 1 and 65535");
+    return -1;
+  }
+  if (!bt_manager.initialize(bt_blackboard, pkg_share_dir, static_cast<unsigned>(groot2_port))) {
     RCLCPP_ERROR(ros_interface_node->get_logger(),
       "Failed to initialize SentryBTManager with tree path: %s",
       pkg_share_dir.c_str());

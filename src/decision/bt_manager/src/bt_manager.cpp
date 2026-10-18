@@ -25,11 +25,18 @@ inline void tickTreeExactlyOnce(BT::Tree & tree)
 }  // namespace
 
 bool SentryBTManager::initialize(
-  std::shared_ptr<BT::Blackboard> blackboard, const std::string & tree_root_dir)
+  std::shared_ptr<BT::Blackboard> blackboard, const std::string & tree_root_dir, unsigned groot2_port)
 {
   tree_root_dir_ = tree_root_dir;
   registerNodes();
-  return loadTrees(blackboard);
+  if (!loadTrees(blackboard)) {
+    return false;
+  }
+
+  // Publish the main (navigation) tree for Groot2 Monitor. The publisher owns
+  // a TCP server and must outlive the tree and the tick loop.
+  groot2_publisher_ = std::make_unique<BT::Groot2Publisher>(nav_tree_, groot2_port);
+  return true;
 }
 
 void SentryBTManager::registerNodes()
