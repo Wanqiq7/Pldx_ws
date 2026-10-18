@@ -664,6 +664,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     perf->stamp_steady_ns = MpcPerformanceMonitor::steadyNowNs();
   }
   auto finish = [&](geometry_msgs::msg::TwistStamped out_cmd, bool success, const std::string &) {
+    // Every return path publishes the same final command handed back to Nav2.
+    if (cmd_vel_mpc_pub_) {
+      cmd_vel_mpc_pub_->publish(out_cmd.twist);
+    }
     if (perf) {
       perf->success = success;
       perf->cycle_time_ms =
@@ -887,9 +891,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
   if (!goal_pose_stamped.header.frame_id.empty()) {
     geometry_msgs::msg::PoseStamped goal_pose_in_odom = goal_pose_stamped;
-    if (goal_pose_in_odom.header.frame_id != odom_frame_) {
+    if (goal_pose_in_odom.header.frame_id != pose.header.frame_id) {
       try {
-        goal_pose_in_odom = tf_->transform(goal_pose_in_odom, odom_frame_);
+        goal_pose_in_odom = tf_->transform(goal_pose_in_odom, pose.header.frame_id);
       } catch (const tf2::TransformException &) {
         goal_pose_in_odom.header.frame_id.clear();
       }
@@ -901,17 +905,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       stop_mpc_cmd = (dist <= goal_pos_threshold);
     }
   }
-  if (cmd_vel_mpc_pub_) {
-    geometry_msgs::msg::Twist raw_cmd;
-    raw_cmd.linear.x = stop_mpc_cmd ? 0.0 : vx;
-    raw_cmd.linear.y = stop_mpc_cmd ? 0.0 : vy;
-    raw_cmd.angular.z = stop_mpc_cmd ? 0.0 : wz;
-    cmd_vel_mpc_pub_->publish(raw_cmd);
-  }
   // applyGravityCompensation(latest_odom, vx, vy);
-  cmd.twist.linear.x = vx;
-  cmd.twist.linear.y = vy;
-  cmd.twist.angular.z = wz;
+  cmd.twist.linear.x = stop_mpc_cmd ? 0.0 : vx;
+  cmd.twist.linear.y = stop_mpc_cmd ? 0.0 : vy;
+  cmd.twist.angular.z = stop_mpc_cmd ? 0.0 : wz;
   return finish(cmd, true, "NONE");
 }
 
