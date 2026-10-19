@@ -46,9 +46,22 @@ flowchart LR
 ## ⚡ 性能方向
 
 - 将状态消元后求解凝聚 QP，限制 100 Hz 控制周期内的决策变量规模。
+- 缓存固定预测矩阵、速度边界和加速度差分约束，复用矩阵及解向量缓冲；每周期更新随参考航向变化的 Hessian、梯度及首步加速度边界。
+- 持久保存 qpOASES `SQProblem`，通过支持矩阵更新的 `hotstart()` 连续求解；热启动失败后重置并尝试一次冷启动。`setConfig()` 重建缓存及求解器状态。
 - odom 订阅使用 `KeepLast(1) + best_effort + volatile`，只消费最新状态，避免高频定位消息排队。
 - `/opt_path` 使用 `SystemDefaultsQoS`；控制与预测可视化 publisher 深度为 1，避免历史控制结果积压。
 - `MpcPerformanceMonitor` 在开关启用时记录求解耗时、完整周期耗时、控制频率、命令/参考速度和 odom 回调延迟；关闭时不写 CSV。
+
+求解器回归测试与可选微基准：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install --packages-select minco_controller --cmake-args -DBUILD_TESTING=ON
+colcon test --packages-select minco_controller --event-handlers console_cohesion+
+colcon test-result --test-result-base build/minco_controller --verbose
+# 独立冷启动公式与热启动比较，输出 p50/p95/p99 微秒耗时和失败次数。
+build/minco_controller/mpc_solver_test --gtest_filter=MpcSolver.DISABLED_Benchmark --gtest_also_run_disabled_tests
+```
 
 ## 🌐 坐标系与输出约定
 
@@ -136,6 +149,12 @@ ros2 topic echo /cmd_vel_mpc --once
 字段包含 `success`、`solve_time_ms`、`cycle_time_ms`、`controller_hz`、`cmd_vx/vy/wz` 和 `ref_vx/vy/wz`，并可附带 `run_id/scenario/variant`。`csv_flush_every_n` 用于降低刷盘频率。
 
 重点关注控制回调实际频率、QP 求解 P95/P99、失败次数，以及命令速度与参考速度的稳态差。100 Hz 控制要求 CSV、终端日志和可视化不能阻塞主回调。
+
+## 输入失效保护
+
+`FollowPath.reference_timeout_sec` 默认为 2.0 s，`FollowPath.odom_timeout_sec` 默认为 0.3 s。控制器同时检查消息时间戳和 `steady_clock` 接收间隔；任一输入缺失、过期或时间戳位于未来时，返回并发布全零速度，包括小陀螺角速度。即使 ROS 仿真时间暂停，接收超时仍生效。
+
+取消、重启和参考替换递增控制端版本。每次计算在输出前重新检查版本和输入时效，期间发生取消/重启的计算结果会被置零。该检查在 Nav2 调用 `computeVelocityCommands()` 时执行，其响应间隔取决于 controller_server 的控制周期。
 
 ## ⚠️ 已知问题与改进方向
 

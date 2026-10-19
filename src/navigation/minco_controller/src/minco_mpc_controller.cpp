@@ -206,6 +206,17 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   node->get_parameter(name + ".lidar_offset_y", lidar_offset_y_);
   node->get_parameter(name + ".lidar_roll_offset", lidar_roll_offset_);
 
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".reference_timeout_sec", rclcpp::ParameterValue(2.0));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".odom_timeout_sec", rclcpp::ParameterValue(0.3));
+  node->get_parameter(name + ".reference_timeout_sec", reference_timeout_sec_);
+  node->get_parameter(name + ".odom_timeout_sec", odom_timeout_sec_);
+  if (!std::isfinite(reference_timeout_sec_) || reference_timeout_sec_ <= 0.0 ||
+      !std::isfinite(odom_timeout_sec_) || odom_timeout_sec_ <= 0.0) {
+    throw std::invalid_argument("Controller input timeouts must be finite and positive");
+  }
+
   solver_ = std::make_unique<MpcSolver>(mpc_config_);
 
   // 订阅优化轨迹：/opt_path
@@ -220,6 +231,8 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
 
   mpc_predict_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_predict_path", 1);
   mpc_real_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_real_path", 1);
+  execution_pub_ =
+    node->create_publisher<std_msgs::msg::Bool>("/minco/execution_enabled", rclcpp::QoS(10).reliable());
   cmd_vel_mpc_pub_ = node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_mpc", 1);
   real_path_history_.clear();
   last_real_path_pub_time_ = node->now();
@@ -294,6 +307,8 @@ void MincoMpcController::extractGlobalVelocityAndYaw(const nav_msgs::msg::Odomet
 
 void MincoMpcController::cleanup()
 {
+  reset();
+  execution_pub_.reset();
   mpc_perf_monitor_.close();
   opt_path_sub_.reset();
   odom_sub_.reset();
@@ -313,12 +328,52 @@ void MincoMpcController::activate()
 
 void MincoMpcController::deactivate()
 {
+  reset();
+}
+
+bool MincoMpcController::cancel()
+{
+  reset();
+  return true;
+}
+
+void MincoMpcController::reset()
+{
+  std::lock_guard<std::mutex> lk(data_mtx_);
+  execution_enabled_ = false;
+  ++reference_version_;
+  latest_opt_path_.reset();
+  has_tracked_ref_ = false;
+  if (execution_pub_) {
+    std_msgs::msg::Bool enabled;
+    enabled.data = false;
+    execution_pub_->publish(enabled);
+  }
+  publishZeroCommand();
+}
+
+void MincoMpcController::publishZeroCommand()
+{
+  if (cmd_vel_mpc_pub_) {
+    cmd_vel_mpc_pub_->publish(geometry_msgs::msg::Twist{});
+  }
 }
 
 void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
 {
   std::lock_guard<std::mutex> lk(plan_mtx_);
   global_plan_ = path;
+  std::lock_guard<std::mutex> data_lock(data_mtx_);
+  if (!execution_enabled_ && !path.poses.empty()) {
+    latest_opt_path_.reset();
+    has_tracked_ref_ = false;
+    execution_start_ = node_.lock()->now();
+    execution_enabled_ = true;
+    ++reference_version_;
+    std_msgs::msg::Bool enabled;
+    enabled.data = true;
+    execution_pub_->publish(enabled);
+  }
 }
 
 void MincoMpcController::setSpeedLimit(const double & speed_limit, const bool & percentage)
@@ -331,6 +386,19 @@ void MincoMpcController::onOptPath(const ros_interfaces::msg::MpcPositionCommand
 {
   std::lock_guard<std::mutex> lk(data_mtx_);
 
+  // Ignore references queued before the new FollowPath execution began.
+  if (!execution_enabled_ || !msg ||
+      rclcpp::Time(msg->header.stamp, execution_start_.get_clock_type()) < execution_start_) {
+    return;
+  }
+  ++reference_version_;
+  if (msg->command_flag == ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND || msg->cmds.empty()) {
+    latest_opt_path_.reset();
+    has_tracked_ref_ = false;
+    publishZeroCommand();
+    return;
+  }
+
   const uint32_t new_traj_id = (msg && !msg->cmds.empty()) ? msg->cmds.front().trajectory_id : 0u;
   const uint32_t old_traj_id = (latest_opt_path_ && !latest_opt_path_->cmds.empty())
                                  ? latest_opt_path_->cmds.front().trajectory_id
@@ -342,6 +410,7 @@ void MincoMpcController::onOptPath(const ros_interfaces::msg::MpcPositionCommand
   }
 
   latest_opt_path_ = msg;
+  reference_received_at_ = std::chrono::steady_clock::now();
 }
 
 void MincoMpcController::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -353,6 +422,26 @@ void MincoMpcController::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
 
   std::lock_guard<std::mutex> lk(data_mtx_);
   latest_odom_ = msg;
+  odom_received_at_ = std::chrono::steady_clock::now();
+}
+
+bool MincoMpcController::inputsFreshLocked() const
+{
+  const auto node = node_.lock();
+  if (!node || !execution_enabled_ || !latest_opt_path_ || latest_opt_path_->cmds.empty() ||
+      !latest_odom_) {
+    return false;
+  }
+  const auto steady_now = std::chrono::steady_clock::now();
+  const auto ros_now = node->now();
+  const auto fresh = [&](const auto & stamp, const auto & received, double timeout) {
+    const double age = (ros_now - rclcpp::Time(stamp, ros_now.get_clock_type())).seconds();
+    const double receive_age = std::chrono::duration<double>(steady_now - received).count();
+    return std::isfinite(age) && age >= 0.0 && age <= timeout && receive_age >= 0.0 &&
+           receive_age <= timeout;
+  };
+  return fresh(latest_opt_path_->header.stamp, reference_received_at_, reference_timeout_sec_) &&
+         fresh(latest_odom_->header.stamp, odom_received_at_, odom_timeout_sec_);
 }
 
 bool MincoMpcController::transformPathToOdom(const ros_interfaces::msg::MpcPositionCommand::SharedPtr & opt,
@@ -445,6 +534,9 @@ bool MincoMpcController::buildReferenceFromOptPath(
   bool has_tracked_ref = false;
   {
     std::lock_guard<std::mutex> lk(data_mtx_);
+    if (!inputsFreshLocked()) {
+      return false;
+    }
     opt = latest_opt_path_;
     tracked_ref_idx = tracked_ref_idx_;
     tracked_ref_time = tracked_ref_time_;
@@ -502,25 +594,6 @@ bool MincoMpcController::buildReferenceFromOptPath(
   nearest_idx_float = std::max(0.0, nearest_idx_float);
 
   const uint32_t current_traj_id = (!opt->cmds.empty()) ? opt->cmds.front().trajectory_id : 0u;
-
-  // 轨迹未更新时，按时间持续向前推进参考索引，且不允许回退
-  // const bool same_opt_traj = has_tracked_ref && tracked_opt_traj_id == current_traj_id;
-
-  // double progress_idx_float = nearest_idx_float;
-  // if (same_opt_traj) {
-  //   double dt_pass = (now - tracked_ref_time).seconds();
-  //   dt_pass = std::max(0.0, dt_pass);
-  //   progress_idx_float = tracked_ref_idx + dt_pass / planner_dt;
-  // }
-  // double current_idx_float = std::max(nearest_idx_float, progress_idx_float);
-
-  // // 同一条轨迹若超过阈值仍未更新，判定规划器卡死
-  // const double traj_stamp_sec =
-  //   static_cast<double>(opt->header.stamp.sec) + static_cast<double>(opt->header.stamp.nanosec) * 1.0e-9;
-  // const double absolute_age = now.seconds() - traj_stamp_sec;
-  // if (same_opt_traj && absolute_age > 0.5) {
-  //   return false;
-  // }
 
   double current_idx_float = nearest_idx_float;
   current_idx_float = std::min(current_idx_float, static_cast<double>(n_cmds - 1));
@@ -663,10 +736,38 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     perf->stamp_ros = now.seconds();
     perf->stamp_steady_ns = MpcPerformanceMonitor::steadyNowNs();
   }
+  nav_msgs::msg::Odometry::SharedPtr latest_odom;
+  uint64_t reference_version;
+  std::chrono::steady_clock::time_point odom_received;
+  bool inputs_fresh;
+  {
+    std::lock_guard<std::mutex> lk(data_mtx_);
+    latest_odom = latest_odom_;
+    reference_version = reference_version_;
+    odom_received = odom_received_at_;
+    inputs_fresh = inputsFreshLocked();
+  }
   auto finish = [&](geometry_msgs::msg::TwistStamped out_cmd, bool success, const std::string &) {
-    // Every return path publishes the same final command handed back to Nav2.
-    if (cmd_vel_mpc_pub_) {
-      cmd_vel_mpc_pub_->publish(out_cmd.twist);
+    // Serialize the final output with cancel()/BLOCK and reference replacement.
+    // A cancellation during solve cannot be followed by an old nonzero command.
+    {
+      std::lock_guard<std::mutex> data_lock(data_mtx_);
+      const auto finish_now = node->now();
+      const double sampled_odom_age =
+        latest_odom
+          ? (finish_now - rclcpp::Time(latest_odom->header.stamp, finish_now.get_clock_type())).seconds()
+          : std::numeric_limits<double>::infinity();
+      if (!inputs_fresh || reference_version != reference_version_ || !inputsFreshLocked() ||
+          sampled_odom_age < 0.0 || sampled_odom_age > odom_timeout_sec_ ||
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - odom_received).count() >
+            odom_timeout_sec_) {
+        out_cmd.twist = geometry_msgs::msg::Twist{};
+        success = false;
+      }
+      // Every return path publishes the same final command handed back to Nav2.
+      if (cmd_vel_mpc_pub_) {
+        cmd_vel_mpc_pub_->publish(out_cmd.twist);
+      }
     }
     if (perf) {
       perf->success = success;
@@ -686,12 +787,6 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     }
     return out_cmd;
   };
-
-  nav_msgs::msg::Odometry::SharedPtr latest_odom;
-  {
-    std::lock_guard<std::mutex> lk(data_mtx_);
-    latest_odom = latest_odom_;
-  }
 
   // 1) 构造当前状态：位置与航向来自 robot_base_frame（base_link_fake），
   // 世界系速度由 LIO 机体系速度按 body yaw 旋出。
@@ -728,6 +823,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   cmd.header.stamp = now;
   cmd.header.frame_id = global_frame_;
 
+  if (!inputs_fresh) {
+    return finish(cmd, false, "STALE_INPUT");
+  }
+
   // Sync Nav2 success semantics: if GoalChecker says reached, output zero command immediately.
   if (goal_checker != nullptr) {
     geometry_msgs::msg::PoseStamped goal_pose;
@@ -741,9 +840,12 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     }
 
     if (has_goal_pose && goal_checker->isGoalReached(pose.pose, goal_pose.pose, velocity)) {
-      std::lock_guard<std::mutex> lk(data_mtx_);
-      has_tracked_ref_ = false;
-      latest_opt_path_.reset();
+      {
+        std::lock_guard<std::mutex> lk(data_mtx_);
+        has_tracked_ref_ = false;
+        latest_opt_path_.reset();
+        ++reference_version_;
+      }
       cmd.twist.linear.x = 0.0;
       cmd.twist.linear.y = 0.0;
       cmd.twist.angular.z = 0.0;
@@ -880,35 +982,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     vx = 0.0;
     vy = 0.0;
   }
-  constexpr double goal_pos_threshold = 0.3;
-  bool stop_mpc_cmd = false;
-  geometry_msgs::msg::PoseStamped goal_pose_stamped;
-  {
-    std::lock_guard<std::mutex> lk(plan_mtx_);
-    if (!global_plan_.poses.empty()) {
-      goal_pose_stamped = global_plan_.poses.back();
-    }
-  }
-  if (!goal_pose_stamped.header.frame_id.empty()) {
-    geometry_msgs::msg::PoseStamped goal_pose_in_odom = goal_pose_stamped;
-    if (goal_pose_in_odom.header.frame_id != pose.header.frame_id) {
-      try {
-        goal_pose_in_odom = tf_->transform(goal_pose_in_odom, pose.header.frame_id);
-      } catch (const tf2::TransformException &) {
-        goal_pose_in_odom.header.frame_id.clear();
-      }
-    }
-    if (!goal_pose_in_odom.header.frame_id.empty()) {
-      const double dx = pose.pose.position.x - goal_pose_in_odom.pose.position.x;
-      const double dy = pose.pose.position.y - goal_pose_in_odom.pose.position.y;
-      const double dist = std::hypot(dx, dy);
-      stop_mpc_cmd = (dist <= goal_pos_threshold);
-    }
-  }
-  // applyGravityCompensation(latest_odom, vx, vy);
-  cmd.twist.linear.x = stop_mpc_cmd ? 0.0 : vx;
-  cmd.twist.linear.y = stop_mpc_cmd ? 0.0 : vy;
-  cmd.twist.angular.z = stop_mpc_cmd ? 0.0 : wz;
+  // Terminal braking comes from the reference; only GoalChecker may declare arrival.
+  cmd.twist.linear.x = vx;
+  cmd.twist.linear.y = vy;
+  cmd.twist.angular.z = wz;
   return finish(cmd, true, "NONE");
 }
 

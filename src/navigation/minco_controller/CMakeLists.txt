@@ -55,4 +55,13 @@ endif()
 
 pluginlib_export_plugin_description_file(nav2_core minco_controller.xml)
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(mpc_solver_test test/mpc_solver_test.cpp src/mpc_solver.cpp)
+  target_include_directories(mpc_solver_test PRIVATE include)
+  target_link_libraries(mpc_solver_test Eigen3::Eigen qpOASES_vendor)
+  ament_add_gtest(controller_freshness_test test/controller_freshness_test.cpp)
+  target_link_libraries(controller_freshness_test ${PROJECT_NAME})
+endif()
+
 ament_auto_package(USE_SCOPED_HEADER_INSTALL_DIR)

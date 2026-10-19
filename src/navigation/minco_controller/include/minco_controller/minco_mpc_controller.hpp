@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
@@ -52,11 +54,16 @@ public:
   void setPlan(const nav_msgs::msg::Path & path) override;
 
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
+  bool cancel() override;
+  void reset() override;
 
 private:
+  friend class MincoMpcControllerTestPeer;
+  bool inputsFreshLocked() const;
   // === Callbacks ===
   void onOptPath(const ros_interfaces::msg::MpcPositionCommand::SharedPtr msg);
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void publishZeroCommand();
 
   // === Utility & Helper Functions ===
   void configureMpcPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
@@ -108,6 +115,14 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_predict_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_real_path_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_mpc_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr execution_pub_;
+  bool execution_enabled_{false};
+  uint64_t reference_version_{0};
+  std::chrono::steady_clock::time_point reference_received_at_;
+  std::chrono::steady_clock::time_point odom_received_at_;
+  double reference_timeout_sec_{2.0};
+  double odom_timeout_sec_{0.3};
+  rclcpp::Time execution_start_;
 
   // === TF & Costmap & Frames ===
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
