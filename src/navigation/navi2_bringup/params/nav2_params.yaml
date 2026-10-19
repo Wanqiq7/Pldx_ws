@@ -98,6 +98,7 @@ bt_navigator:
     # 例如：navigate_through_poses_w_replanning_and_recovery.xml
     # 这两项可以在这里配置，或者由父 launch 文件重写 YAML 参数。
     plugin_lib_names:
+      - minco_goal_updater_bt_node
       # 计算到目标点路径的行为节点
       - nav2_compute_path_to_pose_action_bt_node
       # 计算穿过多个目标点路径的行为节点

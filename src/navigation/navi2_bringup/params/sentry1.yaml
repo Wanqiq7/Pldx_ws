@@ -18,6 +18,7 @@ bt_navigator:
     default_server_timeout: 20
     # 等待服务响应的超时时间，单位 ms。
     wait_for_service_timeout: 2000
+    plugin_lib_names: [minco_goal_updater_bt_node]
     # 默认导航生成行为树的 XML 文件，可由 launch 文件或 remap 覆盖。
     # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
     # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
@@ -77,6 +78,9 @@ controller_server:
 
     FollowPath:
       plugin: "minco_controller::MincoMpcController"
+      # 独立失效保护（秒）：同时检查消息时间戳与稳态接收时间。
+      reference_timeout_sec: 2.0
+      odom_timeout_sec: 0.3
       # MPC 采样周期和前视时间，决定模型预测控制的时间分辨率。
       dt: 0.05
       lookahead_time: 0.5
@@ -314,6 +318,11 @@ planner_server:
 
     MincoPlanner:
       plugin: "minco_planner/MincoPlanner"
+      scheduling:
+        # 搜索、优化、校验及采样共享单次预算；安全检查超时撤销参考。
+        control_budget_sec: 0.005
+        planning_budget_sec: 0.025
+        safety_budget_sec: 0.005
       # 当前规划模式，PRIORMAP 表示使用先验地图作为主约束。
       planner_mode: PRIORMAP
       # planner_mode: EXPLORATION
