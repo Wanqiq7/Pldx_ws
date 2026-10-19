@@ -6,7 +6,7 @@
 
 ## ✨ 模块定位
 
-`minco_planner::MincoPlanner` 实现 `nav2_core::GlobalPlanner`。Nav2 调用 `createPlan()` 时，插件完成坐标系归一化并更新待处理目标；真正的搜索、优化、重规划与安全检查由内部 FSM 周期执行。规划结果通过自定义轨迹消息发送给 MPC，而不是仅输出离散 `nav_msgs/Path`。
+`minco_planner::MincoPlanner` 实现 `nav2_core::GlobalPlanner`。Nav2 调用 `createPlan()` 时，插件完成坐标系归一化并更新待处理目标；FSM 周期负责状态更新和结果提交；搜索、优化在独立工作线程执行，安全检查使用独立控制 executor。规划结果通过自定义轨迹消息发送给 MPC，而不是仅输出离散 `nav_msgs/Path`。
 
 核心能力：
 
@@ -83,6 +83,22 @@ A* / SMAC 搜索
 | `RECOVERING` | 执行局部脱困并在成功后重新规划 |
 
 > 状态名不等于所有分支均处于当前主路径。判断实际行为时应以 `minco_fsm.cpp` 中未注释的状态转移为准。
+
+## 调度与取消预算
+
+FSM 与安全定时器维持 20 Hz，和 `/minco/execution_enabled` 订阅共用插件自行管理的互斥回调组及专用 executor。父节点即使使用单线程 executor，搜索/优化也不会占用这个执行通道。FSM 只派发一个在途工作任务、轮询结果和提交；恢复查询也服从 FSM 预算。
+
+| 参数（`MincoPlanner.` 前缀） | 默认值 | 行为 |
+|---|---|---|
+| `scheduling.control_budget_sec` | `0.005` | FSM 回调预算；耗尽后撤销参考并重新排入当前目标 |
+| `scheduling.planning_budget_sec` | `0.025` | 全局搜索、局部种子、MINCO/偏航、校验及指令采样共享的单次预算；本机基准以含 ESDF 查询的 A* P99 2.52 ms 为基线并保留约一个数量级余量 |
+| `scheduling.safety_budget_sec` | `0.005` | 检查剩余轨迹；超时或碰撞立即发布 `BLOCK_COMMAND` |
+
+上述参数仅在 configure 时读取。预算与取消检查使用 `steady_clock`，不依赖仿真时间推进。A* 扩展、SMAC/探索搜索、MINCO 目标函数与积分采样、路径处理、偏航和轨迹采样都设有检查点。每次目标、执行状态、停用或撤销参考发生变化，版本递增；工作线程在检查点退出，控制通道只提交版本匹配的结果。完成计算后等待提交超过 100 ms 的结果会被丢弃，指令数量限制为 4096，以限制提交工作量。
+
+`deactivate()` 取消定时器、停止执行、清除待执行目标并撤销参考，立即使在途结果失效；`cleanup()` 再等待工作线程退出后释放地图与求解器。重新 activate 后等待新的执行启用消息。
+
+这是带失败保护的协作式预算。检查点之间的地图查询、内存分配、线性代数及 DDS 调用无法由 C++ 强行抢占，普通 Linux 调度也不提供硬实时上界；部署时需测量这些调用和 executor 抖动。控制端另外用轨迹和里程计超时保护输出，参见 [控制器文档](../minco_controller/README.md)。
 
 ## 📡 ROS 接口
 

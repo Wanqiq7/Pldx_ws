@@ -1,4 +1,5 @@
 #include "traj_opt/minco_optimizer.hpp"
+#include "minco_core/planning_deadline.hpp"
 
 #define POS_IDX 0
 #define VEL_IDX 1
@@ -101,6 +102,7 @@ double MincoOptimizer::optimize(const std::vector<Eigen::Vector3d> & waypoints,
     opt_vars_.init_ps.clear();
     opt_vars_.init_ps.reserve(static_cast<size_t>(opt_vars_.points.cols()));
     for (int i = 0; i < opt_vars_.points.cols(); ++i) {
+      minco_planner::PlanningDeadline::check();
       opt_vars_.init_ps.emplace_back(opt_vars_.points.col(i));
     }
     opt_vars_.default_init = false;
@@ -113,6 +115,7 @@ double MincoOptimizer::optimize(const std::vector<Eigen::Vector3d> & waypoints,
 
 double MincoOptimizer::costFunctional(void * ptr, const VecDf & x, VecDf & g)
 {
+  PlanningDeadline::check();
   OptVars & opt_vars_ = *(static_cast<OptVars *>(ptr));
   const auto & dim_t = opt_vars_.dim_t;
   const auto & dim_p = opt_vars_.dim_p;
@@ -213,6 +216,7 @@ void MincoOptimizer::computeTimeBarrier(const OptVars & opt_vars,
   const bool has_init_ps = (opt_vars.init_ps.size() == static_cast<size_t>(std::max(0, N - 1)));
 
   for (int i = 0; i < N; ++i) {
+    minco_planner::PlanningDeadline::check();
     const double t_i = times(i);
     const double local_vmax = opt_vars.local_magnitudes(i);
     const double vmax_safe = std::max(1e-3, local_vmax);
@@ -283,11 +287,13 @@ void MincoOptimizer::constraintsFunctional(const VecDf & T,
 
   // 3. Loop over pieces and samples
   for (int i = 0; i < piece_num; i++) {
+    minco_planner::PlanningDeadline::check();
     const Mat63f & c = coeffs.block<6, 3>(i * 6, 0);
     const auto & step = T(i) * integralFrac;
     const auto & local_vmax = local_magnitudes(i);
     const auto & local_vmaxSqr = local_vmax * local_vmax;
     for (int j = 0; j <= integral_res; j++) {
+      minco_planner::PlanningDeadline::check();
       double s1 = j * step;
       double s2 = s1 * s1;
       double s3 = s2 * s1;
@@ -409,6 +415,7 @@ bool MincoOptimizer::setupProblemAndCheck(const std::vector<Eigen::Vector3d> & w
   opt_vars_.points.resize(3, N - 1);
   opt_vars_.waypoint_attractor.resize(3, N + 1);
   for (int i = 0; i < N - 1; ++i) {
+    minco_planner::PlanningDeadline::check();
     opt_vars_.waypoint_attractor.col(i + 1) = waypoints[i + 1];
   }
   opt_vars_.waypoint_attractor.col(0) = opt_vars_.headPVA.col(0);
@@ -434,6 +441,7 @@ bool MincoOptimizer::setupProblemAndCheck(const std::vector<Eigen::Vector3d> & w
     if (ts_ok && ps_ok) {
       opt_vars_.times = opt_vars_.init_ts;
       for (int i = 0; i < opt_vars_.points.cols(); ++i) {
+        minco_planner::PlanningDeadline::check();
         opt_vars_.points.col(i) = opt_vars_.init_ps[static_cast<size_t>(i)];
       }
     } else {
@@ -468,6 +476,7 @@ void MincoOptimizer::DefaultInit()
 
   opt_vars_.times.resize(opt_vars_.piece_num);
   for (int i = 0; i < opt_vars_.piece_num; ++i) {
+    minco_planner::PlanningDeadline::check();
     const double d = std::max(0.0, dis(i));
     double t = 0.1;
     if (i == 0) {

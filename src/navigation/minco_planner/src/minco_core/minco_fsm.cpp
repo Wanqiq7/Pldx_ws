@@ -21,6 +21,7 @@ MincoFsm::MincoFsm(const PlannerPtr & planner, const RecoveryPtr & recovery_serv
 void MincoFsm::cancelGoal()
 {
   has_goal_ = false;
+  last_replan_time_ = 0.0;
   if (recovery_server_) {
     recovery_server_->clearMissionGoal();
   }
@@ -115,19 +116,12 @@ void MincoFsm::callMainFsmOnce()
       // }
     };
 
-    if (!planner_->PlanGlobalPath(current_pose, goal_)) {
-      handle_generate_replan_failure(
-        "GLOBAL_SEARCH_FAIL_TRIGGER_RECOVERING", "GLOBAL_SEARCH_FAIL_RECOVERY_FAIL");
+    const auto result = planner_->planAsync(current_pose, goal_, true);
+    if (!result) {
       return;
     }
-    if (!planner_->ReplanLocal(current_pose)) {
-      Eigen::Vector3d cur_p(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
-      // double dist = planner_->getEsdfDistance(cur_p);
-      // if (dist < 0.25) {
+    if (!*result) {
       handle_generate_replan_failure("GEN_STUCK_TRIGGER_RECOVERING", "GENERATE_RECOVERY_FAIL");
-      // return;
-      // }
-      // recovery_server_->onReplanSuccess();
       return;
     }
 
@@ -146,35 +140,21 @@ void MincoFsm::callMainFsmOnce()
       return;
     }
 
-    // 容差限停检测：到达终点且速度足够低
-    if (planner_->checkGoalReached(current_pose)) {
-      // if (!goal_stop_published_) {
-      //   planner_->publishEmergencyStop(current_pose);
-      //   goal_stop_published_ = true;
-      // }
-
-      if (planner_->getCurrentSpeed().head<2>().norm() < 0.3) {
-        has_goal_ = false;
-        changeState("GOAL_REACHED", State::WAIT_GOAL);
-      }
-
-      return;
-    }
-
-    // Disabled to prevent zero-velocity deadlock
-    // goal_stop_published_ = false;
+    // Arrival proximity is evidence only. Nav2's GoalChecker owns completion;
+    // keep planning/tracking until the FollowPath action exits.
 
     const double now_s = planner_->nowSeconds();
 
-    bool need_replan = planner_->isTrajectoryTimeExpired(now_s) || !planner_->isTrajSafe();
+    const bool trajectory_safe = planner_->isTrajSafe();
+    const bool trajectory_expired = planner_->isTrajectoryTimeExpired(now_s);
+    bool need_replan = trajectory_expired || !trajectory_safe || planner_->planningInProgress();
 
     // 强制高频重规划：1Hz刷新轨迹，避免轨迹“卡死”不更新。
     if (has_odom) {
-      static double last_replan_time = 0.0;
       const double current_time = planner_->nowSeconds();
-      if (current_time - last_replan_time > 1.0) {
+      if (current_time - last_replan_time_ > 1.0) {
         need_replan = true;
-        last_replan_time = current_time;
+        last_replan_time_ = current_time;
       }
     }
 
@@ -182,10 +162,20 @@ void MincoFsm::callMainFsmOnce()
       return;
     }
 
-    if (!planner_->ReplanLocal(current_pose)) {
-      // P0: If the old trajectory still has remaining time, keep following it.
-      if (!planner_->isTrajectoryTimeExpired(now_s)) {
+    const auto result = planner_->planAsync(current_pose, goal_, false);
+    if (!result) {
+      return;
+    }
+    if (!*result) {
+      const bool can_follow_old_trajectory = trajectory_safe && planner_->isTrajSafe();
+      // A failed refresh may fall back to an unexpired safe trajectory. An
+      // unsafe trajectory must be revoked even when its nominal duration remains.
+      if (can_follow_old_trajectory && !planner_->isTrajectoryTimeExpired(planner_->nowSeconds())) {
         return;
+      }
+
+      if (!can_follow_old_trajectory) {
+        planner_->invalidateTrajectory();
       }
 
       // 1. 失败诊断：区分是”前方路被挡”还是”自身被卡死”
@@ -355,6 +345,12 @@ void MincoFsm::changeState(const char * caller, State new_state)
 {
   if (state_ == new_state) {
     return;
+  }
+
+  // Revoke both the interrupted trajectory and the final escape command.
+  // GENERATE_TRAJ must produce a fresh cold-start trajectory before tracking.
+  if (new_state == State::RECOVERING || state_ == State::RECOVERING) {
+    planner_->invalidateTrajectory();
   }
 
   // Leaving recovery-related states: clear debug visualization and reset recovery runtime.

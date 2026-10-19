@@ -22,6 +22,7 @@
  */
 
 #include "traj_opt/yaw_traj_opt.h"
+#include "minco_core/planning_deadline.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -41,6 +42,7 @@ void YawTrajOpt::getYawTimeAllocation(double duration, Eigen::VectorXd & times) 
     const double interp_t = (duration - 2.0 * interp_dt) / static_cast<double>(interp_num);
     times.resize(2 + interp_num);
     for (int i = 0; i < interp_num; ++i) {
+      minco_planner::PlanningDeadline::check();
       times(i + 1) = interp_t;
     }
     times(times.size() - 1) = interp_dt;
@@ -64,6 +66,7 @@ void YawTrajOpt::getYawWaypointAllocation(const Eigen::Vector4d & init_state,
 
   const double pos_traj_duration = pos_traj.getTotalDuration();
   for (int i = 0; i < times.size() - 1; ++i) {
+    minco_planner::PlanningDeadline::check();
     eval_t += times(i);
     Eigen::Vector3d pt_i = pos_traj.getPos(eval_t);
     Eigen::Vector3d pt_g;
@@ -115,6 +118,7 @@ bool YawTrajOpt::optimize(const Eigen::Vector4d & istate_in,
     Eigen::Vector3d pt_g = pos_traj.getPos(t_g);
     Eigen::Vector3d dir = pt_g - pt_i;
     while (dir.norm() < 0.5 && t_g < pos_traj_dur) {
+      minco_planner::PlanningDeadline::check();
       t_g += 0.1;
       pt_g = pos_traj.getPos(t_g);
       dir = pt_g - pt_i;
@@ -127,6 +131,7 @@ bool YawTrajOpt::optimize(const Eigen::Vector4d & istate_in,
     Eigen::Vector3d pt_i = pos_traj.getPos(t_i);
     Eigen::Vector3d dir = pt_g - pt_i;
     while (dir.norm() < 0.5 && t_i > 0) {
+      minco_planner::PlanningDeadline::check();
       t_i -= 0.1;
       pt_i = pos_traj.getPos(t_i);
       dir = pt_g - pt_i;

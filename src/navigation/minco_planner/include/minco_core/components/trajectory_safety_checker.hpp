@@ -12,7 +12,7 @@ public:
   void setQuery(std::shared_ptr<rog_map::MapQueryInterface> dynamic_query);
 
   bool checkPoint(const Eigen::Vector3d & pos) const;
-  bool checkTrajectory(const traj_opt::Trajectory & traj) const;
+  bool checkTrajectory(const traj_opt::Trajectory & traj, double start_time = 0.0) const;
   double getDistance(const Eigen::Vector3d & pos) const;
   bool projectOutOfObstacle(Eigen::Vector3d & pos, double margin) const;
 

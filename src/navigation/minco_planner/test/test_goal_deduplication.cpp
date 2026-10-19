@@ -119,6 +119,31 @@ TEST(GoalDeduplication, CancellationAllowsSameGoalAgain)
   EXPECT_TRUE(planner.consumePendingGoal(consumed));
 }
 
+TEST(GoalDeduplication, DeactivationDiscardsPendingGoal)
+{
+  MincoPlanner planner;
+  const auto goal = makeGoal();
+  planner.createPlan(goal, goal, {});
+  planner.deactivate();
+  geometry_msgs::msg::PoseStamped consumed;
+  EXPECT_FALSE(planner.consumePendingGoal(consumed));
+}
+
+TEST(GoalDeduplication, CancelledSubmissionDoesNotAcceptGoal)
+{
+  MincoPlanner planner;
+  const auto goal = makeGoal();
+  EXPECT_TRUE(planner
+                .createPlan(goal,
+                  goal,
+                  [] {
+                    return true;
+                  })
+                .poses.empty());
+  geometry_msgs::msg::PoseStamped consumed;
+  EXPECT_FALSE(planner.consumePendingGoal(consumed));
+}
+
 TEST(GoalDeduplication, FailedNormalizationDoesNotLosePendingGoalOnRetry)
 {
   MincoPlanner planner;

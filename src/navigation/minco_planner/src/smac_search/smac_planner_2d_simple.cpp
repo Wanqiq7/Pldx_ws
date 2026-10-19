@@ -13,6 +13,7 @@
 // limitations under the License. Reserved.
 
 #include "smac_search/smac_planner_2d_simple.hpp"
+#include "minco_core/planning_deadline.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -56,8 +57,7 @@ void SmacPlanner2DSimple::setMap(const std::shared_ptr<rog_map::MapQueryInterfac
   std::fill(esdf_distance_cache_id_.begin(), esdf_distance_cache_id_.end(), 0u);
 }
 
-void SmacPlanner2DSimple::setESDFQuery(
-  const std::shared_ptr<rog_map::MapQueryInterface> & query)
+void SmacPlanner2DSimple::setESDFQuery(const std::shared_ptr<rog_map::MapQueryInterface> & query)
 {
   esdf_query_ = query;
   planning_id_ = 0u;
@@ -239,8 +239,7 @@ float SmacPlanner2DSimple::getESDFPotentialCost(unsigned int mx, unsigned int my
 
   const double dist = std::max(0.0, distance);
 
-  const float normalized_potential =
-    static_cast<float>(std::exp(-dist / static_cast<double>(esdf_decay_)));
+  const float normalized_potential = static_cast<float>(std::exp(-dist / static_cast<double>(esdf_decay_)));
   float weighted_potential = esdf_weight_ * normalized_potential;
   if (esdf_max_cost_ > 0.0f) {
     weighted_potential = std::min(weighted_potential, esdf_max_cost_);
@@ -319,11 +318,7 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
   const size_t map_size = static_cast<size_t>(size_x_) * static_cast<size_t>(size_y_);
   std::vector<unsigned char> map_charmap;
   if (!map_->copyValues(map_charmap) || map_charmap.size() != map_size) {
-    logFailure("failed to copy map values or copied map size mismatched",
-      start_x,
-      start_y,
-      goal_x,
-      goal_y);
+    logFailure("failed to copy map values or copied map size mismatched", start_x, start_y, goal_x, goal_y);
     return false;
   }
   const auto * charmap = map_charmap.data();
@@ -386,6 +381,7 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
   int iterations = 0;
 
   while (!open.empty() && iterations < max_iterations_) {
+    minco_planner::PlanningDeadline::check();
     if (cancel_checker && cancel_checker()) {
       logFailure("planning canceled", start_x, start_y, goal_x, goal_y, iterations);
       return false;
@@ -422,6 +418,7 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
     const int offsets[8][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
 
     for (int k = 0; k < 8; ++k) {
+      minco_planner::PlanningDeadline::check();
       const int nx_i = static_cast<int>(cx_u) + offsets[k][0];
       const int ny_i = static_cast<int>(cy_u) + offsets[k][1];
       if (nx_i < 0 || ny_i < 0) {
@@ -467,7 +464,8 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
   }
 
   if (!goal_reached && closed_[static_cast<size_t>(goal_index)] != planning_id_) {
-    logFailure(iterations >= max_iterations_ ? "max iterations reached before goal" : "open set exhausted before goal",
+    logFailure(iterations >= max_iterations_ ? "max iterations reached before goal"
+                                             : "open set exhausted before goal",
       start_x,
       start_y,
       goal_x,
@@ -479,6 +477,7 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
   // Backtrace (goal -> start). Caller expects reversed ordering.
   uint64_t index = goal_reached ? goal_reached_index : goal_index;
   for (;;) {
+    minco_planner::PlanningDeadline::check();
     const uint64_t y = index / static_cast<uint64_t>(size_x_);
     const uint64_t x = index - y * static_cast<uint64_t>(size_x_);
     path.emplace_back(static_cast<float>(x), static_cast<float>(y));

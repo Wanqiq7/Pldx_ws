@@ -1,4 +1,5 @@
 #include "minco_core/components/global_path_searcher.hpp"
+#include "minco_core/planning_deadline.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,7 @@ bool projectStartToFreeCell(
   const int dx4[4] = {1, -1, 0, 0};
   const int dy4[4] = {0, 0, 1, -1};
   for (int k = 0; k < 4; ++k) {
+    minco_planner::PlanningDeadline::check();
     int sx = static_cast<int>(mx) + dx4[k];
     int sy = static_cast<int>(my) + dy4[k];
     if (sx < 0 || sy < 0 || sx >= static_cast<int>(nx) || sy >= static_cast<int>(ny)) {
@@ -34,8 +36,11 @@ bool projectStartToFreeCell(
   }
   constexpr int kMaxRadius = 50;
   for (int r = 1; r <= kMaxRadius; ++r) {
+    minco_planner::PlanningDeadline::check();
     for (int dy = -r; dy <= r; ++dy) {
+      minco_planner::PlanningDeadline::check();
       for (int dx = -r; dx <= r; ++dx) {
+        minco_planner::PlanningDeadline::check();
         if (std::abs(dx) != r && std::abs(dy) != r) {
           continue;
         }
@@ -110,7 +115,9 @@ void logCellDiagnostics(const rclcpp::Logger & logger,
   int invalid = 0;
   constexpr int kRadius = 2;
   for (int dy = -kRadius; dy <= kRadius; ++dy) {
+    minco_planner::PlanningDeadline::check();
     for (int dx = -kRadius; dx <= kRadius; ++dx) {
+      minco_planner::PlanningDeadline::check();
       const int cx = static_cast<int>(mx) + dx;
       const int cy = static_cast<int>(my) + dy;
       if (cx < 0 || cy < 0 || cx >= static_cast<int>(query->sizeX()) ||
@@ -414,6 +421,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
   const int offsets[8][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
 
   while (!open.empty()) {
+    minco_planner::PlanningDeadline::check();
     if (cancel_checker && cancel_checker()) {
       return false;
     }
@@ -449,6 +457,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
     }
 
     for (const auto & offset : offsets) {
+      minco_planner::PlanningDeadline::check();
       const int nx_i = static_cast<int>(cx) + offset[0];
       const int ny_i = static_cast<int>(cy) + offset[1];
       if (nx_i < 0 || ny_i < 0 || nx_i >= static_cast<int>(nx) || ny_i >= static_cast<int>(ny)) {
@@ -478,6 +487,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
 
   std::vector<size_t> reversed;
   for (size_t idx = best_idx;;) {
+    minco_planner::PlanningDeadline::check();
     reversed.push_back(idx);
     if (idx == updated_start_idx) {
       break;
@@ -493,6 +503,7 @@ bool GlobalPathSearcher::planExploration(const geometry_msgs::msg::PoseStamped &
   latest_global_path.clear();
   latest_global_path.reserve(reversed.size());
   for (auto it = reversed.rbegin(); it != reversed.rend(); ++it) {
+    minco_planner::PlanningDeadline::check();
     const unsigned int x = static_cast<unsigned int>(*it % nx);
     const unsigned int y = static_cast<unsigned int>(*it / nx);
     double wx = 0.0;
@@ -576,7 +587,8 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
       failure_source.c_str(),
       wx,
       wy);
-    logCellDiagnostics(logger_, query, failure_source, "start(raw)", raw_mx_start, raw_my_start, allow_unknown_);
+    logCellDiagnostics(
+      logger_, query, failure_source, "start(raw)", raw_mx_start, raw_my_start, allow_unknown_);
     return false;
   }
 
@@ -642,8 +654,13 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
         smac_success ? "true" : "false",
         smac_path.size());
       if (raw_mx_start != mx_start || raw_my_start != my_start) {
-        logCellDiagnostics(
-          logger_, query, failure_source, "start(raw-before-projection)", raw_mx_start, raw_my_start, allow_unknown_);
+        logCellDiagnostics(logger_,
+          query,
+          failure_source,
+          "start(raw-before-projection)",
+          raw_mx_start,
+          raw_my_start,
+          allow_unknown_);
       }
       logCellDiagnostics(logger_, query, failure_source, "start(used)", mx_start, my_start, allow_unknown_);
       logCellDiagnostics(logger_, query, failure_source, "goal", mx_goal, my_goal, allow_unknown_);
@@ -655,6 +672,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     plan.poses.reserve(smac_path.size());
 
     for (auto it = smac_path.rbegin(); it != smac_path.rend(); ++it) {
+      minco_planner::PlanningDeadline::check();
       geometry_msgs::msg::PoseStamped pose;
       pose.header = plan.header;
 
@@ -693,6 +711,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     int max_total_cycles = static_cast<int>(nx * ny) * 9999;
     int cycles_per_step = std::max(static_cast<int>(nx * ny / 20), static_cast<int>(nx + ny));
     while (max_total_cycles > 0) {
+      minco_planner::PlanningDeadline::check();
       if (cancel_checker && cancel_checker()) {
         return false;
       }
@@ -703,10 +722,16 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     }
 
     if (!astar_->calcPath(nx * ny / 2) || astar_->getPathLen() < 2) {
-      RCLCPP_ERROR(logger_, "%s Astar failed to find path. See endpoint diagnostics below.", failure_source.c_str());
+      RCLCPP_ERROR(
+        logger_, "%s Astar failed to find path. See endpoint diagnostics below.", failure_source.c_str());
       if (raw_mx_start != mx_start || raw_my_start != my_start) {
-        logCellDiagnostics(
-          logger_, query, failure_source, "start(raw-before-projection)", raw_mx_start, raw_my_start, allow_unknown_);
+        logCellDiagnostics(logger_,
+          query,
+          failure_source,
+          "start(raw-before-projection)",
+          raw_mx_start,
+          raw_my_start,
+          allow_unknown_);
       }
       logCellDiagnostics(logger_, query, failure_source, "start(used)", mx_start, my_start, allow_unknown_);
       logCellDiagnostics(logger_, query, failure_source, "goal", mx_goal, my_goal, allow_unknown_);
@@ -722,6 +747,7 @@ bool GlobalPathSearcher::makePlanOnQuery(const geometry_msgs::msg::Pose & start,
     plan.poses.reserve(len);
 
     for (int i = 0; i < len; ++i) {
+      minco_planner::PlanningDeadline::check();
       geometry_msgs::msg::PoseStamped pose;
       pose.header = plan.header;
 

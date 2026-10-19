@@ -1,5 +1,6 @@
 // Corresponding header
 #include "minco_core/minco_planner.hpp"
+#include "minco_core/planning_deadline.hpp"
 #include "nav2_util/node_utils.hpp"
 
 // Project
@@ -22,7 +23,7 @@ MincoPlanner::MincoPlanner() : tf_(nullptr)
 
 MincoPlanner::~MincoPlanner()
 {
-  planner_perf_monitor_.close();
+  cleanup();
 }
 
 void MincoPlanner::configureMincoPerfLogging(
@@ -501,6 +502,22 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
     node, prefix + "recovery_server.escape_speed", rclcpp::ParameterValue(0.4));
   node->get_parameter(prefix + "recovery_server.escape_speed", recovery_server_config_.escape_speed);
 
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "scheduling.planning_budget_sec", rclcpp::ParameterValue(0.025));
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "scheduling.safety_budget_sec", rclcpp::ParameterValue(0.005));
+  nav2_util::declare_parameter_if_not_declared(
+    node, prefix + "scheduling.control_budget_sec", rclcpp::ParameterValue(0.005));
+  node->get_parameter(prefix + "scheduling.control_budget_sec", control_budget_sec_);
+  node->get_parameter(prefix + "scheduling.planning_budget_sec", planning_budget_sec_);
+  node->get_parameter(prefix + "scheduling.safety_budget_sec", safety_budget_sec_);
+  if (!std::isfinite(planning_budget_sec_) || planning_budget_sec_ <= 0.0 ||
+      !std::isfinite(safety_budget_sec_) || safety_budget_sec_ <= 0.0 || safety_budget_sec_ >= 0.05 ||
+      !std::isfinite(control_budget_sec_) || control_budget_sec_ <= 0.0 || control_budget_sec_ >= 0.05) {
+    throw std::invalid_argument(
+      "Planning budget must be positive; control/safety budgets must be in (0, 0.05)s");
+  }
+
   // --- Components / publishers / timers -------------------------------------
 
   const auto global_query = mode_context_ ? mode_context_->globalQuery() : nullptr;
@@ -557,7 +574,6 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
         latest_odom_ = *msg;
         has_latest_odom_ = true;
       }
-
     });
 
   visualizer_ = std::make_unique<Visualizer>();
@@ -582,41 +598,240 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
 
   // High-level FSM @ 20Hz.
   fsm_ = std::make_unique<MincoFsm>(planner_handle_, recovery_server_);
-  fsm_timer_ = node->create_wall_timer(std::chrono::duration<double>(1.0 / 20.0), [this]() {
-    if (fsm_) {
-      fsm_->callMainFsmOnce();
-    }
-  });
-
-  // Asynchronous safety monitor @ 20Hz.
-  safety_timer_ = node->create_wall_timer(
-    std::chrono::duration<double>(1.0 / 20.0), std::bind(&MincoPlanner::safetyTimerCallback, this));
+  configureControlCallbacks(node);
+  startPlanningWorker();
 
   on_set_parameters_callback_handle_ = node->add_on_set_parameters_callback(
     std::bind(&MincoPlanner::onSetParameters, this, std::placeholders::_1));
 }
 
+void MincoPlanner::configureControlCallbacks(const nav2_util::LifecycleNode::SharedPtr & node)
+{
+  // Explicit executor ownership avoids depending on Nav2's executor thread count.
+  // This lane only updates state, checks safety and commits completed work.
+  control_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  rclcpp::SubscriptionOptions execution_options;
+  execution_options.callback_group = control_group_;
+  execution_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    "/minco/execution_enabled",
+    rclcpp::QoS(10).reliable(),
+    [this](const std_msgs::msg::Bool::SharedPtr msg) {
+      std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+      if (!active_ || execution_enabled_ == msg->data) {
+        return;
+      }
+      execution_enabled_ = msg->data;
+      invalidateTrajectory();
+      if (fsm_) {
+        fsm_->cancelGoal();
+      }
+      std::lock_guard<std::mutex> lk(goal_mutex_);
+      has_pending_goal_ = execution_enabled_ && last_accepted_goal_.has_value();
+      if (has_pending_goal_) {
+        pending_goal_ = *last_accepted_goal_;
+      }
+    },
+    execution_options);
+  fsm_timer_ = node->create_wall_timer(
+    std::chrono::milliseconds(50),
+    [this]() {
+      std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+      if (active_ && fsm_ && execution_enabled_) {
+        try {
+          PlanningDeadline budget(control_budget_sec_, [] {
+            return false;
+          });
+          fsm_->callMainFsmOnce();
+          PlanningDeadline::check();
+        } catch (const PlanningInterrupted &) {
+          invalidateTrajectory();
+          fsm_->cancelGoal();
+          std::lock_guard<std::mutex> goal_lock(goal_mutex_);
+          has_pending_goal_ = last_accepted_goal_.has_value();
+          if (has_pending_goal_) {
+            pending_goal_ = *last_accepted_goal_;
+          }
+        }
+      }
+    },
+    control_group_);
+  safety_timer_ = node->create_wall_timer(
+    std::chrono::milliseconds(50),
+    [this]() {
+      std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+      if (active_ && execution_enabled_) {
+        safetyTimerCallback();
+      }
+    },
+    control_group_);
+  fsm_timer_->cancel();
+  safety_timer_->cancel();
+  rclcpp::ExecutorOptions executor_options;
+  executor_options.context = node->get_node_base_interface()->get_context();
+  control_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(executor_options);
+  control_executor_->add_callback_group(control_group_, node->get_node_base_interface());
+  control_shutdown_.store(false);
+  control_thread_ = std::thread([this, context = executor_options.context] {
+    // A bounded spin_once also handles cleanup racing the thread's first spin.
+    while (!control_shutdown_.load() && rclcpp::ok(context)) {
+      control_executor_->spin_once(std::chrono::milliseconds(50));
+    }
+  });
+}
+
 void MincoPlanner::setMap(const std::shared_ptr<rog_map::MapQueryInterface> & map)
 {
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+  std::unique_lock<std::mutex> computation_lock(computation_mutex_, std::try_to_lock);
+  if (!computation_lock.owns_lock()) {
+    throw std::logic_error("Cannot replace map while planning; cancel and retry first");
+  }
+  ++planning_version_;
   rog_query_raw_ = map;
   rebuildModeDependentQueries();
 }
 
 void MincoPlanner::activate()
 {
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+  active_ = true;
+  execution_enabled_ = false;
+  ++planning_version_;
+  if (fsm_timer_) {
+    fsm_timer_->reset();
+  }
+  if (safety_timer_) {
+    safety_timer_->reset();
+  }
+}
+
+void MincoPlanner::startPlanningWorker()
+{
+  std::lock_guard<std::mutex> lock(planning_mutex_);
+  if (planning_worker_running_) {
+    return;
+  }
+  planning_worker_running_ = true;
+  planning_worker_thread_ = std::thread(&MincoPlanner::planningWorkerLoop, this);
+}
+
+void MincoPlanner::stopPlanningWorker()
+{
+  {
+    std::lock_guard<std::mutex> lock(planning_mutex_);
+    planning_worker_running_ = false;
+    pending_planning_request_.reset();
+  }
+  planning_cv_.notify_all();
+  if (planning_worker_thread_.joinable()) {
+    planning_worker_thread_.join();
+  }
+  std::lock_guard<std::mutex> lock(planning_mutex_);
+  planning_worker_busy_ = false;
+  planning_result_.reset();
+  candidate_.reset();
+  candidate_unsafe_ = false;
+}
+
+void MincoPlanner::planningWorkerLoop()
+{
+  while (true) {
+    PlanningRequest request;
+    {
+      std::unique_lock<std::mutex> lock(planning_mutex_);
+      planning_cv_.wait(lock, [this] {
+        return !planning_worker_running_ ||
+               (pending_planning_request_.has_value() && !planning_result_.has_value());
+      });
+      if (!planning_worker_running_) {
+        return;
+      }
+      request = std::move(*pending_planning_request_);
+      pending_planning_request_.reset();
+      planning_worker_busy_ = true;
+      computing_version_ = request.version;
+      candidate_.reset();
+      candidate_unsafe_ = false;
+    }
+
+    bool success = false;
+    {
+      std::lock_guard<std::mutex> computation_lock(computation_mutex_);
+      PlanningDeadline budget(request.deadline, [this, version = request.version] {
+        return version != planning_version_.load() || !rclcpp::ok();
+      });
+      try {
+        PlanningDeadline::check();
+        if (request.global_search && !PlanGlobalPath(request.current_pose, request.goal)) {
+          success = false;
+        } else {
+          PlanningDeadline::check();
+          success = ReplanLocal(request.current_pose);
+          PlanningDeadline::check();
+        }
+      } catch (const PlanningInterrupted &) {
+        std::lock_guard<std::mutex> lock(planning_mutex_);
+        candidate_.reset();
+        RCLCPP_DEBUG(logger_, "Planning cancelled or budget exhausted");
+      } catch (const std::exception & ex) {
+        std::lock_guard<std::mutex> lock(planning_mutex_);
+        candidate_.reset();
+        RCLCPP_ERROR(logger_, "Planning failed: %s", ex.what());
+      }
+    }
+
+    const auto completed_at = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(planning_mutex_);
+      computed_at_ = completed_at;
+      planning_worker_busy_ = false;
+      planning_result_ = success;
+    }
+    planning_cv_.notify_all();
+  }
 }
 
 void MincoPlanner::deactivate()
 {
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+  active_ = false;
+  execution_enabled_ = false;
+  if (fsm_timer_) {
+    fsm_timer_->cancel();
+  }
+  if (safety_timer_) {
+    safety_timer_->cancel();
+  }
+  cancelGoal();
+  {
+    std::lock_guard<std::mutex> planning_lock(planning_mutex_);
+    pending_planning_request_.reset();
+  }
+  planning_cv_.notify_all();
 }
 
 void MincoPlanner::cleanup()
 {
+  deactivate();
+  control_shutdown_.store(true);
+  if (control_executor_) {
+    control_executor_->cancel();
+  }
+  if (control_thread_.joinable()) {
+    control_thread_.join();
+  }
+  control_executor_.reset();
+  control_group_.reset();
+  // Revoke immediately in deactivate(); drain the cancelled worker before freeing
+  // its maps/optimizers. Never wait for it while holding the control mutex.
+  stopPlanningWorker();
   planner_perf_monitor_.close();
 
   on_set_parameters_callback_handle_.reset();
 
   fsm_timer_.reset();
+  execution_sub_.reset();
+  execution_enabled_ = false;
   safety_timer_.reset();
 
   {
@@ -658,11 +873,18 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
 {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+  std::unique_lock<std::mutex> computation_lock(computation_mutex_, std::try_to_lock);
+  if (!computation_lock.owns_lock()) {
+    result.successful = false;
+    result.reason = "Planner is computing; retry parameter update after cancellation";
+    return result;
+  }
 
   const std::string planner_mode_param = name_ + ".planner_mode";
   const auto is_configure_time_mode_param = [this, &planner_mode_param](const std::string & param_name) {
-    return param_name == planner_mode_param || param_name == name_ + ".frames.map_frame" ||
-           param_name == name_ + ".frames.rog_frame" ||
+    return param_name.rfind(name_ + ".scheduling.", 0) == 0 || param_name == planner_mode_param ||
+           param_name == name_ + ".frames.map_frame" || param_name == name_ + ".frames.rog_frame" ||
            param_name == name_ + ".priormap.use_nav2_global_search" ||
            param_name == name_ + ".priormap.clip_seed_by_rog_boundary" ||
            param_name == name_ + ".priormap.rog_boundary_margin" ||
@@ -772,6 +994,7 @@ rcl_interfaces::msg::SetParametersResult MincoPlanner::onSetParameters(
   }
 
   if (optimizer_config_changed) {
+    ++planning_version_;
     minco_config.max_vel = next_max_vel;
     minco_config.max_acc = next_max_acc;
 
@@ -856,16 +1079,21 @@ bool MincoPlanner::normalizePoseToFrame(const geometry_msgs::msg::PoseStamped & 
   }
 }
 
-nav_msgs::msg::Path MincoPlanner::createPlan(
-  const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal,
+nav_msgs::msg::Path MincoPlanner::createPlan(const geometry_msgs::msg::PoseStamped & start,
+  const geometry_msgs::msg::PoseStamped & goal,
   std::function<bool()> cancel_checker)
 {
-  (void)cancel_checker;
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
   // Nav2 interface: createPlan() only sets the goal flag for MincoFSM.
   // It must NOT run A* or optimization here.
   nav_msgs::msg::Path path;
-  path.header.stamp = rclcpp::Clock().now();
+  if (const auto node = node_.lock()) {
+    path.header.stamp = node->get_clock()->now();
+  }
   path.header.frame_id = output_frame_;
+  if ((cancel_checker && cancel_checker()) || (!node_.expired() && !active_)) {
+    return path;
+  }
 
   geometry_msgs::msg::PoseStamped normalized_start;
   geometry_msgs::msg::PoseStamped normalized_goal;
@@ -880,6 +1108,11 @@ nav_msgs::msg::Path MincoPlanner::createPlan(
     std::lock_guard<std::mutex> lk(goal_mutex_);
     has_pending_goal_ = false;
     last_accepted_goal_.reset();
+    invalidateTrajectory();
+    return path;
+  }
+
+  if (cancel_checker && cancel_checker()) {
     return path;
   }
 
@@ -901,6 +1134,7 @@ nav_msgs::msg::Path MincoPlanner::createPlan(
         return path;
       }
     }
+    ++planning_version_;
     last_accepted_goal_ = normalized_goal;
     pending_goal_ = normalized_goal;
     has_pending_goal_ = true;
@@ -913,7 +1147,8 @@ bool MincoPlanner::PlanGlobalPath(
   const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal)
 {
   const bool record_perf = planner_perf_monitor_.detailedCsvEnabled();
-  const auto search_start = record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  const auto search_start =
+    record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   auto record_search_time = [&]() {
     if (!record_perf) {
       return;
@@ -935,19 +1170,93 @@ bool MincoPlanner::PlanGlobalPath(
   }
   record_search_time();
 
+  PlanningDeadline::check();
   std::lock_guard<std::mutex> path_lock(path_mutex_);
   latest_global_path_ = std::move(planned_path);
   return latest_global_path_.size() >= 2U;
 }
 
+std::optional<bool> MincoPlanner::planAsync(const geometry_msgs::msg::PoseStamped & current_pose,
+  const geometry_msgs::msg::PoseStamped & goal,
+  bool global_search)
+{
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+  {
+    std::lock_guard<std::mutex> planning_lock(planning_mutex_);
+    if (planning_result_) {
+      const bool success = *planning_result_;
+      planning_result_.reset();
+      if (computing_version_ != planning_version_.load() || !active_ || !execution_enabled_) {
+        candidate_.reset();
+        planning_cv_.notify_all();
+        return std::nullopt;
+      }
+      if (candidate_unsafe_) {
+        is_traj_safe_.store(false);
+      }
+      if (!success) {
+        candidate_.reset();
+        planning_cv_.notify_all();
+        return false;
+      }
+      if (!candidate_) {
+        planning_cv_.notify_all();
+        return isTrajSafe() && !isTrajectoryTimeExpired(nowSeconds());
+      }
+      // Bound the age between finishing computation and committing its snapshot.
+      if (std::chrono::steady_clock::now() - computed_at_ > std::chrono::milliseconds(100)) {
+        candidate_.reset();
+        planning_cv_.notify_all();
+        return false;
+      }
+      auto candidate = std::move(*candidate_);
+      candidate_.reset();
+      planning_cv_.notify_all();
+      const auto stamp = node_.lock()->now();
+      candidate.command.header.stamp = stamp;
+      const uint32_t id = ++opt_trajectory_id_;
+      for (auto & cmd : candidate.command.cmds) {
+        PlanningDeadline::check();
+        cmd.header.stamp = stamp;
+        cmd.trajectory_id = id;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_traj_ = std::move(candidate.position);
+        last_yaw_traj_ = std::move(candidate.yaw);
+        last_traj_.start_WT = stamp.seconds();
+        last_yaw_traj_.start_WT = stamp.seconds();
+        has_last_traj_ = has_last_yaw_traj_ = true;
+      }
+      PlanningDeadline::check();
+      is_traj_safe_.store(true);
+      opt_path_pub_->publish(candidate.command);
+      return true;
+    }
+
+    if (planning_worker_busy_) {
+      return std::nullopt;
+    }
+
+    const auto version = planning_version_.load();
+    const auto deadline =
+      PlanningDeadline::Clock::now() + std::chrono::duration_cast<PlanningDeadline::Clock::duration>(
+                                         std::chrono::duration<double>(planning_budget_sec_));
+    pending_planning_request_ = PlanningRequest{current_pose, goal, global_search, version, deadline};
+    planning_cv_.notify_one();
+  }
+  return std::nullopt;
+}
+
 bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_pose)
 {
   const bool record_perf = planner_perf_monitor_.detailedCsvEnabled();
-  const auto replan_start = record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  const auto replan_start =
+    record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   std::optional<MincoPerfSample> perf;
   if (record_perf) {
     perf.emplace();
-    perf->stamp_ros = rclcpp::Clock().now().seconds();
+    perf->stamp_ros = nowSeconds();
     perf->stamp_steady_ns = PlannerPerformanceMonitor::steadyNowNs();
     perf->planner_mode = mode_params_.planner_mode;
     std::lock_guard<std::mutex> perf_lock(perf_mutex_);
@@ -960,8 +1269,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     if (perf) {
       perf->success = success;
       perf->failure_reason = success ? "NONE" : reason;
-      perf->total_replan_time_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - replan_start).count();
+      perf->total_replan_time_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replan_start).count();
       {
         std::lock_guard<std::mutex> perf_lock(perf_mutex_);
         if (last_minco_perf_stamp_ns_ > 0 && perf->stamp_steady_ns > last_minco_perf_stamp_ns_) {
@@ -1015,7 +1324,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
 
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
-  header_msg.stamp = rclcpp::Clock().now();
+  header_msg.stamp = node_.lock()->get_clock()->now();
 
   // 4. Determine state (HOT/COLD).
   PlanningState state = PlanningState::COLD_START;
@@ -1024,7 +1333,6 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   double last_traj_start_WT = 0.0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    state = determinePlanningState(current_pose.pose, sparse_path);
     if (has_last_traj_) {
       last_traj_snapshot = last_traj_;
       has_last_traj_snapshot = true;
@@ -1032,6 +1340,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     }
   }
 
+  state =
+    determinePlanningState(current_pose.pose, sparse_path, last_traj_snapshot, has_last_traj_snapshot);
   if (state == PlanningState::EMERGENCY_STOP) {
     return finish(false, "RECOVERY_TRIGGERED");
   }
@@ -1042,12 +1352,9 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   VecDf shifted_durations;
   bool has_shifted_seed = false;
   if (state == PlanningState::HOT_START) {
-    const double now = rclcpp::Clock().now().seconds() + 0.005;  // small buffer
+    const double now = nowSeconds() + 0.005;  // small buffer
     const double t_dur = now - last_traj_start_WT;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      prepareHotStart(current_pose.pose, t_dur, start_state);
-    }
+    prepareHotStart(current_pose.pose, t_dur, start_state, last_traj_snapshot);
 
     // Extract remaining trajectory segment as shifted warm-start seed.
     if (has_last_traj_snapshot) {
@@ -1121,6 +1428,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
 
   // Remove near-start redundant points from sparse_path.
   while (sparse_path.size() > 2) {
+    PlanningDeadline::check();
     if ((sparse_path[1] - start_state.col(0)).norm() < 0.2) {
       sparse_path.erase(sparse_path.begin() + 1);
     } else {
@@ -1155,12 +1463,13 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     perf->local_search_time_ms =
       std::chrono::duration<double, std::milli>(opt_start_steady - replan_start).count();
   }
-  auto opt_start_time = rclcpp::Clock().now().seconds();
+  auto opt_start_time = nowSeconds();
   double final_cost =
     minco_optimizer_->optimize(sparse_path, start_state, end_state, local_vmaxs, opt_traj);
   if (perf) {
     perf->optimizer_time_ms =
-      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - opt_start_steady).count();
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - opt_start_steady)
+        .count();
   }
 
   // const double max_allowed_cost = 6000.0;
@@ -1182,7 +1491,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     }
 
     if (has_last_traj && isTrajSafe()) {
-      if (!isTrajectoryTimeExpired(rclcpp::Clock().now().seconds())) {
+      if (!isTrajectoryTimeExpired(nowSeconds())) {
         std::cout << YELLOW
                   << "[MincoPlanner] Last trajectory is still valid and safe. Continuing to execute it."
                   << RESET << std::endl;
@@ -1193,24 +1502,21 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     return finish(false, "OPTIMIZER_FAILED");
   }
 
-  auto opt_end_time = rclcpp::Clock().now().seconds();
+  auto opt_end_time = nowSeconds();
   double opt_duration = opt_end_time - opt_start_time;
-  std::cout << GREEN << "[MincoPlanner] Minco optimization time: "
-            << opt_duration << " seconds, "
+  std::cout << GREEN << "[MincoPlanner] Minco optimization time: " << opt_duration << " seconds, "
             << "cost: " << final_cost << RESET << std::endl;
 
   // 8.5 Quality gating (hard validation) before publishing.
   const bool validation_ok = validateTrajectory(opt_traj, end_state.col(0));
   if (visualizer_) {
-    visualizer_->updateCandidateTrajectory(opt_traj,
-      opt_duration,
-      validation_ok,
-      validation_ok ? "NONE" : last_validation_failure_reason_);
+    visualizer_->updateCandidateTrajectory(
+      opt_traj, opt_duration, validation_ok, validation_ok ? "NONE" : last_validation_failure_reason_);
   }
 
   if (!validation_ok) {
     std::cout << RED << "[MincoPlanner] Trajectory validation failed! Rejecting." << RESET << std::endl;
-    is_traj_safe_.store(false);
+    candidate_unsafe_ = true;
     return finish(false, last_validation_failure_reason_);
   }
 
@@ -1280,8 +1586,12 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   int steps = static_cast<int>(std::ceil(opt_traj.getTotalDuration() / t_step)) + 1;
   steps = std::max(2, steps);
 
-  utils::publishOptimizedTrajectory(
-    opt_traj, yaw_traj, opt_path_pub_, opt_trajectory_id_, header_msg, steps, t_step);
+  // Bound work in the later commit callback, including command metadata updates.
+  if (steps > 4096) {
+    return finish(false, "TRAJECTORY_TOO_LONG");
+  }
+  auto command = utils::sampleOptimizedTrajectory(opt_traj, yaw_traj, 0, header_msg, steps, t_step);
+  PlanningDeadline::check();
 
   if (visualizer_) {
     nav_msgs::msg::Path astar_path_msg;
@@ -1294,14 +1604,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
     visualizer_->update(sparse_path, backup_traj, opt_traj, opt_duration, astar_path_msg);
   }
 
-  last_traj_ = opt_traj;
-  last_traj_.start_WT = rclcpp::Clock().now().seconds();
-  has_last_traj_ = true;
-  last_yaw_traj_ = yaw_traj;
-  last_yaw_traj_.start_WT = last_traj_.start_WT;
-  has_last_yaw_traj_ = true;
-
-  is_traj_safe_.store(true);
+  candidate_ = Candidate{std::move(opt_traj), std::move(yaw_traj), std::move(command)};
   return finish(true, "NONE");
 }
 
@@ -1343,14 +1646,17 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
     copyPs = std::min(std::max(0, N - 1), oldPs);
   }
   for (int j = 0; j < copyPs; ++j) {
+    PlanningDeadline::check();
     init_ps.emplace_back(shifted_waypoints[static_cast<size_t>(j + 1)]);
   }
   for (int j = copyPs; j < (N - 1); ++j) {
+    PlanningDeadline::check();
     init_ps.emplace_back(sparse_path[static_cast<size_t>(j + 1)]);
   }
 
   std::vector<double> seg_len(static_cast<size_t>(N), 0.0);
   for (int i = 0; i < N; ++i) {
+    PlanningDeadline::check();
     const double dis =
       (sparse_path[static_cast<size_t>(i + 1)] - sparse_path[static_cast<size_t>(i)]).head<2>().norm();
     seg_len[static_cast<size_t>(i)] = (std::isfinite(dis) && dis > 0.0) ? dis : 0.0;
@@ -1358,12 +1664,14 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
 
   std::vector<double> remain_after(static_cast<size_t>(N), 0.0);
   for (int i = N - 2; i >= 0; --i) {
+    PlanningDeadline::check();
     remain_after[static_cast<size_t>(i)] =
       remain_after[static_cast<size_t>(i + 1)] + seg_len[static_cast<size_t>(i + 1)];
   }
 
   std::vector<double> local_vmax_vec(static_cast<size_t>(N), global_vmax);
   for (int i = 0; i < N - 1; ++i) {
+    PlanningDeadline::check();
     local_vmax_vec[static_cast<size_t>(i)] = utils::LimitLocalVel(sparse_path,
       i,
       global_vmax,
@@ -1374,6 +1682,7 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
   }
   utils::VelPropogation(seg_len, amax, local_vmax_vec);
   for (int i = 0; i < N; ++i) {
+    PlanningDeadline::check();
     local_vmaxs(i) = local_vmax_vec[static_cast<size_t>(i)];
   }
 
@@ -1384,6 +1693,7 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
 
   const double local_goal_remain = goal_reached ? 0.0 : max_brake_dist;
   for (int i = 0; i < N; ++i) {
+    PlanningDeadline::check();
     const bool is_last = (i == N - 1);
     const double L = seg_len[static_cast<size_t>(i)];
     const double remain = remain_after[static_cast<size_t>(i)] + local_goal_remain;
@@ -1410,6 +1720,7 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
   if (state == PlanningState::HOT_START && has_shifted_seed) {
     const int oldN = std::min(N, static_cast<int>(shifted_durations.size()));
     for (int i = 0; i < oldN; ++i) {
+      PlanningDeadline::check();
       const double t_seed = shifted_durations(i);
       if (std::isfinite(t_seed) && t_seed > 0.02) {
         init_ts(i) = std::max(init_ts(i), t_seed);
@@ -1424,15 +1735,28 @@ bool MincoPlanner::makePlan(const geometry_msgs::msg::Pose & start,
   std::function<bool()> cancel_checker,
   nav_msgs::msg::Path & plan)
 {
-  if (!global_path_searcher_ || !mode_context_) {
+  std::unique_lock<std::mutex> computation_lock(computation_mutex_, std::try_to_lock);
+  if (!computation_lock.owns_lock()) {
     return false;
   }
-  if (!global_path_searcher_->makePlan(start, goal, *mode_context_, tolerance, cancel_checker, plan)) {
+  PlanningDeadline budget(planning_budget_sec_, [cancel_checker] {
+    return cancel_checker && cancel_checker();
+  });
+  try {
+    PlanningDeadline::check();
+    if (!global_path_searcher_ || !mode_context_) {
+      return false;
+    }
+    if (!global_path_searcher_->makePlan(start, goal, *mode_context_, tolerance, cancel_checker, plan)) {
+      return false;
+    }
+    PlanningDeadline::check();
+    std::lock_guard<std::mutex> path_lock(path_mutex_);
+    latest_global_path_ = plan.poses;
+    return true;
+  } catch (const PlanningInterrupted &) {
     return false;
   }
-  std::lock_guard<std::mutex> path_lock(path_mutex_);
-  latest_global_path_ = plan.poses;
-  return true;
 }
 
 std::vector<Eigen::Vector3d> MincoPlanner::extractLocalPath(const Eigen::Vector3d & cur_pos)
@@ -1453,23 +1777,26 @@ std::vector<Eigen::Vector3d> MincoPlanner::extractLocalPath(const Eigen::Vector3
 }
 
 MincoPlanner::PlanningState MincoPlanner::determinePlanningState(
-  const geometry_msgs::msg::Pose & start_pose, const std::vector<Eigen::Vector3d> & new_path)
+  const geometry_msgs::msg::Pose & start_pose,
+  const std::vector<Eigen::Vector3d> & new_path,
+  const traj_opt::Trajectory & previous,
+  bool has_previous)
 {
-  if (!has_last_traj_) {
+  if (!has_previous) {
     return PlanningState::COLD_START;
   }
 
-  double now = rclcpp::Clock().now().seconds() + 0.005;
-  double t_dur = now - last_traj_.start_WT;
-  if (t_dur <= 0.0 || t_dur >= last_traj_.getTotalDuration()) {
+  double now = nowSeconds() + 0.005;
+  double t_dur = now - previous.start_WT;
+  if (t_dur <= 0.0 || t_dur >= previous.getTotalDuration()) {
     std::cout << YELLOW << "[MincoPlanner] Hot Start Rejected: Invalid time duration (t_dur=" << t_dur
               << "s)" << RESET << std::endl;
     return PlanningState::COLD_START;
   }
 
   Eigen::Vector3d current_pos(start_pose.position.x, start_pose.position.y, 0.0);
-  Eigen::Vector3d pred_pos = last_traj_.getPos(t_dur);
-  Eigen::Vector3d pred_vel = last_traj_.getVel(t_dur);
+  Eigen::Vector3d pred_pos = previous.getPos(t_dur);
+  Eigen::Vector3d pred_vel = previous.getVel(t_dur);
   double tracking_error = (current_pos - pred_pos).norm();
   Eigen::Vector3d current_speed = getCurrentSpeed();
   double dynamic_error_threshold = 1.0 + 0.5 * current_speed.head<2>().norm();
@@ -1489,7 +1816,7 @@ MincoPlanner::PlanningState MincoPlanner::determinePlanningState(
   }
 
   if (new_path.size() >= 2) {
-    Eigen::Vector3d pred_vel = last_traj_.getVel(t_dur);
+    Eigen::Vector3d pred_vel = previous.getVel(t_dur);
     if (pred_vel.norm() > 0.1) {
       Eigen::Vector3d path_dir = (new_path[1] - new_path[0]).normalized();
       Eigen::Vector3d vel_dir = pred_vel.normalized();
@@ -1517,15 +1844,17 @@ void MincoPlanner::prepareColdStart(const geometry_msgs::msg::Pose & start_pose,
   start_state.col(1) = real_speed;
 }
 
-void MincoPlanner::prepareHotStart(
-  const geometry_msgs::msg::Pose & start_pose, double t_dur, Eigen::Matrix3d & start_state)
+void MincoPlanner::prepareHotStart(const geometry_msgs::msg::Pose & start_pose,
+  double t_dur,
+  Eigen::Matrix3d & start_state,
+  const traj_opt::Trajectory & previous)
 {
   start_state.setZero();
-  // start_state.col(0) = last_traj_.getPos(t_dur);
+  // start_state.col(0) = previous.getPos(t_dur);
   start_state.col(0) = Eigen::Vector3d(start_pose.position.x, start_pose.position.y, 0.0);
-  start_state.col(1) = last_traj_.getVel(t_dur);
+  start_state.col(1) = previous.getVel(t_dur);
   // Eigen::Vector3d real_speed = getCurrentSpeed();
-  start_state.col(2) = last_traj_.getAcc(t_dur);
+  start_state.col(2) = previous.getAcc(t_dur);
 }
 
 bool MincoPlanner::optimizeYaw(const Eigen::Matrix3d & start_state,
@@ -1616,6 +1945,7 @@ bool MincoPlanner::validateTrajectory(
 
   // 1) Dynamic feasibility (severe violation gate).
   for (double t = 0.0; t <= dur; t += kDt) {
+    PlanningDeadline::check();
     const Eigen::Vector3d v = traj.getVel(t);
     const Eigen::Vector3d a = traj.getAcc(t);
     if (!(v.allFinite() && a.allFinite())) {
@@ -1625,8 +1955,8 @@ bool MincoPlanner::validateTrajectory(
     }
     if (v.norm() > vmax_severe || a.norm() > amax_severe) {
       std::cout << YELLOW << "[MincoPlanner] validateTrajectory: severe dynamics violation."
-                << " |v|=" << v.norm() << " (limit=" << vmax_severe << ")"
-                << ", |a|=" << a.norm() << " (limit=" << amax_severe << ")" << RESET << std::endl;
+                << " |v|=" << v.norm() << " (limit=" << vmax_severe << ")" << ", |a|=" << a.norm()
+                << " (limit=" << amax_severe << ")" << RESET << std::endl;
       last_validation_failure_reason_ = "KINEMATIC_VIOLATION";
       return false;
     }
@@ -1680,7 +2010,11 @@ bool MincoPlanner::checkCollision()
     return true;
   }
 
-  return safety_checker_->checkTrajectory(traj_snapshot);
+  const double elapsed = std::max(0.0, nowSeconds() - traj_snapshot.start_WT);
+  if (elapsed >= dur) {
+    return false;
+  }
+  return safety_checker_->checkTrajectory(traj_snapshot, elapsed);
 }
 
 bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
@@ -1699,17 +2033,26 @@ bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
 
 void MincoPlanner::safetyTimerCallback()
 {
-  const bool safe = checkCollision();
+  bool safe = false;
+  try {
+    PlanningDeadline budget(safety_budget_sec_, [] {
+      return false;
+    });
+    safe = checkCollision();
+    PlanningDeadline::check();
+  } catch (const PlanningInterrupted &) {
+    RCLCPP_WARN(logger_, "Safety check budget exhausted; revoking reference");
+  }
   if (!safe) {
-    is_traj_safe_.store(false);
-    auto node = node_.lock();
-    if (node) {
-      RCLCPP_WARN_THROTTLE(
-        logger_, *node->get_clock(), 2000, "[MincoPlanner] Trajectory collision detected.");
-    }
+    // Do not wait for the next optimization attempt to stop an unsafe reference.
+    invalidateTrajectory();
     return;
   }
-  is_traj_safe_.store(true);
+  // A missing trajectory is not a new safety certificate.
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (has_last_traj_) {
+    is_traj_safe_.store(true);
+  }
 }
 
 void MincoPlanner::publishEmergencyStop(const geometry_msgs::msg::PoseStamped & current_pose)
@@ -1792,17 +2135,43 @@ bool MincoPlanner::consumePendingGoal(geometry_msgs::msg::PoseStamped & goal_out
 
 void MincoPlanner::cancelGoal()
 {
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
   std::lock_guard<std::mutex> lk(goal_mutex_);
   has_pending_goal_ = false;
   last_accepted_goal_.reset();
+  invalidateTrajectory();
   if (fsm_) {
     fsm_->cancelGoal();
   }
 }
 
+void MincoPlanner::invalidateTrajectory()
+{
+  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
+  ++planning_version_;
+  // The guide path is a computation cache; revocation must not wait for the
+  // worker's path copy. A restart/new goal always requests a fresh global search.
+  std::lock_guard<std::mutex> lk(mutex_);
+  has_last_traj_ = false;
+  has_last_yaw_traj_ = false;
+  is_traj_safe_.store(false);
+  ++opt_trajectory_id_;
+
+  if (opt_path_pub_) {
+    ros_interfaces::msg::MpcPositionCommand invalidated;
+    if (const auto node = node_.lock()) {
+      invalidated.header.stamp = node->now();
+    }
+    invalidated.header.frame_id = output_frame_;
+    invalidated.command_flag = ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND;
+    opt_path_pub_->publish(invalidated);
+  }
+}
+
 double MincoPlanner::nowSeconds() const
 {
-  return rclcpp::Clock().now().seconds();
+  const auto node = node_.lock();
+  return node ? node->get_clock()->now().seconds() : 0.0;
 }
 
 double MincoPlanner::getTrajectoryRemainTime() const
@@ -1917,8 +2286,7 @@ Eigen::Vector3d MincoPlanner::getCurrentSpeed() const
     double vx_global = 0.0;
     double vy_global = 0.0;
     double omega_global = 0.0;
-    utils::compensateLeverArm(
-      twist.linear.x,
+    utils::compensateLeverArm(twist.linear.x,
       twist.linear.y,
       twist.angular.z,
       yaw,
@@ -1958,6 +2326,7 @@ bool MincoPlanner::isTrajectoryTimeExpired(double now_s) const
 
 double MincoPlanner::getEsdfDistance(const Eigen::Vector3d & pos) const
 {
+  PlanningDeadline::check();
   return safety_checker_ ? safety_checker_->getDistance(pos) : 0.0;
 }
 

@@ -1,4 +1,5 @@
 #include "minco_core/components/trajectory_safety_checker.hpp"
+#include "minco_core/planning_deadline.hpp"
 
 #include "data_structure/base/trajectory.h"
 
@@ -65,19 +66,21 @@ bool TrajectorySafetyChecker::checkPoint(const Eigen::Vector3d & pos) const
   return std::isfinite(esdf_dist) && esdf_dist > safe_dist_;
 }
 
-bool TrajectorySafetyChecker::checkTrajectory(const traj_opt::Trajectory & traj) const
+bool TrajectorySafetyChecker::checkTrajectory(const traj_opt::Trajectory & traj, double start_time) const
 {
   if (!ensureQueryAvailable()) {
     return false;
   }
 
   const double dur = traj.getTotalDuration();
-  for (double t = 0.0; t <= dur; t += sample_dt_) {
+  for (double t = std::max(0.0, start_time); t < dur; t += sample_dt_) {
+    minco_planner::PlanningDeadline::check();
     if (!checkPoint(traj.getPos(t))) {
       return false;
     }
   }
-  return true;
+  minco_planner::PlanningDeadline::check();
+  return std::isfinite(dur) && dur > 0.0 && checkPoint(traj.getPos(dur));
 }
 
 double TrajectorySafetyChecker::getDistance(const Eigen::Vector3d & pos) const
