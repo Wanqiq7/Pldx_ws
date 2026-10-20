@@ -31,7 +31,7 @@ void countWarnings(const rcutils_log_location_t *,
   }
 }
 
-TEST(GoalUpdater, DiscardsStaleCacheOnceAndKeepsAcceptedUpdates)
+TEST(GoalUpdater, ResetsBetweenActionsAndAcceptsUpdatesFromAnotherClock)
 {
   rclcpp::init(0, nullptr);
   auto node = std::make_shared<rclcpp::Node>("test_goal_updater");
@@ -86,33 +86,49 @@ TEST(GoalUpdater, DiscardsStaleCacheOnceAndKeepsAcceptedUpdates)
     EXPECT_DOUBLE_EQ(board->get<geometry_msgs::msg::PoseStamped>("updated_goal").pose.position.x, 2.0);
   }
   EXPECT_EQ(warnings, 0);
-  // A newer action makes that single cached update stale.
+  // A new action discards the previous action's cached topic update.
   goal.header.stamp.sec = 30;
   goal.pose.position.x = 3.0;
   board->set("goal", goal);
   tree.tickOnce();
-  EXPECT_EQ(warnings, 1);
   for (int i = 0; i < 20; ++i) {
     tree.tickOnce();
   }
-  EXPECT_EQ(warnings, 1) << "One stale cached message must not warn on every tick";
   EXPECT_DOUBLE_EQ(board->get<geometry_msgs::msg::PoseStamped>("updated_goal").pose.position.x, 3.0);
-  // An explicitly stale/equal update is rejected once; later fresh updates still work.
-  int before = warnings;
+  EXPECT_EQ(warnings, 0);
+  // A message received during the current action remains valid even if its stamp
+  // came from a clock that is behind the action server's clock.
   update.header.stamp.sec = 30;
+  update.pose.position.x = 3.5;
   publishAndWait(update, [&] {
-    return warnings > before;
+    return board->get<geometry_msgs::msg::PoseStamped>("updated_goal").pose.position.x == 3.5;
   });
   for (int i = 0; i < 10; ++i) {
     tree.tickOnce();
   }
-  EXPECT_EQ(warnings, before + 1);
-  update.header.stamp.sec = 40;
-  update.pose.position.x = 4.0;
+  EXPECT_EQ(warnings, 0);
+  // A later action still clears that update before processing its own messages.
+  goal.header.stamp.sec = 40;
+  goal.pose.position.x = 4.0;
+  board->set("goal", goal);
+  tree.tickOnce();
+  EXPECT_DOUBLE_EQ(board->get<geometry_msgs::msg::PoseStamped>("updated_goal").pose.position.x, 4.0);
+  update.header.stamp.sec = 1;
+  update.pose.position.x = 5.0;
   publishAndWait(update, [&] {
-    return board->get<geometry_msgs::msg::PoseStamped>("updated_goal").pose.position.x == 4.0;
+    return board->get<geometry_msgs::msg::PoseStamped>("updated_goal").pose.position.x == 5.0;
   });
-  EXPECT_EQ(warnings, before + 1);
+  EXPECT_EQ(warnings, 0);
+  // An orientation-only action change also starts a new cache scope.
+  goal.pose.orientation.z = 1.0;
+  goal.pose.orientation.w = 0.0;
+  board->set("goal", goal);
+  tree.tickOnce();
+  const auto oriented_goal = board->get<geometry_msgs::msg::PoseStamped>("updated_goal");
+  EXPECT_DOUBLE_EQ(oriented_goal.pose.position.x, 4.0);
+  EXPECT_DOUBLE_EQ(oriented_goal.pose.orientation.z, 1.0);
+  EXPECT_DOUBLE_EQ(oriented_goal.pose.orientation.w, 0.0);
+  EXPECT_EQ(warnings, 0);
   rcutils_logging_set_output_handler(previous_handler);
   tree.haltTree();
   rclcpp::shutdown();

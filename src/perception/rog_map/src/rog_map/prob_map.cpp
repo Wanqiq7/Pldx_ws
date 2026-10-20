@@ -64,11 +64,6 @@ void uniqueVec3i(vec_E<Vec3i> & ids)
 
 void ProbMap::initProbMap()
 {
-  static bool init_once{false};
-  if (init_once) {
-    throw std::runtime_error(" -- [ROGMap] ProbMap can only init once.");
-  }
-  init_once = true;
   initSlidingMap(cfg_.half_map_size_i,
     cfg_.resolution,
     cfg_.map_sliding_en,
@@ -351,12 +346,11 @@ void ProbMap::updateProbMap(
   runtime_stats_ = RuntimeStats{};
   const Vec3f & sensor_pos = sensor_pose.first;
   runtime_stats_.input_point_count = cloud.size();
-  if (cfg_.map_sliding_en && !insideLocalMap(map_center_pos) &&
-      raycast_data_.batch_update_counter == 0) {
+  if (cfg_.map_sliding_en && !insideLocalMap(map_center_pos) && raycast_data_.batch_update_counter == 0) {
     std::cout << YELLOW << " -- [ROGMapCore] cur_pose out of map range, reset the map." << RESET
               << std::endl;
-    std::cout << YELLOW << " -- [ROGMapCore] Sliding to map center at: "
-              << map_center_pos.transpose() << RESET << std::endl;
+    std::cout << YELLOW << " -- [ROGMapCore] Sliding to map center at: " << map_center_pos.transpose()
+              << RESET << std::endl;
     slideAllMap(map_center_pos);
     return;
   }
@@ -785,8 +779,7 @@ bool ProbMap::applyDecay(double now)
   };
 
   auto clearActive = [&](const int hash_id) {
-    if (cfg_.decay_active_list_en && hash_id >= 0 &&
-        hash_id < static_cast<int>(active_flags_.size())) {
+    if (cfg_.decay_active_list_en && hash_id >= 0 && hash_id < static_cast<int>(active_flags_.size())) {
       active_flags_[hash_id] = 0U;
     }
   };
@@ -826,8 +819,7 @@ bool ProbMap::applyDecay(double now)
       const double target_log = (1.0 - ratio) * l_start + ratio * l_end;
       new_log = std::min(old_log, target_log);
     }
-    new_log =
-      std::clamp(new_log, static_cast<double>(cfg_.l_min), static_cast<double>(cfg_.l_max));
+    new_log = std::clamp(new_log, static_cast<double>(cfg_.l_min), static_cast<double>(cfg_.l_max));
 
     if (new_log < old_log - 1.0e-6) {
       prob = static_cast<float>(new_log);

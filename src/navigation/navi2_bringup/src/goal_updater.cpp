@@ -64,17 +64,22 @@ private:
       throw BT::RuntimeError("Missing input_goal: ", input.error());
     }
     auto goal = input.value();
+    if (goal.header.stamp != last_action_goal_stamp_ ||
+        goal.pose.position.x != last_action_goal_.pose.position.x ||
+        goal.pose.position.y != last_action_goal_.pose.position.y ||
+        goal.pose.position.z != last_action_goal_.pose.position.z ||
+        goal.pose.orientation.x != last_action_goal_.pose.orientation.x ||
+        goal.pose.orientation.y != last_action_goal_.pose.orientation.y ||
+        goal.pose.orientation.z != last_action_goal_.pose.orientation.z ||
+        goal.pose.orientation.w != last_action_goal_.pose.orientation.w ||
+        goal.header.frame_id != last_action_goal_.header.frame_id) {
+      last_goal_.reset();
+      last_action_goal_ = goal;
+      last_action_goal_stamp_ = goal.header.stamp;
+    }
     executor_.spin_all(std::chrono::milliseconds(49));
     if (last_goal_ && rclcpp::Time(last_goal_->header.stamp).nanoseconds() != 0) {
-      if (rclcpp::Time(last_goal_->header.stamp) > rclcpp::Time(goal.header.stamp)) {
-        goal = *last_goal_;
-      } else {
-        RCLCPP_WARN(node_->get_logger(),
-          "Ignoring goal update with timestamp %.9f: current goal timestamp is %.9f.",
-          rclcpp::Time(last_goal_->header.stamp).seconds(),
-          rclcpp::Time(goal.header.stamp).seconds());
-        last_goal_.reset();
-      }
+      goal = *last_goal_;
     }
     setOutput("output_goal", goal);
     return child_node_->executeTick();
@@ -85,6 +90,8 @@ private:
   rclcpp::executors::SingleThreadedExecutor executor_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr subscription_;
   std::optional<geometry_msgs::msg::PoseStamped> last_goal_;
+  geometry_msgs::msg::PoseStamped last_action_goal_;
+  builtin_interfaces::msg::Time last_action_goal_stamp_{};
 };
 
 }  // namespace navi2
