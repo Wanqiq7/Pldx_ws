@@ -53,7 +53,6 @@ private:
   geometry_msgs::msg::PoseStamped goal_;
 
   // --- Motion Tracking Cache ---
-  double last_replan_time_{0.0};
   bool has_last_pose_{false};
   double last_pose_x_{0.0};
   double last_pose_y_{0.0};

@@ -391,21 +391,24 @@ void MincoMpcController::onOptPath(const ros_interfaces::msg::MpcPositionCommand
       rclcpp::Time(msg->header.stamp, execution_start_.get_clock_type()) < execution_start_) {
     return;
   }
-  ++reference_version_;
   if (msg->command_flag == ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND || msg->cmds.empty()) {
+    ++reference_version_;
     latest_opt_path_.reset();
     has_tracked_ref_ = false;
     publishZeroCommand();
     return;
   }
 
-  const uint32_t new_traj_id = (msg && !msg->cmds.empty()) ? msg->cmds.front().trajectory_id : 0u;
-  const uint32_t old_traj_id = (latest_opt_path_ && !latest_opt_path_->cmds.empty())
-                                 ? latest_opt_path_->cmds.front().trajectory_id
-                                 : 0u;
-
-  // 仅在轨迹 ID 切换时重置跟踪状态；同一轨迹重复发布（更新时间戳）不重置
-  if (new_traj_id != old_traj_id) {
+  // ID and point time origin identify immutable samples; the outer stamp is
+  // refreshed by keepalive. Preserve tracking and an in-flight solve on refresh.
+  const bool same_trajectory =
+    latest_opt_path_ && !latest_opt_path_->cmds.empty() &&
+    msg->cmds.front().trajectory_id == latest_opt_path_->cmds.front().trajectory_id &&
+    msg->cmds.front().header == latest_opt_path_->cmds.front().header &&
+    msg->header.frame_id == latest_opt_path_->header.frame_id &&
+    msg->cmds.size() == latest_opt_path_->cmds.size();
+  if (!same_trajectory) {
+    ++reference_version_;
     has_tracked_ref_ = false;
   }
 

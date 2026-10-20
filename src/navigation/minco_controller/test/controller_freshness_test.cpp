@@ -30,14 +30,52 @@ public:
     auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>();
     reference->header.frame_id = "map";
     reference->header.stamp = node->now();
+    reference->command_flag = ros_interfaces::msg::MpcPositionCommand::NORMAL_COMMAND;
     reference->cmds.resize(40);
     for (size_t i = 0; i < reference->cmds.size(); ++i) {
+      reference->cmds[i].header = reference->header;
       reference->cmds[i].position.x = i * 0.05;
       reference->cmds[i].velocity.x = 1.0;
       reference->cmds[i].trajectory_id = 1;
     }
     p.onOptPath(reference);
   }
+  static void keepalive(MincoMpcController & p)
+  {
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    reference->header.stamp = p.node_.lock()->now();
+    p.onOptPath(reference);
+  }
+  static void replaceReference(MincoMpcController & p, bool change_id)
+  {
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    reference->header.stamp = p.node_.lock()->now();
+    for (auto & cmd : reference->cmds) {
+      if (change_id) {
+        ++cmd.trajectory_id;
+      } else {
+        cmd.header.stamp = rclcpp::Time(cmd.header.stamp) + rclcpp::Duration::from_seconds(0.01);
+      }
+    }
+    p.onOptPath(reference);
+  }
+  static void block(MincoMpcController & p)
+  {
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>();
+    reference->header.stamp = p.node_.lock()->now();
+    reference->command_flag = ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND;
+    p.onOptPath(reference);
+  }
+  static void ageTrajectoryOrigin(MincoMpcController & p)
+  {
+    for (auto & cmd : p.latest_opt_path_->cmds) {
+      cmd.header.stamp = p.node_.lock()->now() - rclcpp::Duration::from_seconds(10.0);
+    }
+  }
+  static uint64_t version(const MincoMpcController & p) { return p.reference_version_; }
+  static auto origin(const MincoMpcController & p) { return p.latest_opt_path_->cmds.front().header.stamp; }
+  static bool isTracking(const MincoMpcController & p) { return p.has_tracked_ref_; }
+  static double trackedIndex(const MincoMpcController & p) { return p.tracked_ref_idx_; }
   static void expireReferenceStamp(MincoMpcController & p)
   {
     p.latest_opt_path_->header.stamp = p.node_.lock()->now() - rclcpp::Duration::from_seconds(3.0);
@@ -123,6 +161,70 @@ TEST_F(ControllerFreshnessTest, FreshInputProducesMotion)
   const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
   EXPECT_GT(cmd.twist.linear.x, 0.0);
   EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
+}
+
+TEST_F(ControllerFreshnessTest, KeepalivePreservesTrackingAndOriginalTime)
+{
+  MincoMpcControllerTestPeer::ageTrajectoryOrigin(controller);
+  pose.pose.position.x = 0.6;
+  ASSERT_GT(
+    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
+  ASSERT_TRUE(MincoMpcControllerTestPeer::isTracking(controller));
+  const auto index = MincoMpcControllerTestPeer::trackedIndex(controller);
+  const auto version = MincoMpcControllerTestPeer::version(controller);
+  const auto origin = MincoMpcControllerTestPeer::origin(controller);
+  MincoMpcControllerTestPeer::expireReferenceStamp(controller);
+  MincoMpcControllerTestPeer::expireReceipt(controller, false);
+  ASSERT_FALSE(MincoMpcControllerTestPeer::hasReference(controller));
+  MincoMpcControllerTestPeer::keepalive(controller);
+  EXPECT_EQ(MincoMpcControllerTestPeer::version(controller), version);
+  EXPECT_TRUE(MincoMpcControllerTestPeer::isTracking(controller));
+  EXPECT_DOUBLE_EQ(MincoMpcControllerTestPeer::trackedIndex(controller), index);
+  EXPECT_EQ(MincoMpcControllerTestPeer::origin(controller), origin);
+  EXPECT_GT(
+    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
+}
+
+TEST_F(ControllerFreshnessTest, KeepaliveDuringComputationPreservesCommand)
+{
+  CallbackGoalChecker checker([&] {
+    MincoMpcControllerTestPeer::keepalive(controller);
+  });
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, &checker);
+  EXPECT_GT(cmd.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
+}
+
+TEST_F(ControllerFreshnessTest, ReplacementDuringComputationDiscardsPreviousCommand)
+{
+  CallbackGoalChecker checker([&] {
+    MincoMpcControllerTestPeer::replaceReference(controller, true);
+  });
+  expectStopped(&checker);
+  EXPECT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
+}
+
+TEST_F(ControllerFreshnessTest, ChangedTimeOriginIsANewReferenceEvenWithSameId)
+{
+  ASSERT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
+  ASSERT_TRUE(MincoMpcControllerTestPeer::isTracking(controller));
+  const auto version = MincoMpcControllerTestPeer::version(controller);
+  MincoMpcControllerTestPeer::replaceReference(controller, false);
+  EXPECT_GT(MincoMpcControllerTestPeer::version(controller), version);
+  EXPECT_FALSE(MincoMpcControllerTestPeer::isTracking(controller));
+  CallbackGoalChecker checker([&] {
+    MincoMpcControllerTestPeer::replaceReference(controller, false);
+  });
+  expectStopped(&checker);
+}
+
+TEST_F(ControllerFreshnessTest, BlockDuringComputationDiscardsCommand)
+{
+  CallbackGoalChecker checker([&] {
+    MincoMpcControllerTestPeer::block(controller);
+  });
+  expectStopped(&checker);
+  EXPECT_FALSE(MincoMpcControllerTestPeer::hasReference(controller));
 }
 
 TEST_F(ControllerFreshnessTest, StaleReferenceAndOdomSuppressAllMotion)

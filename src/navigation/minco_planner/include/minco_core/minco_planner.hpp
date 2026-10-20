@@ -72,6 +72,7 @@ public:
   bool isTrajSafe() const { return is_traj_safe_.load(); }
   double nowSeconds() const;
   double getTrajectoryRemainTime() const;
+  bool needsLocalReplan(const geometry_msgs::msg::PoseStamped & current_pose) const;
   bool isTrajectoryTimeExpired(double now_s) const;
   double getLookaheadDist() const { return lookahead_dist_; }
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
@@ -104,6 +105,7 @@ private:
   void startPlanningWorker();
   void stopPlanningWorker();
   void planningWorkerLoop();
+  void publishReferenceKeepalive();
   // === Internal Types ===
   enum class PlanningState
   {
@@ -205,6 +207,14 @@ private:
   double planning_budget_sec_{0.025};
   double safety_budget_sec_{0.005};
   double control_budget_sec_{0.005};
+  static constexpr std::chrono::milliseconds kControlPeriod{50};
+  double replan_lead_time_sec_{0.8};
+  double tracking_error_threshold_{0.5};
+  double reference_keepalive_sec_{0.5};
+  // The outer header is publication time; point stamps retain the trajectory origin.
+  // Control lane owns publication; mutex_ also protects worker reads of samples.
+  std::optional<ros_interfaces::msg::MpcPositionCommand> last_command_;
+  std::chrono::steady_clock::time_point last_reference_publish_at_;
   rclcpp::CallbackGroup::SharedPtr control_group_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> control_executor_;
   std::thread control_thread_;

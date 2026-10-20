@@ -21,7 +21,6 @@ MincoFsm::MincoFsm(const PlannerPtr & planner, const RecoveryPtr & recovery_serv
 void MincoFsm::cancelGoal()
 {
   has_goal_ = false;
-  last_replan_time_ = 0.0;
   if (recovery_server_) {
     recovery_server_->clearMissionGoal();
   }
@@ -143,20 +142,9 @@ void MincoFsm::callMainFsmOnce()
     // Arrival proximity is evidence only. Nav2's GoalChecker owns completion;
     // keep planning/tracking until the FollowPath action exits.
 
-    const double now_s = planner_->nowSeconds();
-
     const bool trajectory_safe = planner_->isTrajSafe();
-    const bool trajectory_expired = planner_->isTrajectoryTimeExpired(now_s);
-    bool need_replan = trajectory_expired || !trajectory_safe || planner_->planningInProgress();
-
-    // 强制高频重规划：1Hz刷新轨迹，避免轨迹“卡死”不更新。
-    if (has_odom) {
-      const double current_time = planner_->nowSeconds();
-      if (current_time - last_replan_time_ > 1.0) {
-        need_replan = true;
-        last_replan_time_ = current_time;
-      }
-    }
+    // Poll in-flight work even when the committed trajectory still has ample time.
+    const bool need_replan = planner_->planningInProgress() || planner_->needsLocalReplan(current_pose);
 
     if (!need_replan) {
       return;

@@ -43,6 +43,8 @@ controller_server:
     robot_base_frame: "base_link_fake"
     # 是否使用仿真时钟。
     use_sim_time: False
+    # Nav2 的停车检查与 MPC 使用同一里程计；由 controller_odom_topic 一并 remap。
+    odom_topic: /aft_mapped_to_init
     # 控制器执行频率，单位 Hz，越高越敏感。
     controller_frequency: 100.0
     # x 方向速度低于阈值时被视为停止，避免抖动带来误判。
@@ -68,13 +70,15 @@ controller_server:
       # 在该时间内没有明显进展，则认为任务无效。
       movement_time_allowance: 1000.0
     general_goal_checker:
-      # 目标检查器保留状态，用于持续跟踪是否已达到目标。
-      stateful: True
-      plugin: "nav2_controller::SimpleGoalChecker"
-      # XY 平面误差容差，单位 m。
-      xy_goal_tolerance: 0.3
+      # 每次同时检查当前位置和停车速度，避免运动中短暂入圈便锁存成功。
+      stateful: False
+      plugin: "nav2_controller::StoppedGoalChecker"
+      # XY 平面到点容差，单位 m；在定位坐标中检查。
+      xy_goal_tolerance: 0.1
       # Yaw 角度误差容差，单位 rad，设置为 2π 表示允许任意角度到达时也判定为已到达。
       yaw_goal_tolerance: 6.28
+      trans_stopped_velocity: 0.1
+      rot_stopped_velocity: 0.1
 
     FollowPath:
       plugin: "minco_controller::MincoMpcController"
@@ -323,6 +327,13 @@ planner_server:
         control_budget_sec: 0.005
         planning_budget_sec: 0.025
         safety_budget_sec: 0.005
+        # 按时钟和沿轨迹投影进度中更早的一项续接，覆盖 MPC 前视及调度提交延迟。
+        # 当前 MPC 前视约 0.55 s，加调度预算 0.135 s 并留余量；调整 MPC 时同步核对此值。
+        replan_lead_time_sec: 0.8
+        # 当前位置与轨迹当前时刻位置的平面偏差阈值，单位 m。
+        tracking_error_threshold: 0.5
+        # 安全轨迹保活间隔，单位 s；应小于 FollowPath.reference_timeout_sec（2.0 s）。
+        reference_keepalive_sec: 0.5
       # 当前规划模式，PRIORMAP 表示使用先验地图作为主约束。
       planner_mode: PRIORMAP
       # planner_mode: EXPLORATION

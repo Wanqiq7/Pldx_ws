@@ -365,7 +365,12 @@ bool SmacPlanner2DSimple::createPath(const unsigned int & start_x,
 
   const float tol_cells =
     (costmap_resolution_ > 1e-9) ? static_cast<float>(tolerance_ / costmap_resolution_) : tolerance_;
-  const float tol_sq = tol_cells * tol_cells;
+  const float start_dx = static_cast<float>(start_x) - static_cast<float>(goal_x);
+  const float start_dy = static_cast<float>(start_y) - static_cast<float>(goal_y);
+  // Nav2 may require a closer approach than this search tolerance. In that
+  // region search to the goal cell, so early termination cannot return only start.
+  const float tol_sq =
+    start_dx * start_dx + start_dy * start_dy <= tol_cells * tol_cells ? 0.0F : tol_cells * tol_cells;
 
   // Min-heap open list
   std::priority_queue<NodeMin, std::vector<NodeMin>, std::greater<NodeMin>> open;
