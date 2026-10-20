@@ -323,17 +323,11 @@ planner_server:
     MincoPlanner:
       plugin: "minco_planner/MincoPlanner"
       scheduling:
-        # 搜索、优化、校验及采样共享单次预算；安全检查超时撤销参考。
+        # 搜索、优化、校验及采样共享单次工作线程预算；安全检查超时撤销参考。
+        # rmuc_2025 长路径搜索约 90 ms，复杂局部优化可超过 200 ms。
         control_budget_sec: 0.005
-        planning_budget_sec: 0.025
+        planning_budget_sec: 0.5
         safety_budget_sec: 0.005
-        # 按时钟和沿轨迹投影进度中更早的一项续接，覆盖 MPC 前视及调度提交延迟。
-        # 当前 MPC 前视约 0.55 s，加调度预算 0.135 s 并留余量；调整 MPC 时同步核对此值。
-        replan_lead_time_sec: 0.8
-        # 当前位置与轨迹当前时刻位置的平面偏差阈值，单位 m。
-        tracking_error_threshold: 0.5
-        # 安全轨迹保活间隔，单位 s；应小于 FollowPath.reference_timeout_sec（2.0 s）。
-        reference_keepalive_sec: 0.5
       # 当前规划模式，PRIORMAP 表示使用先验地图作为主约束。
       planner_mode: PRIORMAP
       # planner_mode: EXPLORATION

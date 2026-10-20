@@ -84,6 +84,8 @@ A* / SMAC 搜索
 
 > 状态名不等于所有分支均处于当前主路径。判断实际行为时应以 `minco_fsm.cpp` 中未注释的状态转移为准。
 
+`FOLLOW_TRAJ` 按原工程规则每超过 1 秒强制派发局部重规划，轨迹过期或不安全时立即触发；目标变化时重新进行全局搜索。周期使用 ROS 时钟，FSM 每 50 ms 检查，因此实际触发间隔还包含轮询和调度延迟。`planningInProgress()` 在每次 FSM 轮询时领取异步结果。局部热启动按旧轨迹起始时间和当前 ROS 时间继承速度、加速度及剩余轨迹初值。
+
 ## 调度与取消预算
 
 FSM 与安全定时器维持 20 Hz，和 `/minco/execution_enabled` 订阅共用插件自行管理的互斥回调组及专用 executor。父节点即使使用单线程 executor，搜索/优化也不会占用这个执行通道。FSM 只派发一个在途工作任务、轮询结果和提交；恢复查询也服从 FSM 预算。
@@ -91,7 +93,7 @@ FSM 与安全定时器维持 20 Hz，和 `/minco/execution_enabled` 订阅共用
 | 参数（`MincoPlanner.` 前缀） | 默认值 | 行为 |
 |---|---|---|
 | `scheduling.control_budget_sec` | `0.005` | FSM 回调预算；耗尽后撤销参考并重新排入当前目标 |
-| `scheduling.planning_budget_sec` | `0.025` | 全局搜索、局部种子、MINCO/偏航、校验及指令采样共享的单次预算；本机基准以含 ESDF 查询的 A* P99 2.52 ms 为基线并保留约一个数量级余量 |
+| `scheduling.planning_budget_sec` | `0.5` | 全局搜索、局部种子、MINCO/偏航、校验及指令采样共享的单次预算；rmuc_2025 实测长路径搜索约 90 ms、复杂局部优化超过 200 ms，详见[实测修复记录](../../../docs/ai_refactor_records/20261020_complex_path_planning_fix.md) |
 | `scheduling.safety_budget_sec` | `0.005` | 检查剩余轨迹；超时或碰撞立即发布 `BLOCK_COMMAND` |
 
 上述参数仅在 configure 时读取。预算与取消检查使用 `steady_clock`，不依赖仿真时间推进。A* 扩展、SMAC/探索搜索、MINCO 目标函数与积分采样、路径处理、偏航和轨迹采样都设有检查点。每次目标、执行状态、停用或撤销参考发生变化，版本递增；工作线程在检查点退出，控制通道只提交版本匹配的结果。完成计算后等待提交超过 100 ms 的结果会被丢弃，指令数量限制为 4096，以限制提交工作量。

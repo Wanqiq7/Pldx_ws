@@ -77,9 +77,7 @@ LocalPathSeed LocalPathProcessor::buildSeed(
     return seed;
   }
 
-  // Clipping retains guide points. Only its actual endpoint requests a stop;
-  // arrival tolerance must not turn a nearby intermediate point into the goal.
-  seed.local_end_is_goal = (global_goal - seed.dense_path.back()).head<2>().norm() <= 1e-6;
+  seed.local_end_is_goal = (global_goal - seed.dense_path.back()).head<2>().norm() <= traj_goal_tolerance_;
   seed.sparse_waypoints = utils::getSparseWaypoints(seed.dense_path,
     max_vel_,
     max_acc_,

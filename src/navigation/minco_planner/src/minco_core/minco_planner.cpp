@@ -17,46 +17,6 @@ namespace minco_planner {
 
 using namespace color_text;
 
-namespace {
-
-constexpr double kTrajectorySamplePeriod = 0.05;
-
-// Match the MPC's spatial progress estimate, including projection between samples.
-// The command is bounded to 4096 samples; this requires no map queries.
-double projectTrajectoryTime(
-  const ros_interfaces::msg::MpcPositionCommand & command, const Eigen::Vector2d & position)
-{
-  const auto & points = command.cmds;
-  if (points.empty()) {
-    return 0.0;
-  }
-  size_t nearest = 0;
-  double best_distance = std::numeric_limits<double>::infinity();
-  for (size_t i = 0; i < points.size(); ++i) {
-    const Eigen::Vector2d point(points[i].position.x, points[i].position.y);
-    const double distance = (position - point).squaredNorm();
-    if (distance < best_distance) {
-      best_distance = distance;
-      nearest = i;
-    }
-  }
-  double index = static_cast<double>(nearest);
-  if (nearest + 1 < points.size()) {
-    const Eigen::Vector2d point(points[nearest].position.x, points[nearest].position.y);
-    const Eigen::Vector2d next(points[nearest + 1].position.x, points[nearest + 1].position.y);
-    const Eigen::Vector2d segment = next - point;
-    if (segment.squaredNorm() > 1e-6) {
-      const double projection = segment.dot(position - point) / segment.squaredNorm();
-      if (projection > -0.5 && projection < 1.0) {
-        index += projection;
-      }
-    }
-  }
-  return std::max(0.0, index) * kTrajectorySamplePeriod;
-}
-
-}  // namespace
-
 MincoPlanner::MincoPlanner() : tf_(nullptr)
 {
 }
@@ -543,33 +503,19 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
   node->get_parameter(prefix + "recovery_server.escape_speed", recovery_server_config_.escape_speed);
 
   nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "scheduling.planning_budget_sec", rclcpp::ParameterValue(0.025));
+    node, prefix + "scheduling.planning_budget_sec", rclcpp::ParameterValue(0.5));
   nav2_util::declare_parameter_if_not_declared(
     node, prefix + "scheduling.safety_budget_sec", rclcpp::ParameterValue(0.005));
   nav2_util::declare_parameter_if_not_declared(
     node, prefix + "scheduling.control_budget_sec", rclcpp::ParameterValue(0.005));
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "scheduling.replan_lead_time_sec", rclcpp::ParameterValue(0.8));
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "scheduling.tracking_error_threshold", rclcpp::ParameterValue(0.5));
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "scheduling.reference_keepalive_sec", rclcpp::ParameterValue(0.5));
   node->get_parameter(prefix + "scheduling.control_budget_sec", control_budget_sec_);
   node->get_parameter(prefix + "scheduling.planning_budget_sec", planning_budget_sec_);
   node->get_parameter(prefix + "scheduling.safety_budget_sec", safety_budget_sec_);
-  node->get_parameter(prefix + "scheduling.replan_lead_time_sec", replan_lead_time_sec_);
-  node->get_parameter(prefix + "scheduling.tracking_error_threshold", tracking_error_threshold_);
-  node->get_parameter(prefix + "scheduling.reference_keepalive_sec", reference_keepalive_sec_);
   if (!std::isfinite(planning_budget_sec_) || planning_budget_sec_ <= 0.0 ||
       !std::isfinite(safety_budget_sec_) || safety_budget_sec_ <= 0.0 || safety_budget_sec_ >= 0.05 ||
       !std::isfinite(control_budget_sec_) || control_budget_sec_ <= 0.0 || control_budget_sec_ >= 0.05) {
     throw std::invalid_argument(
       "Planning budget must be positive; control/safety budgets must be in (0, 0.05)s");
-  }
-  if (!std::isfinite(replan_lead_time_sec_) || replan_lead_time_sec_ <= 0.0 ||
-      !std::isfinite(tracking_error_threshold_) || tracking_error_threshold_ <= 0.0 ||
-      !std::isfinite(reference_keepalive_sec_) || reference_keepalive_sec_ <= 0.0) {
-    throw std::invalid_argument("Replan lead time, tracking error and keepalive interval must be positive");
   }
 
   // --- Components / publishers / timers -------------------------------------
@@ -687,7 +633,7 @@ void MincoPlanner::configureControlCallbacks(const nav2_util::LifecycleNode::Sha
     },
     execution_options);
   fsm_timer_ = node->create_wall_timer(
-    kControlPeriod,
+    std::chrono::milliseconds(50),
     [this]() {
       std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
       if (active_ && fsm_ && execution_enabled_) {
@@ -710,7 +656,7 @@ void MincoPlanner::configureControlCallbacks(const nav2_util::LifecycleNode::Sha
     },
     control_group_);
   safety_timer_ = node->create_wall_timer(
-    kControlPeriod,
+    std::chrono::milliseconds(50),
     [this]() {
       std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
       if (active_ && execution_enabled_) {
@@ -809,6 +755,8 @@ void MincoPlanner::planningWorkerLoop()
     }
 
     bool success = false;
+    const auto started_at = std::chrono::steady_clock::now();
+    const char * stage = request.global_search ? "global search" : "local optimization/validation";
     {
       std::lock_guard<std::mutex> computation_lock(computation_mutex_);
       PlanningDeadline budget(request.deadline, [this, version = request.version] {
@@ -819,6 +767,7 @@ void MincoPlanner::planningWorkerLoop()
         if (request.global_search && !PlanGlobalPath(request.current_pose, request.goal)) {
           success = false;
         } else {
+          stage = "local optimization/validation";
           PlanningDeadline::check();
           success = ReplanLocal(request.current_pose);
           PlanningDeadline::check();
@@ -826,7 +775,18 @@ void MincoPlanner::planningWorkerLoop()
       } catch (const PlanningInterrupted &) {
         std::lock_guard<std::mutex> lock(planning_mutex_);
         candidate_.reset();
-        RCLCPP_DEBUG(logger_, "Planning cancelled or budget exhausted");
+        if (request.version == planning_version_.load() && rclcpp::ok()) {
+          if (const auto node = node_.lock()) {
+            RCLCPP_WARN_THROTTLE(logger_,
+              *node->get_clock(),
+              2000,
+              "Planning budget exhausted during %s after %.1f ms (budget %.1f ms)",
+              stage,
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started_at)
+                .count(),
+              planning_budget_sec_ * 1000.0);
+          }
+        }
       } catch (const std::exception & ex) {
         std::lock_guard<std::mutex> lock(planning_mutex_);
         candidate_.reset();
@@ -1281,12 +1241,10 @@ std::optional<bool> MincoPlanner::planAsync(const geometry_msgs::msg::PoseStampe
         last_traj_.start_WT = stamp.seconds();
         last_yaw_traj_.start_WT = stamp.seconds();
         has_last_traj_ = has_last_yaw_traj_ = true;
-        last_command_ = std::move(candidate.command);
       }
       PlanningDeadline::check();
       is_traj_safe_.store(true);
-      opt_path_pub_->publish(*last_command_);
-      last_reference_publish_at_ = std::chrono::steady_clock::now();
+      opt_path_pub_->publish(candidate.command);
       return true;
     }
 
@@ -1386,16 +1344,13 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   PlanningState state = PlanningState::COLD_START;
   traj_opt::Trajectory last_traj_snapshot;
   bool has_last_traj_snapshot = false;
-  double spatial_progress = 0.0;
+  double last_traj_start_WT = 0.0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (has_last_traj_) {
       last_traj_snapshot = last_traj_;
       has_last_traj_snapshot = true;
-      if (last_command_) {
-        spatial_progress = projectTrajectoryTime(
-          *last_command_, Eigen::Vector2d(current_pose.pose.position.x, current_pose.pose.position.y));
-      }
+      last_traj_start_WT = last_traj_.start_WT;
     }
   }
 
@@ -1411,9 +1366,8 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   VecDf shifted_durations;
   bool has_shifted_seed = false;
   if (state == PlanningState::HOT_START) {
-    // MPC follows spatial progress. Preserve velocity/acceleration at that same
-    // point when the robot is ahead of or behind the trajectory clock.
-    const double t_dur = std::clamp(spatial_progress + 0.005, 0.0, last_traj_snapshot.getTotalDuration());
+    const double now = nowSeconds() + 0.005;  // small buffer
+    const double t_dur = now - last_traj_start_WT;
     prepareHotStart(current_pose.pose, t_dur, start_state, last_traj_snapshot);
 
     // Extract remaining trajectory segment as shifted warm-start seed.
@@ -1453,21 +1407,21 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
 
   // End state logic.
   const double dist_to_goal = (end_state.col(0) - global_goal).head<2>().norm();
-  if (!local_end_is_goal) {
+  if (dist_to_goal > 1.0) {
     Eigen::Vector3d tangent(1.0, 0.0, 0.0);
     if (sparse_path.size() >= 2) {
       tangent = sparse_path.back() - sparse_path[sparse_path.size() - 2];
       tangent.z() = 0.0;
       const double n = tangent.head<2>().norm();
-      if (n > 1e-6) {
+      if (n > 0.1) {
         tangent /= n;
       } else {
         tangent = Eigen::Vector3d(1.0, 0.0, 0.0);
       }
     }
+    const double v_curr = std::max(0.0, start_state.col(1).head<2>().norm());
     const double amax = std::max(0.0, minco_config.max_acc);
-    // Pass through intermediate endpoints while leaving distance to stop at the goal.
-    const double v_max_kinematic = std::sqrt(2.0 * amax * dist_to_goal);
+    const double v_max_kinematic = std::sqrt(std::max(0.0, v_curr * v_curr + 2.0 * amax * dist_to_goal));
     double local_end_vmax = minco_config.max_vel;
     if (sparse_path.size() >= 3) {
       local_end_vmax = utils::LimitLocalVel(sparse_path,
@@ -1478,7 +1432,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
         minco_config.min_turn_vel,
         minco_config.decay_power);
     }
-    const double v_cmd = std::min({minco_config.max_vel, v_max_kinematic, local_end_vmax});
+    const double v_cmd = std::min({minco_config.max_vel, v_max_kinematic, dist_to_goal, local_end_vmax});
     end_state.col(1) = tangent * v_cmd;
     end_state.col(2).setZero();
   } else {
@@ -1642,7 +1596,7 @@ bool MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_p
   }
 
   // 9. Publish and cache.
-  const double t_step = kTrajectorySamplePeriod;
+  const double t_step = 0.05;
   int steps = static_cast<int>(std::ceil(opt_traj.getTotalDuration() / t_step)) + 1;
   steps = std::max(2, steps);
 
@@ -1859,18 +1813,18 @@ MincoPlanner::PlanningState MincoPlanner::determinePlanningState(
   Eigen::Vector3d pred_vel = previous.getVel(t_dur);
   double tracking_error = (current_pos - pred_pos).norm();
   Eigen::Vector3d current_speed = getCurrentSpeed();
+  double dynamic_error_threshold = 1.0 + 0.5 * current_speed.head<2>().norm();
   double vel_error = (current_speed - pred_vel).norm();
-  if (!std::isfinite(tracking_error) || tracking_error > tracking_error_threshold_) {
+  if (tracking_error > dynamic_error_threshold) {
     std::cout << YELLOW << "[MincoPlanner] Large tracking error (" << tracking_error
-              << "m). Downgrading to COLD_START." << RESET << std::endl;
-    return PlanningState::COLD_START;
+              << "m). Continuing HOT_START." << RESET << std::endl;
+    return PlanningState::HOT_START;
   }
 
   if (vel_error > 1.0) {
     std::cout << YELLOW << "[MincoPlanner] Large velocity error (" << vel_error
-              << "m/s). Downgrading to COLD_START." << RESET << std::endl;
+              << "m/s). Continuing HOT_START." << RESET << std::endl;
     return PlanningState::HOT_START;
-    // return PlanningState::COLD_START;
   }
 
   if (new_path.size() >= 2) {
@@ -2091,7 +2045,6 @@ bool MincoPlanner::checkCollision(const traj_opt::Trajectory & traj)
 
 void MincoPlanner::safetyTimerCallback()
 {
-  std::lock_guard<std::recursive_mutex> control_lock(control_mutex_);
   bool safe = false;
   try {
     PlanningDeadline budget(safety_budget_sec_, [] {
@@ -2108,36 +2061,10 @@ void MincoPlanner::safetyTimerCallback()
     return;
   }
   // A missing trajectory is not a new safety certificate.
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (has_last_traj_) {
-      is_traj_safe_.store(true);
-    }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (has_last_traj_) {
+    is_traj_safe_.store(true);
   }
-  publishReferenceKeepalive();
-}
-
-void MincoPlanner::publishReferenceKeepalive()
-{
-  const auto node = node_.lock();
-  const auto now = std::chrono::steady_clock::now();
-  if (!node || !active_ || !execution_enabled_ || !opt_path_pub_ || !last_command_ || !isTrajSafe() ||
-      std::chrono::duration<double>(now - last_reference_publish_at_).count() < reference_keepalive_sec_) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const double elapsed = node->now().seconds() - last_traj_.start_WT;
-    const double duration = last_traj_.getTotalDuration();
-    if (!has_last_traj_ || !std::isfinite(elapsed) || !std::isfinite(duration) || elapsed < 0.0 ||
-        elapsed >= duration) {
-      return;
-    }
-  }
-  // Refresh delivery freshness only. The sampled points, ID and origin stay fixed.
-  last_command_->header.stamp = node->now();
-  opt_path_pub_->publish(*last_command_);
-  last_reference_publish_at_ = now;
 }
 
 void MincoPlanner::publishEmergencyStop(const geometry_msgs::msg::PoseStamped & current_pose)
@@ -2239,7 +2166,6 @@ void MincoPlanner::invalidateTrajectory()
   std::lock_guard<std::mutex> lk(mutex_);
   has_last_traj_ = false;
   has_last_yaw_traj_ = false;
-  last_command_.reset();
   is_traj_safe_.store(false);
   ++opt_trajectory_id_;
 
@@ -2268,32 +2194,6 @@ double MincoPlanner::getTrajectoryRemainTime() const
   }
   double passed_time = nowSeconds() - last_traj_.start_WT;
   return std::max(0.0, last_traj_.getTotalDuration() - passed_time);
-}
-
-bool MincoPlanner::needsLocalReplan(const geometry_msgs::msg::PoseStamped & current_pose) const
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!has_last_traj_ || !isTrajSafe()) {
-    return true;
-  }
-  const double elapsed = nowSeconds() - last_traj_.start_WT;
-  const double duration = last_traj_.getTotalDuration();
-  // Cover crossing the threshold between ticks, worker computation, result polling
-  // and the control/safety callbacks sharing the lane. Configuration also covers
-  // the MPC horizon and delay compensation, before it reads the terminal hold.
-  const double lead_time = std::max(replan_lead_time_sec_,
-    planning_budget_sec_ + 2.0 * std::chrono::duration<double>(kControlPeriod).count() +
-      control_budget_sec_ + safety_budget_sec_);
-  if (!std::isfinite(elapsed) || !std::isfinite(duration) || elapsed < 0.0 ||
-      duration - elapsed <= lead_time) {
-    return true;
-  }
-  const Eigen::Vector2d current(current_pose.pose.position.x, current_pose.pose.position.y);
-  if (last_command_ && duration - projectTrajectoryTime(*last_command_, current) <= lead_time) {
-    return true;
-  }
-  const double error = (current - last_traj_.getPos(elapsed).head<2>()).norm();
-  return !std::isfinite(error) || error > tracking_error_threshold_;
 }
 
 bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const
