@@ -11,8 +11,6 @@ ament_auto_find_build_dependencies()
 
 find_package(Eigen3 REQUIRED)
 
-option(MINCO_DEBUG "Enable Minco debug printing" OFF)
-
 find_package(qpOASES QUIET)
 if(NOT qpOASES_FOUND)
   find_path(QPOASES_INCLUDE_DIR qpOASES.hpp PATH_SUFFIXES qpOASES qpoases)
@@ -20,7 +18,9 @@ if(NOT qpOASES_FOUND)
 endif()
 
 ament_auto_add_library(${PROJECT_NAME} SHARED
-  src/mpc_solver.cpp
+  src/dynamic_mpc_solver.cpp
+  src/disturbance.cpp
+  src/wheel_odometry.cpp
   src/minco_mpc_controller.cpp
   src/performance/mpc_performance_monitor.cpp
 )
@@ -34,10 +34,6 @@ target_include_directories(${PROJECT_NAME}
 target_link_libraries(${PROJECT_NAME}
   Eigen3::Eigen
 )
-
-if(MINCO_DEBUG)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE MINCO_DEBUG)
-endif()
 
 set(_QPOASES_LINKED FALSE)
 
@@ -57,9 +53,15 @@ pluginlib_export_plugin_description_file(nav2_core minco_controller.xml)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(mpc_solver_test test/mpc_solver_test.cpp src/mpc_solver.cpp)
-  target_include_directories(mpc_solver_test PRIVATE include)
-  target_link_libraries(mpc_solver_test Eigen3::Eigen qpOASES_vendor)
+  ament_add_gtest(dynamic_mpc_solver_test test/dynamic_mpc_solver_test.cpp src/dynamic_mpc_solver.cpp)
+  target_include_directories(dynamic_mpc_solver_test PRIVATE include)
+  target_link_libraries(dynamic_mpc_solver_test Eigen3::Eigen qpOASES_vendor)
+  ament_add_gtest(disturbance_test test/disturbance_test.cpp src/disturbance.cpp)
+  target_include_directories(disturbance_test PRIVATE include)
+  target_link_libraries(disturbance_test Eigen3::Eigen)
+  ament_add_gtest(wheel_odometry_test test/wheel_odometry_test.cpp src/wheel_odometry.cpp)
+  target_include_directories(wheel_odometry_test PRIVATE include)
+  target_link_libraries(wheel_odometry_test Eigen3::Eigen)
   ament_add_gtest(controller_freshness_test test/controller_freshness_test.cpp)
   target_link_libraries(controller_freshness_test ${PROJECT_NAME})
 endif()

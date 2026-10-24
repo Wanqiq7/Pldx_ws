@@ -34,6 +34,7 @@ set(idl_files
   "msg/GameInfo.idl"
   "msg/SentryInfoOffline.idl"
   "msg/SentryInfoOnline.idl"
+  "msg/ChassisCommand.idl"
 )
 
 # set(srv_files

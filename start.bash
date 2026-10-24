@@ -21,6 +21,7 @@ set -u
 # chain; set PTP_ENABLE=1 explicitly only when a synchronized-clock test needs it.
 PTP_ENABLE="${PTP_ENABLE:-0}"
 BT_MANAGER_ENABLE="${BT_MANAGER_ENABLE:-1}"
+LIBXR_BRIDGE_ENABLE="${LIBXR_BRIDGE_ENABLE:-1}"
 # Vision startup is intentionally disabled in the navigation workspace.
 # The navigation stack no longer owns or waits for the external vision process.
 # /cloud_registered_full is published only after Point-LIO IMU gravity alignment.
@@ -103,8 +104,13 @@ run_terminal "Navigation2 and RViz" \
   "ros2 launch navi2 navigation2.launch.py"
 sleep 5
 
-# Decision. The vision process owns the USB transport; navigation publishes
-# behavior and chassis topics only.
+if [[ "${LIBXR_BRIDGE_ENABLE}" == "1" ]]; then
+  run_terminal "LibXR USB Bridge" "ros2 launch ros2_libxr ros2_libxr_launch.py"
+else
+  echo "[start] LibXR USB bridge disabled (LIBXR_BRIDGE_ENABLE=0)"
+fi
+
+# Decision
 if [[ "${BT_MANAGER_ENABLE}" == "1" ]]; then
   run_terminal "BT Manager" "ros2 launch bt_manager bt_manager.launch.py"
   sleep 3

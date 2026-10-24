@@ -1,3 +1,7 @@
 [submodule "src/nav-simulation"]
 	path = src/nav-simulation
 	url = https://github.com/Wanqiq7/Pldx_ws_sim.git
+[submodule "src/navigation/ros2_libxr"]
+	path = src/navigation/ros2_libxr
+	url = https://github.com/Wanqiq7/ROS2_LIBXR.git
+	branch = develop

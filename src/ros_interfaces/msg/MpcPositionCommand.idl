@@ -10,6 +10,7 @@ module ros_interfaces {
     module MpcPositionCommand_Constants {
       const uint8 NORMAL_COMMAND = 1;
       const uint8 BLOCK_COMMAND = 137;
+      const uint8 PLANNING_FAILED_COMMAND = 138;
     };
     struct MpcPositionCommand {
       std_msgs::msg::Header header;

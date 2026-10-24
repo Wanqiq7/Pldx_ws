@@ -41,6 +41,9 @@ struct MpcPerfSample
   double ref_vx{std::numeric_limits<double>::quiet_NaN()};
   double ref_vy{std::numeric_limits<double>::quiet_NaN()};
   double ref_wz{std::numeric_limits<double>::quiet_NaN()};
+  // Translational disturbance used by the dynamic model (map frame, m/s²).
+  double dist_x{std::numeric_limits<double>::quiet_NaN()};
+  double dist_y{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct OdomSubWindowStats
@@ -69,9 +72,7 @@ public:
 
   void recordMpcSample(const MpcPerfSample & sample);
 
-  void recordOdomCallback(
-    const rclcpp::Time & now,
-    const builtin_interfaces::msg::Time & stamp);
+  void recordOdomCallback(const rclcpp::Time & now, const builtin_interfaces::msg::Time & stamp);
 
   static long long steadyNowNs();
 
