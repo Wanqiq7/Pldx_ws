@@ -35,25 +35,24 @@ struct ReferencePoint
   double yaw_rate{0.0};           // 参考角速度(前馈)
 };
 
-// MPC 配置
-struct MPCConfig
+// 力控（动力学）MPC 配置
+// 状态 [px, py, yaw, vx, vy, omega]，输入为质量归一化的力/力矩 [Fx/m, Fy/m, Mz/Iz]（map 系）。
+struct DynamicMpcConfig
 {
-  // 采样周期与预测步长
-  double dt{0.05};
-  double planner_freq{20.0};
-  double lookahead_time{0.5};
+  double dt{0.02};
+  int horizon{40};
+  // 输出预测轨迹上 t0 + command_lookahead 处的速度，补偿求解、通信与下位机速度环延迟。
+  // 应接近底盘速度环的等效时间常数；过短会使规划的加减速无法兑现（起步慢、到点超调）。
+  double command_lookahead{0.2};
 
-  int horizon{10};
+  // 物理参数：平移合力受 min(mu·m·g, max_force) 限制，按摩擦圆内接八边形线性化。
+  double mass{25.0};
+  double inertia_z{1.0};
+  double friction_coeff{0.6};
+  double max_force{60.0};
+  double max_torque{5.0};
 
-  // 代价权重：Q(状态误差) / R(控制误差)
-  // 状态采用 [x, y, yaw]，控制采用 [vx, vy, omega]
-  // Q_along/cross are rotated to align with the reference heading at each horizon step.
-  Eigen::Vector3d Q{5.0, 5.0, 2.0};
-  double q_along{3.0};   // weight along heading (lower → timing flexibility)
-  double q_cross{12.0};  // weight cross-track (higher → precision)
-  Eigen::Vector3d R{1.0, 1.0, 0.5};
-
-  // 速度约束（作用在 map/global 速度变量上）
+  // 速度状态约束（map 系）
   double vx_min{-1.0};
   double vx_max{1.0};
   double vy_min{-1.0};
@@ -61,19 +60,36 @@ struct MPCConfig
   double omega_min{-2.0};
   double omega_max{2.0};
 
-  // 加速度约束（可选）
-  bool use_acc_constraints{false};
-  double ax_min{-2.0};
-  double ax_max{2.0};
-  double ay_min{-2.0};
-  double ay_max{2.0};
-  double alpha_min{-4.0};
-  double alpha_max{4.0};
+  // 位置/速度误差权重按参考速度切向旋转为沿轨迹与横向分量。
+  double q_pos_along{5.0};
+  double q_pos_cross{40.0};
+  double q_vel_along{1.0};
+  double q_vel_cross{2.0};
+  double q_yaw{10.0};
+  double q_omega{0.5};
+  // 输入相对参考加速度（力前馈）的偏差与相邻输入差分权重。
+  double r_acc{0.05};
+  double r_jerk{0.002};
+  double r_alpha{0.02};
+  double r_dalpha{0.001};
 
-  // qpOASES 求解器参数
   int max_working_set_recalculations{200};
-  int max_iterations{200};
   double eps_regularization{1e-9};
+};
+
+// 力控 MPC 输出
+struct DynamicControl
+{
+  Eigen::Vector3d acceleration{0.0, 0.0, 0.0};  // 首步 [ax, ay, alpha]，map 系
+  Eigen::Vector3d wrench{0.0, 0.0, 0.0};        // 首步 [Fx, Fy, Mz] = [m·ax, m·ay, Iz·alpha]
+  Control velocity;                             // command_lookahead 处的预测速度
+};
+
+// 预测轨迹在 t0 + tau 处的采样（tau 截断到 [0, N·dt]）。
+struct DynamicSample
+{
+  Control velocity;                      // 仅由驱动输入产生的速度（扣除扰动漂移 tau·d）
+  Eigen::Vector3d input{0.0, 0.0, 0.0};  // 该时刻所在步的驱动输入 [ax, ay, alpha]
 };
 
 }  // namespace minco_controller

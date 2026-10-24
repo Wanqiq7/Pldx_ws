@@ -69,8 +69,7 @@ void MpcPerformanceMonitor::recordMpcSample(const MpcPerfSample & sample)
 }
 
 void MpcPerformanceMonitor::recordOdomCallback(
-  const rclcpp::Time & now,
-  const builtin_interfaces::msg::Time & stamp)
+  const rclcpp::Time & now, const builtin_interfaces::msg::Time & stamp)
 {
   if (!enabled() || !config_.odom_sub_debug_enable) {
     return;
@@ -97,7 +96,8 @@ void MpcPerformanceMonitor::recordOdomCallback(
 long long MpcPerformanceMonitor::steadyNowNs()
 {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
-    std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::chrono::steady_clock::now().time_since_epoch())
+    .count();
 }
 
 void MpcPerformanceMonitor::writeDetailedHeader()
@@ -106,9 +106,8 @@ void MpcPerformanceMonitor::writeDetailedHeader()
     return;
   }
 
-  detailed_csv_
-    << "run_id,scenario,variant,stamp_ros,stamp_steady_ns,success,solve_time_ms,cycle_time_ms,"
-       "controller_hz,cmd_vx,cmd_vy,cmd_wz,ref_vx,ref_vy,ref_wz\n";
+  detailed_csv_ << "run_id,scenario,variant,stamp_ros,stamp_steady_ns,success,solve_time_ms,cycle_time_ms,"
+                   "controller_hz,cmd_vx,cmd_vy,cmd_wz,ref_vx,ref_vy,ref_wz,dist_x,dist_y\n";
 }
 
 void MpcPerformanceMonitor::writeDetailedRow(const MpcPerfSample & sample)
@@ -117,9 +116,10 @@ void MpcPerformanceMonitor::writeDetailedRow(const MpcPerfSample & sample)
                 << sanitize(config_.variant) << ',' << num(sample.stamp_ros) << ','
                 << sample.stamp_steady_ns << ',' << boolean(sample.success) << ','
                 << num(sample.solve_time_ms) << ',' << num(sample.cycle_time_ms) << ','
-                << num(sample.controller_hz) << ',' << num(sample.cmd_vx) << ','
-                << num(sample.cmd_vy) << ',' << num(sample.cmd_wz) << ',' << num(sample.ref_vx) << ','
-                << num(sample.ref_vy) << ',' << num(sample.ref_wz) << '\n';
+                << num(sample.controller_hz) << ',' << num(sample.cmd_vx) << ',' << num(sample.cmd_vy)
+                << ',' << num(sample.cmd_wz) << ',' << num(sample.ref_vx) << ',' << num(sample.ref_vy)
+                << ',' << num(sample.ref_wz) << ',' << num(sample.dist_x) << ',' << num(sample.dist_y)
+                << '\n';
 }
 
 void MpcPerformanceMonitor::maybePrintOdomStats()
@@ -135,21 +135,17 @@ void MpcPerformanceMonitor::maybePrintOdomStats()
     return;
   }
 
-  const double callback_hz = window_sec > 1.0e-9
-                               ? static_cast<double>(odom_stats_.callback_count) / window_sec
-                               : 0.0;
+  const double callback_hz =
+    window_sec > 1.0e-9 ? static_cast<double>(odom_stats_.callback_count) / window_sec : 0.0;
   const double avg_delay_ms = odom_stats_.delay_count > 0
                                 ? odom_stats_.delay_sum_ms / static_cast<double>(odom_stats_.delay_count)
                                 : std::numeric_limits<double>::quiet_NaN();
-  const double min_delay_ms = odom_stats_.delay_count > 0
-                                ? odom_stats_.delay_min_ms
-                                : std::numeric_limits<double>::quiet_NaN();
-  const double max_delay_ms = odom_stats_.delay_count > 0
-                                ? odom_stats_.delay_max_ms
-                                : std::numeric_limits<double>::quiet_NaN();
+  const double min_delay_ms =
+    odom_stats_.delay_count > 0 ? odom_stats_.delay_min_ms : std::numeric_limits<double>::quiet_NaN();
+  const double max_delay_ms =
+    odom_stats_.delay_count > 0 ? odom_stats_.delay_max_ms : std::numeric_limits<double>::quiet_NaN();
 
-  RCLCPP_INFO(
-    logger_,
+  RCLCPP_INFO(logger_,
     "[MincoMpc][OdomSub] callback_hz=%.3f delay_ms avg=%.3f min=%.3f max=%.3f count=%lu",
     callback_hz,
     avg_delay_ms,

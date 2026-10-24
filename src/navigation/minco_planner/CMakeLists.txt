@@ -23,6 +23,7 @@ find_package(ament_cmake REQUIRED)
 find_package(backward_ros REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(nav2_common REQUIRED)
 find_package(nav2_core REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
@@ -97,6 +98,7 @@ PRIVATE
 ament_target_dependencies(${library_name}
   builtin_interfaces
   geometry_msgs
+  std_msgs
   nav2_core
   nav2_costmap_2d
   nav2_util
@@ -136,6 +138,7 @@ ament_export_include_directories(include/${PROJECT_NAME})
 ament_export_libraries(${library_name})
 ament_export_dependencies(
   geometry_msgs
+  std_msgs
   nav2_core
   nav2_costmap_2d
   nav2_util
@@ -148,4 +151,13 @@ ament_export_dependencies(
   rog_map
 )
 ament_export_targets(${library_name})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_goal_deduplication test/test_goal_deduplication.cpp)
+  target_link_libraries(test_goal_deduplication ${library_name})
+  ament_add_gtest(test_planning_budget test/test_planning_budget.cpp)
+  target_link_libraries(test_planning_budget ${library_name})
+endif()
+
 ament_package()

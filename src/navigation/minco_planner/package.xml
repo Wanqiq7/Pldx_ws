@@ -12,6 +12,7 @@
   <depend>backward_ros</depend>
   <depend>builtin_interfaces</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>nav2_costmap_2d</depend>
   <depend>nav2_core</depend>
   <depend>nav2_util</depend>
@@ -22,6 +23,8 @@
   <depend>tf2_ros</depend>
   <depend>ros_interfaces</depend>
   <depend>rog_map</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

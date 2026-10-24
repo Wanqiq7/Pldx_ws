@@ -1,4 +1,5 @@
 #include "minco_core/astar.hpp"
+#include "minco_core/planning_deadline.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <algorithm>
 #include <cmath>
@@ -164,6 +165,7 @@ void Astar::setupNavFn(bool /*keepit*/)
 {
   npath = 0;
   for (int i = 0; i < ns; i++) {
+    minco_planner::PlanningDeadline::check();
     potarr[i] = std::numeric_limits<float>::max();
     gradx[i] = 0;
     grady[i] = 0;
@@ -201,6 +203,7 @@ bool Astar::calcPath(int /*nplan*/)
   npath++;
 
   while (c != goal_c) {
+    minco_planner::PlanningDeadline::check();
     int min_c = c;
     float min_pot = potarr[c];
 
@@ -209,6 +212,7 @@ bool Astar::calcPath(int /*nplan*/)
     int dy[8] = {0, 1, 0, -1, 1, -1, 1, -1};
 
     for (int i = 0; i < 8; i++) {
+      minco_planner::PlanningDeadline::check();
       int nc = c + dy[i] * nx + dx[i];
       if (nc >= 0 && nc < ns && potarr[nc] < min_pot) {
         min_pot = potarr[nc];
@@ -239,6 +243,7 @@ bool Astar::calcPath(int /*nplan*/)
     int err = dx - dy;
     bool line_clear = true;
     while (x0 != x1 || y0 != y1) {
+      minco_planner::PlanningDeadline::check();
       int idx = y0 * static_cast<int>(nx) + x0;
       if (idx >= 0 && idx < static_cast<int>(ns) &&
           ((costarr[idx] >= COST_OBS_ROS && !(allow_unknown && costarr[idx] == 255)) ||
@@ -269,23 +274,23 @@ bool Astar::calcPath(int /*nplan*/)
 bool Astar::propNavFnAstar(int cycles, std::function<bool()> cancelChecker)
 {
   int ncycl = 0;
-  int ncycl_check = 0;
   int start_idx = start[1] * nx + start[0];
 
   while (ncycl < cycles) {
-    if (cancelChecker && ncycl_check > 1000) {
-      ncycl_check = 0;
-      if (cancelChecker()) {
-        return false;
-      }
+    minco_planner::PlanningDeadline::check();
+    if (cancelChecker && cancelChecker()) {
+      return false;
     }
-    ncycl_check++;
 
     if (curPe == 0 && nextPe == 0 && overPe == 0)
       return false;  // No more to propagate
 
     // Process current buffer
     for (int i = 0; i < curPe; i++) {
+      minco_planner::PlanningDeadline::check();
+      if (cancelChecker && cancelChecker()) {
+        return false;
+      }
       int c = curP[i];
       pending[c] = false;
 
@@ -298,6 +303,7 @@ bool Astar::propNavFnAstar(int cycles, std::function<bool()> cancelChecker)
       float dist[8] = {1.0, 1.0, 1.0, 1.0, 1.414, 1.414, 1.414, 1.414};
 
       for (int k = 0; k < 8; k++) {
+        minco_planner::PlanningDeadline::check();
         int nc = c + dy[k] * nx + dx[k];
         if (nc >= 0 && nc < ns) {
           // 增加距离权重：对角线移动代价更高

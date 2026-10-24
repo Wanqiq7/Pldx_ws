@@ -6,12 +6,8 @@ ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
 [[ -f "${ROS_SETUP}" ]] || { echo "ROS setup not found: ${ROS_SETUP}" >&2; exit 1; }
 source "${ROS_SETUP}"
 
-# pldx_vision_interfaces (vision <-> navigation messages) lives in
-# src/interfaces and is built first in Stage 1, so no external overlay is
-# needed.  The vision project consumes it from this workspace's install/.
-
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-colcon_path_args=()
+colcon_path_args=(--build-base "${workspace_dir}/build-link" --install-base "${workspace_dir}/install-link")
 case "${workspace_dir}" in
   *[![:ascii:]]*)
     ascii_workspace_link="/tmp/navi_minco_bit_jazzy_workspace"
@@ -21,8 +17,8 @@ case "${workspace_dir}" in
       --base-paths "${ascii_workspace_link}"
       # Keep build outputs persistent: --symlink-install makes install hooks
       # point into this directory, so a /tmp build tree breaks after cleanup.
-      --build-base "${workspace_dir}/build"
-      --install-base "${workspace_dir}/install"
+      --build-base "${workspace_dir}/build-link"
+      --install-base "${workspace_dir}/install-link"
     )
     ;;
   *)
@@ -100,9 +96,6 @@ if [[ -n "${COLCON_SERIAL_PACKAGES:-}" ]]; then
   read -r -a serial_packages <<< "$COLCON_SERIAL_PACKAGES"
 fi
 
-# USB transport is owned by PLDX_Sentry_Vision. Navigation builds ROS2
-# algorithms and topic interfaces only.
-
 if [[ "$BUILD_PROFILE" == full ]]; then
   echo "[build] full profile: serial critical packages"
 else
@@ -119,16 +112,40 @@ for pkg in "${serial_packages[@]}"; do
 		--event-handlers console_direct+ status+
 done
 
+# Map changed, staged, and untracked paths under src/ to the colcon packages
+# that own them. A changed directory (submodule pointer, untracked nested repo)
+# selects every package inside it.
+changed_workspace_packages() {
+  local -a pkg_lines changed_paths
+  mapfile -t pkg_lines < <(colcon list --base-paths src)
+  mapfile -t changed_paths < <(
+    git -c core.quotePath=false diff --name-only HEAD -- src
+    git -c core.quotePath=false ls-files --others --exclude-standard --directory --no-empty-directory -- src
+  )
+  local line name pkg_path rest changed
+  for line in "${pkg_lines[@]}"; do
+    IFS=$'\t' read -r name pkg_path rest <<< "$line"
+    for changed in "${changed_paths[@]}"; do
+      changed="${changed%/}"
+      if [[ "$changed" == "$pkg_path" || "$changed" == "$pkg_path"/* || "$pkg_path" == "$changed"/* ]]; then
+        echo "$name"
+        break
+      fi
+    done
+  done
+}
+
 package_args=()
 if [[ -n "${COLCON_PACKAGES:-}" ]]; then
   read -r -a requested_packages <<< "$COLCON_PACKAGES"
   package_args+=( --packages-up-to "${requested_packages[@]}" )
 elif [[ "$BUILD_PROFILE" != full ]]; then
-  mapfile -t changed_packages < <(git diff --name-only -- src | awk -F/ 'NF > 2 {print $2}' | sort -u)
+  mapfile -t changed_packages < <(changed_workspace_packages)
   if ((${#changed_packages[@]})); then
+    echo "[build] Changed packages: ${changed_packages[*]}"
     package_args+=( --packages-up-to "${changed_packages[@]}" )
   else
-    package_args+=( --packages-up-to pldx_vision_interfaces )
+    echo "[build] No changed packages under src/; building the whole workspace"
   fi
 fi
 echo "[build] Stage 2: build selected packages in parallel"

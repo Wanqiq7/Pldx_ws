@@ -18,6 +18,7 @@ bt_navigator:
     default_server_timeout: 20
     # 等待服务响应的超时时间，单位 ms。
     wait_for_service_timeout: 2000
+    plugin_lib_names: [minco_goal_updater_bt_node]
     # 默认导航生成行为树的 XML 文件，可由 launch 文件或 remap 覆盖。
     # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
     # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
@@ -42,6 +43,8 @@ controller_server:
     robot_base_frame: "base_link_fake"
     # 是否使用仿真时钟。
     use_sim_time: False
+    # Nav2 的停车检查与 MPC 使用同一里程计；由 controller_odom_topic 一并 remap。
+    odom_topic: /aft_mapped_to_init
     # 控制器执行频率，单位 Hz，越高越敏感。
     controller_frequency: 100.0
     # x 方向速度低于阈值时被视为停止，避免抖动带来误判。
@@ -64,34 +67,34 @@ controller_server:
       plugin: "nav2_controller::SimpleProgressChecker"
       # 规定的最小移动半径，如果没有超过该范围则认为未前进。
       required_movement_radius: 0.1
-      # 在该时间内没有明显进展，则认为任务无效。
-      movement_time_allowance: 1000.0
+      # 在该时间内没有明显进展，则 FollowPath 失败并交给行为树恢复。
+      # 必须长于一次内部恢复（fail_threshold 次失败 + cooldown_sec + recovery_window_sec ≈ 5 s）。
+      # 确定性的规划失败由 MincoPlanner 的 FAILED 通知直接上报，这里只做兜底。
+      movement_time_allowance: 10.0
     general_goal_checker:
-      # 目标检查器保留状态，用于持续跟踪是否已达到目标。
-      stateful: True
-      plugin: "nav2_controller::SimpleGoalChecker"
-      # XY 平面误差容差，单位 m。
-      xy_goal_tolerance: 0.3
+      # 每次同时检查当前位置和停车速度，避免运动中短暂入圈便锁存成功。
+      stateful: False
+      plugin: "nav2_controller::StoppedGoalChecker"
+      # XY 平面到点容差，单位 m；在定位坐标中检查。
+      xy_goal_tolerance: 0.1
       # Yaw 角度误差容差，单位 rad，设置为 2π 表示允许任意角度到达时也判定为已到达。
       yaw_goal_tolerance: 6.28
+      trans_stopped_velocity: 0.1
+      rot_stopped_velocity: 0.1
 
     FollowPath:
       plugin: "minco_controller::MincoMpcController"
-      # MPC 采样周期和前视时间，决定模型预测控制的时间分辨率。
-      dt: 0.05
-      lookahead_time: 0.5
+      # 独立失效保护（秒）：同时检查消息时间戳与稳态接收时间。
+      reference_timeout_sec: 2.0
+      odom_timeout_sec: 0.3
       # 是否启用小陀螺模式；该模式会压低旋转带宽并适合特定机器人。
       use_small_gyro_mode: false
       # 当速度低于该阈值时，认为车辆处于死区，减少抖动信号。
       deadzone_speed_threshold: 0.1
-      # 轨迹控制延迟补偿，避免执行时滞导致跟踪偏差。
+      # odom 时间戳到命令生效的时延，期间按上一次下发的加速度外推。
       control_delay_compensation: 0.05
 
-      # 代价权重 Q 和 R：Q 表示状态误差权重，R 表示控制量误差权重。
-      Q: [3.0, 3.0, 2.0]
-      R: [1.5, 1.5, 1.0]
-
-      # 速度上下限约束，仅对各轴速度进行限制。
+      # 速度上下限（map 系），作为力控 MPC 的速度状态约束。
       vx_min: -3.0
       vx_max: 3.0
       vy_min: -3.0
@@ -100,14 +103,69 @@ controller_server:
       omega_min: -5.0
       omega_max: 5.0
 
-      # 可选加速度约束，进一步限制平移和转向加速度。
-      use_acc_constraints: true
-      ax_min: -2.0
-      ax_max: 2.0
-      ay_min: -2.0
-      ay_max: 2.0
-      alpha_min: -5.0
-      alpha_max: 5.0
+      # 力控（动力学）MPC：状态 [p, yaw, v, omega]，输入 [Fx, Fy, Mz]，输出速度命令（可选力前馈）。
+      # 加速度上限 min(mu·g, max_force/mass)。mass/inertia_z/friction_coeff/max_force 为占位值，
+      # 实机需标定，并实测底盘速度环时间常数来设定 command_lookahead。
+      dynamic:
+        dt: 0.02
+        lookahead_time: 0.8
+        # 输出预测轨迹上 t0 + command_lookahead 处的速度，补偿下位机速度环与通信延迟。
+        # 应接近底盘速度环等效时间常数：仿真底盘约 0.2 s，0.05 会导致到点超调；实车需重新测定。
+        command_lookahead: 0.2
+        # 二次参考：按预测速度与参考速度夹角余弦缩短时间步，牺牲纵向进度换横向精度。
+        secondary_reference: false
+        # 物理参数（占位值，需实车标定）：平移加速度上限 min(mu·g, max_force/mass)。
+        mass: 25.0
+        inertia_z: 1.0
+        friction_coeff: 0.6
+        max_force: 60.0
+        max_torque: 5.0
+        # 位置/速度权重按参考速度切向分解为沿轨迹与横向。
+        q_pos_along: 5.0
+        q_pos_cross: 40.0
+        q_vel_along: 1.0
+        q_vel_cross: 2.0
+        q_yaw: 10.0
+        q_omega: 0.5
+        # 输入相对参考加速度（力前馈 m·a_ref）的偏差权重与相邻输入差分权重。
+        r_acc: 0.05
+        r_jerk: 0.002
+        r_alpha: 0.02
+        r_dalpha: 0.001
+        # 坡道扰动 d 进入模型 v' = a + d，输出速度额外提前 command_lookahead·(-d)。
+        # 重力项：按 odom 姿态计算坡面切向重力。底盘速度环自带积分时会重复补偿
+        # （仿真中更差），默认关闭；阶段 3 力前馈时 wrench 已包含 -m·d。
+        slope_gravity: false
+        # body 相对底盘的固定安装横滚（rad）。仿真 body 水平取 0；实车需按安装标定，
+        # 不要直接沿用 lidar_roll_offset（错的值会在平地产生恒定横向扰动）。
+        gravity_body_roll_offset: 0.0
+        # 扰动观测器：一阶滞后（时间常数 observer_lag，默认 = command_lookahead）加集总扰动的
+        # Luenberger 观测器。仿真两轮结果不一致，默认关闭，实车需单独验证。
+        disturbance_observer: false
+        observer_bandwidth: 4.0
+        observer_max_estimate: 1.0
+        # 轮速融合（报告 5.5.5.4.1）：订阅底盘系速度 [vx, vy, wz]（TwistStamped），从 LIO 时间戳
+        # 积分到当前时刻替代该段的固定延迟外推；数据缺失、中断或陈旧时退回 LIO。
+        # 实车由 ros2_libxr 发布（MC02 chassis_feedback，需烧录含 0x32B 轮速帧的固件）；
+        # 启用前用 scripts/check_chassis_velocity_frame.py 核对轴向与 wz 符号。
+        # 仿真用 SIM_WHEEL_ODOM=1 ./start_sim.sh。
+        wheel_odometry: false
+        wheel_odometry_topic: /sentry/chassis_velocity
+        wheel_odometry_max_gap: 0.05
+        wheel_odometry_timeout: 0.05
+        # 力前馈（阶段 3）：额外发布 /chassis_cmd_mpc（ros_interfaces/ChassisCommand），
+        # 速度与 F_ff = gain·m·a_plan(t0+lookahead) 同一控制周期、同一坐标系（与 /cmd_vel_mpc
+        # 相同，bridge 默认原样直通）。gain 从 0 逐步加大；速度提前量随之从 command_lookahead
+        # 线性缩到 lookahead，避免速度 PID 与前馈重复提供同一加速度。
+        # 固件 Omni 另有 ff_max_force_n / ff_max_torque_nm 限幅。yaw 力矩默认关闭：
+        # 导航/小陀螺模式下固件自行决定 wz。
+        force_ff:
+          enable: false
+          gain: 0.0
+          lookahead: 0.02
+          yaw: false
+          max_force: 100.0
+          max_torque: 10.0
 
       # 激光雷达外参参数，用于将传感器坐标系与机器人基坐标系对齐。
       lidar_offset_x: 0.0
@@ -313,6 +371,15 @@ planner_server:
 
     MincoPlanner:
       plugin: "minco_planner/MincoPlanner"
+      scheduling:
+        # 搜索、优化、校验及采样共享单次工作线程预算；安全检查超时撤销参考。
+        # rmuc_2025 长路径搜索约 90 ms，复杂局部优化可超过 200 ms。
+        control_budget_sec: 0.005
+        planning_budget_sec: 0.5
+        safety_budget_sec: 0.005
+        # 同一目标版本、同一搜索模式失败（超时/不可行/不安全）后的重试冷却；0 表示关闭。
+        # 50 ms 与 FSM 周期一致，GENERATE_TRAJ 连续 INFEASIBLE 仍按原节奏累计恢复失败次数。
+        failure_cooldown_sec: 0.05
       # 当前规划模式，PRIORMAP 表示使用先验地图作为主约束。
       planner_mode: PRIORMAP
       # planner_mode: EXPLORATION
@@ -609,6 +676,9 @@ planner_server:
         cooldown_sec: 1.0
         recovery_window_sec: 3.0
         escape_speed: 0.5
+        # 同一目标在没有新提交轨迹的情况下允许的恢复次数（脱困或无脱困方向）；
+        # 超过后 FSM 进入 FAILED，通过 /opt_path 通知控制器让 FollowPath 失败。
+        max_attempts: 3
 
 smoother_server:
   ros__parameters:

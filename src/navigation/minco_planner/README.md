@@ -6,7 +6,7 @@
 
 ## ✨ 模块定位
 
-`minco_planner::MincoPlanner` 实现 `nav2_core::GlobalPlanner`。Nav2 调用 `createPlan()` 时，插件完成坐标系归一化并更新待处理目标；真正的搜索、优化、重规划与安全检查由内部 FSM 周期执行。规划结果通过自定义轨迹消息发送给 MPC，而不是仅输出离散 `nav_msgs/Path`。
+`minco_planner::MincoPlanner` 实现 `nav2_core::GlobalPlanner`。Nav2 调用 `createPlan()` 时，插件完成坐标系归一化并更新待处理目标；FSM 周期负责状态更新和结果提交；搜索、优化在独立工作线程执行，安全检查使用独立控制 executor。规划结果通过自定义轨迹消息发送给 MPC，而不是仅输出离散 `nav_msgs/Path`。
 
 核心能力：
 
@@ -81,8 +81,42 @@ A* / SMAC 搜索
 | `GENERATE_TRAJ` | 搜索路径、构造初值并执行轨迹优化 |
 | `FOLLOW_TRAJ` | 发布并监测当前轨迹，按条件触发重规划 |
 | `RECOVERING` | 执行局部脱困并在成功后重新规划 |
+| `FAILED` | 同一目标恢复次数耗尽；撤销参考并在 `/opt_path` 发布 `PLANNING_FAILED_COMMAND`，等待新目标或取消 |
 
-> 状态名不等于所有分支均处于当前主路径。判断实际行为时应以 `minco_fsm.cpp` 中未注释的状态转移为准。
+> 状态名不等于所有分支均处于当前主路径。判断实际行为时应以 `minco_fsm.cpp` 中未注释的状态转移为准。`EMER_STOP` 仍被注释（零速死锁）。
+
+恢复有明确出口：每次 `handleReplanFailure()` 给出 `DO_ESCAPE` 或 `ENTER_EMER_STOP`（无脱困方向）都计一次恢复尝试。计数只在新目标、取消或 `COMMITTED` 时清零，离开 `RECOVERING` 时 `RecoverServer::reset()` 不会清零它。超过 `recovery_server.max_attempts` 后进入 `FAILED`。控制器收到失败通知后抛 `nav2_core::NoValidControl`，FollowPath 失败，由行为树的 `RecoveryNode` 重试或中止。`FAILED` 时 Nav2 再次以相同目标调用 `createPlan()` 不会被去重，而是重新提交。
+
+`FOLLOW_TRAJ` 按原工程规则每超过 1 秒强制派发局部重规划，轨迹过期或不安全时立即触发；目标变化时重新进行全局搜索。周期使用 ROS 时钟，FSM 每 50 ms 检查，因此实际触发间隔还包含轮询和调度延迟。`planningInProgress()` 在每次 FSM 轮询时领取异步结果。局部热启动按旧轨迹起始时间和当前 ROS 时间继承速度、加速度及剩余轨迹初值。
+
+## 调度与取消预算
+
+FSM 与安全定时器维持 20 Hz，和 `/minco/execution_enabled` 订阅共用插件自行管理的互斥回调组及专用 executor。父节点即使使用单线程 executor，搜索/优化也不会占用这个执行通道。FSM 只派发一个在途工作任务、轮询结果和提交；恢复查询也服从 FSM 预算。
+
+| 参数（`MincoPlanner.` 前缀） | 默认值 | 行为 |
+|---|---|---|
+| `scheduling.control_budget_sec` | `0.005` | FSM 回调预算；耗尽后撤销参考并重新排入当前目标 |
+| `scheduling.planning_budget_sec` | `0.5` | 全局搜索、局部种子、MINCO/偏航、校验及指令采样共享的单次预算；rmuc_2025 实测长路径搜索约 90 ms、复杂局部优化超过 200 ms，详见[实测修复记录](../../../docs/ai_refactor_records/20261020_complex_path_planning_fix.md) |
+| `scheduling.safety_budget_sec` | `0.005` | 检查剩余轨迹；超时或碰撞立即发布 `BLOCK_COMMAND` |
+| `scheduling.failure_cooldown_sec` | `0.05` | 同一版本、同一搜索模式（全局/局部）的请求以 `TIMEOUT`/`INFEASIBLE`/`UNSAFE` 结束后，冷却期内不再重提；新版本立即打断冷却，`0` 关闭。50 ms 与 FSM 周期一致，`GENERATE_TRAJ` 连续 `INFEASIBLE` 仍按原节奏重试并累计恢复失败次数。冷却按 ROS 时钟计时 |
+
+上述参数仅在 configure 时读取。预算与取消检查使用 `steady_clock`，不依赖仿真时间推进。A* 扩展、SMAC/探索搜索、MINCO 目标函数与积分采样、路径处理、偏航和轨迹采样都设有检查点。每次目标、执行状态、停用或撤销参考发生变化，版本递增；工作线程在检查点退出，控制通道只提交版本匹配的结果。指令数量限制为 4096，以限制提交工作量。
+
+`planAsync()` 每次先领取结果、再按需提交，返回 `PlanOutcome`：
+
+| 结果 | 含义 | FSM 行为 |
+|---|---|---|
+| `COMMITTED` | 新参考已发布 | 进入/保持 `FOLLOW_TRAJ`，清零恢复失败计数 |
+| `KEPT_PREVIOUS` | 优化失败，旧参考仍安全且未过期 | 继续跟踪，不清零失败计数 |
+| `TIMEOUT` | 预算耗尽，不代表不可行 | 冷却后同模式重试；不计入恢复、不升级为全局搜索 |
+| `INFEASIBLE` | 搜索、种子或优化无可用参考 | 沿用原绕路/恢复判定；恢复尝试超过上限后进入 `FAILED` |
+| `UNSAFE` | 候选校验失败 | 撤销当前参考后沿用原绕路/恢复判定；同样受恢复上限约束 |
+
+版本已变化或完成后等待提交超过 100 ms 的结果属于调度过期，不返回给 FSM，而是在同一次调用中丢弃并按当前位姿重新提交。
+
+`deactivate()` 取消定时器、停止执行、清除待执行目标并撤销参考，立即使在途结果失效；`cleanup()` 再等待工作线程退出后释放地图与求解器。重新 activate 后等待新的执行启用消息。
+
+这是带失败保护的协作式预算。检查点之间的地图查询、内存分配、线性代数及 DDS 调用无法由 C++ 强行抢占，普通 Linux 调度也不提供硬实时上界；部署时需测量这些调用和 executor 抖动。控制端另外用轨迹和里程计超时保护输出，参见 [控制器文档](../minco_controller/README.md)。
 
 ## 📡 ROS 接口
 
@@ -99,7 +133,7 @@ A* / SMAC 搜索
 
 | Topic | 类型 / 用途 | 当前 QoS 要点 |
 |---|---|---|
-| `/opt_path` | `ros_interfaces/msg/MpcPositionCommand`，MPC 主参考轨迹 | `KeepLast(1)` |
+| `/opt_path` | `ros_interfaces/msg/MpcPositionCommand`，MPC 主参考轨迹；`BLOCK_COMMAND` 撤销参考，`PLANNING_FAILED_COMMAND` 撤销参考并让 FollowPath 失败 | `KeepLast(1)` |
 | `/backup_path` | 兼容性轨迹通道；当前文档不将其作为主规划能力 | `KeepLast(1)` |
 | `/opt_path_vis` | 已接受优化轨迹 | `KeepLast(1)` |
 | `/minco_candidate_path_vis` | 发布前候选轨迹与拒绝诊断 | `KeepLast(1) + transient_local` |
@@ -132,6 +166,7 @@ A* / SMAC 搜索
 | `minco_optimizer.integral_res` | 代价积分采样密度 | 越高越精细，也越耗时 |
 | `minco_optimizer.enable_yaw_opt` | 是否优化朝向轨迹 | 隧道、侧移和高速转向需结合控制器验证 |
 | `recovery_server.*` | 连续失败阈值、冷却与脱困参数 | 影响阻塞后的恢复激进程度 |
+| `recovery_server.max_attempts` | 同一目标无新提交时允许的恢复次数（默认 3） | 越小越早向 Nav2 报告失败 |
 
 ### 📐 Planner 杆臂补偿
 

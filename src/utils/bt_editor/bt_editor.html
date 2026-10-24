@@ -35,6 +35,64 @@
 <body>
     <div id="root" class="h-full w-full"></div>
 
+    <script>
+        // File structure stays separate from the editable behavior graph.
+        const BTXML = {
+            parse(text) {
+                const doc = new DOMParser().parseFromString(text, 'application/xml');
+                if (doc.querySelector('parsererror')) throw new Error('XML 格式错误');
+                if (doc.documentElement.tagName !== 'root') throw new Error('XML 必须包含 root 元素');
+                const trees = Array.from(doc.documentElement.children).filter(el => el.tagName === 'BehaviorTree');
+                const ids = trees.map(el => el.getAttribute('ID'));
+                if (!trees.length || ids.some(id => !id) || new Set(ids).size !== ids.length)
+                    throw new Error('BehaviorTree 必须具有唯一且非空的 ID');
+                if (trees.some(tree => tree.children.length !== 1)) throw new Error('每棵树必须有且只有一个行为根节点');
+                const main = doc.documentElement.getAttribute('main_tree_to_execute') || ids[0];
+                if (!ids.includes(main)) throw new Error(`当前文件中找不到主树 ${main}`);
+                return { doc, ids, main };
+            },
+            graph(tree, presets, generateId) {
+                const nodes = [], edges = [];
+                const visit = el => {
+                    const id = generateId('n');
+                    const attributes = Object.fromEntries(Array.from(el.attributes, a => [a.name, a.value]));
+                    const preset = presets.find(p => p.type === el.tagName);
+                    const data = preset ? JSON.parse(JSON.stringify(preset.dataTemplate)) : {};
+                    data.label = attributes.name || (el.tagName === 'SubTree' ? attributes.ID : el.tagName);
+                    data.attributes = attributes;
+                    nodes.push({ id, type: el.tagName, x: 0, y: 0, data });
+                    Array.from(el.children).forEach(child => edges.push({ id: generateId('e'), source: id, target: visit(child) }));
+                    return id;
+                };
+                const rootId = visit(tree.firstElementChild);
+                return { nodes, edges, rootId };
+            },
+            writeTree(doc, tree, graph) {
+                const { nodes, edges } = graph;
+                const roots = nodes.filter(n => !edges.some(e => e.target === n.id));
+                if (roots.length !== 1) throw new Error(`${tree.getAttribute('ID')}: 必须有且只有一个根节点`);
+                const visited = new Set();
+                const build = node => {
+                    if (visited.has(node.id)) throw new Error('存在循环或多个父节点');
+                    visited.add(node.id);
+                    const el = doc.createElement(node.type);
+                    const attrs = node.data.attributes || {};
+                    Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
+                    if (!Object.hasOwn(attrs, 'name') && node.data.label && node.data.label !== node.type && node.type !== 'SubTree')
+                        el.setAttribute('name', node.data.label);
+                    const children = edges.filter(e => e.source === node.id).map(e => nodes.find(n => n.id === e.target));
+                    if (children.some(child => !child)) throw new Error('连线引用了不存在的节点');
+                    if (node.type === 'SubTree' && children.length) throw new Error('SubTree 是引用节点，不能连接子节点');
+                    children.sort((a, b) => a.x - b.x).forEach(child => el.appendChild(build(child)));
+                    return el;
+                };
+                const root = build(roots[0]);
+                if (visited.size !== nodes.length) throw new Error('存在未连接的节点或循环');
+                tree.replaceChild(root, tree.firstElementChild);
+            }
+        };
+    </script>
+
     <script type="text/babel">
         const { useState, useCallback, useRef, useEffect } = React;
 
@@ -187,6 +245,9 @@
             
             const [nodes, setNodes] = useState([]);
             const [edges, setEdges] = useState([]);
+            const [xmlFile, setXmlFile] = useState(null);
+            const [activeTree, setActiveTree] = useState('MainTree');
+            const treeGraphs = useRef({});
             const [selectedNodeId, setSelectedNodeId] = useState(null);
             const [blackboard, setBlackboard] = useState(INITIAL_BLACKBOARD);
             
@@ -513,56 +574,54 @@
             // ==========================================
             // XML 导入与导出
             // ==========================================
-            const handleImportXML = (event) => {
+            const showTree = (id, file = xmlFile) => {
+                let graph = treeGraphs.current[id];
+                if (!graph) {
+                    const tree = Array.from(file.doc.documentElement.children).find(el => el.tagName === 'BehaviorTree' && el.getAttribute('ID') === id);
+                    graph = BTXML.graph(tree, customPresets, generateId);
+                    graph.nodes = autoLayout(graph.rootId, graph.nodes, graph.edges);
+                    treeGraphs.current[id] = graph;
+                }
+                setIsSimulating(false);
+                setSelectedNodeId(null); setConnectingSourceId(null); setDraggingNodeId(null);
+                setNodes(graph.nodes); setEdges(graph.edges); setActiveTree(id);
+                setView({ x: 0, y: 50, k: 0.8 });
+            };
+
+            const switchTree = id => {
+                if (id === activeTree) return;
+                treeGraphs.current[activeTree] = { nodes, edges };
+                showTree(id);
+            };
+
+            const handleImportXML = event => {
                 const file = event.target.files[0]; if (!file) return;
                 const reader = new FileReader();
-                reader.onload = (e) => {
-                    const parser = new DOMParser(); const doc = parser.parseFromString(e.target.result, "text/xml");
-                    let parsedNodes = []; let parsedEdges = [];
-                    const parseElement = (el) => {
-                        if(el.nodeType !== 1) return null;
-                        const tagName = el.tagName;
-                        if(['root', 'BehaviorTree', 'TreeNodesModel', 'SubTree'].includes(tagName) && el.children.length === 1) return parseElement(el.firstElementChild);
-                        const id = generateId('n'); const attrs = {}; Array.from(el.attributes).forEach(a => attrs[a.name] = a.value);
-                        
-                        const preset = customPresets.find(p => p.type === tagName);
-                        const nodeData = preset ? JSON.parse(JSON.stringify(preset.dataTemplate)) : { label: attrs.name || tagName };
-                        nodeData.attributes = attrs; 
-                        
-                        parsedNodes.push({ id, type: tagName, x: 0, y: 0, data: nodeData });
-                        Array.from(el.children).forEach(child => { const childId = parseElement(child); if(childId) parsedEdges.push({ id: generateId('e'), source: id, target: childId }); });
-                        return id;
-                    };
-                    const rootId = parseElement(doc.documentElement);
-                    if(rootId) {
-                        parsedNodes = autoLayout(rootId, parsedNodes, parsedEdges);
-                        setNodes(parsedNodes); setEdges(parsedEdges); setView({x: 0, y: 50, k: 0.8});
-                        setToastMessage("XML 导入成功！已智能推断未知节点类型。");
-                    }
+                reader.onload = e => {
+                    try {
+                        const parsed = BTXML.parse(e.target.result);
+                        treeGraphs.current = {};
+                        setXmlFile(parsed);
+                        showTree(parsed.main, parsed);
+                        setToastMessage('XML 导入成功');
+                    } catch (error) { alert(error.message); }
                 };
-                reader.readAsText(file); event.target.value = null;
+                reader.onerror = () => alert('无法读取 XML 文件');
+                reader.readAsText(file); event.target.value = '';
             };
 
             const handleExportXML = () => {
-                const rootNodes = nodes.filter(n => !edges.some(e => e.target === n.id));
-                if(rootNodes.length === 0) { alert("没有找到有效的根节点！"); return; }
-                const buildXML = (nodeId, indent) => {
-                    const node = nodes.find(n => n.id === nodeId); if(!node) return '';
-                    let attrsStr = ''; const attrs = node.data.attributes || {};
-                    Object.entries(attrs).forEach(([k, v]) => { if (v.trim() !== '') attrsStr += ` ${k}="${v}"`; });
-                    if(!attrs.name && node.data.label !== node.type) attrsStr += ` name="${node.data.label}"`;
-                    
-                    const childrenIds = edges.filter(e => e.source === nodeId).map(e => e.target);
-                    childrenIds.sort((a, b) => (nodes.find(n=>n.id===a)?.x || 0) - (nodes.find(n=>n.id===b)?.x || 0));
-                    
-                    if(childrenIds.length === 0) return `${indent}<${node.type}${attrsStr}/>\n`;
-                    let xml = `${indent}<${node.type}${attrsStr}>\n`;
-                    childrenIds.forEach(cid => { xml += buildXML(cid, indent + '  '); });
-                    xml += `${indent}</${node.type}>\n`; return xml;
-                };
-                const finalXML = `<root main_tree_to_execute="MainTree">\n  <BehaviorTree ID="MainTree">\n${buildXML(rootNodes[0].id, '    ')}  </BehaviorTree>\n</root>`;
-                downloadFile('sentry_bt.xml', finalXML);
-                setToastMessage("XML 已成功导出！");
+                try {
+                    const file = xmlFile || BTXML.parse('<root main_tree_to_execute="MainTree"><BehaviorTree ID="MainTree"><ReactiveSequence/></BehaviorTree></root>');
+                    const doc = file.doc.cloneNode(true);
+                    const graphs = { ...treeGraphs.current, [activeTree]: { nodes, edges } };
+                    Array.from(doc.documentElement.children).filter(el => el.tagName === 'BehaviorTree').forEach(tree => {
+                        const graph = graphs[tree.getAttribute('ID')];
+                        if (graph) BTXML.writeTree(doc, tree, graph);
+                    });
+                    downloadFile('sentry_bt.xml', new XMLSerializer().serializeToString(doc));
+                    setToastMessage('XML 已成功导出');
+                } catch (error) { alert(error.message); }
             };
 
             // ==========================================
@@ -855,6 +914,20 @@
                         </div>
                     </div>
 
+                    {xmlFile && (
+                        <div className="flex items-center gap-3 px-4 py-2 bg-white border-b text-xs flex-wrap">
+                            <label>当前树 <select aria-label="当前树" value={activeTree} onChange={e => switchTree(e.target.value)} className="border rounded px-2 py-1 ml-1">
+                                {xmlFile.ids.map(id => <option key={id} value={id}>{id}{id === xmlFile.main ? '（主树）' : ''}</option>)}
+                            </select></label>
+                            <span className="text-slate-500">外部依赖：{Array.from(xmlFile.doc.documentElement.children).filter(el => el.tagName === 'include').map(el => el.getAttribute('path')).join('、') || '无'}（保留声明，未加载）</span>
+                            {selectedNode?.type === 'SubTree' && (
+                                xmlFile.ids.includes(selectedNode.data.attributes?.ID)
+                                    ? <button className="text-blue-600 underline" onClick={() => switchTree(selectedNode.data.attributes.ID)}>打开子树 {selectedNode.data.attributes.ID}</button>
+                                    : <span className="text-amber-700">子树 {selectedNode.data.attributes?.ID} 未解析，请检查外部依赖</span>
+                            )}
+                        </div>
+                    )}
+
                     <div className="flex flex-1 overflow-hidden relative">
                         {/* 左侧节点库 */}
                         {showLibrary && (
@@ -928,7 +1001,7 @@
                                     {edges.map(edge => {
                                         const src = nodes.find(n => n.id === edge.source); const tgt = nodes.find(n => n.id === edge.target);
                                         if(!src || !tgt) return null;
-                                        return <path key={edge.id} d={getBezierPath(src.x+NODE_WIDTH/2+CANVAS_OFFSET, src.y+NODE_HEIGHT+4+CANVAS_OFFSET, tgt.x+NODE_WIDTH/2+CANVAS_OFFSET, tgt.y-4+CANVAS_OFFSET)} stroke="#94a3b8" strokeWidth="3" fill="none" className="cursor-pointer hover:stroke-red-500 pointer-events-auto" onClick={(e) => { e.stopPropagation(); setEdges(es => es.filter(x => x.id !== edge.id)); }} />;
+                                        return <path key={edge.id} d={getBezierPath(src.x+NODE_WIDTH/2+CANVAS_OFFSET, src.y+NODE_HEIGHT+4+CANVAS_OFFSET, tgt.x+NODE_WIDTH/2+CANVAS_OFFSET, tgt.y-4+CANVAS_OFFSET)} stroke="#94a3b8" strokeWidth="3" fill="none" className="pointer-events-auto" onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setEdges(es => es.filter(x => x.id !== edge.id)); }}><title>拖动平移画布；右键删除连线</title></path>;
                                     })}
                                     {connectingSourceId && <path d={getBezierPath(nodes.find(n=>n.id===connectingSourceId).x+NODE_WIDTH/2+CANVAS_OFFSET, nodes.find(n=>n.id===connectingSourceId).y+NODE_HEIGHT+4+CANVAS_OFFSET, mousePos.x+CANVAS_OFFSET, mousePos.y+CANVAS_OFFSET)} stroke="#3b82f6" strokeWidth="3" strokeDasharray="5,5" fill="none" />}
                                 </svg>

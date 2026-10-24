@@ -1,4 +1,5 @@
 #include "minco_core/components/local_path_processor.hpp"
+#include "minco_core/planning_deadline.hpp"
 
 namespace minco_planner {
 
@@ -17,6 +18,7 @@ bool isLineFree(const std::shared_ptr<rog_map::MapQueryInterface> & map,
     return true;
   }
   for (int i = 0; i <= steps; ++i) {
+    minco_planner::PlanningDeadline::check();
     const double t = static_cast<double>(i) / static_cast<double>(steps);
     const Eigen::Vector3d p = p1 + (p2 - p1) * t;
     unsigned int mx = 0;
@@ -98,6 +100,7 @@ std::vector<Eigen::Vector3d> LocalPathProcessor::extractLocalPath(
   size_t start_idx = 0;
   double min_dist_sq = std::numeric_limits<double>::max();
   for (size_t i = 0; i < global_path.size(); ++i) {
+    minco_planner::PlanningDeadline::check();
     const auto & pt = global_path[i].pose.position;
     double dist_sq =
       (cur_pos.x() - pt.x) * (cur_pos.x() - pt.x) + (cur_pos.y() - pt.y) * (cur_pos.y() - pt.y);
@@ -112,6 +115,7 @@ std::vector<Eigen::Vector3d> LocalPathProcessor::extractLocalPath(
     Eigen::Vector3d(global_path[start_idx].pose.position.x, global_path[start_idx].pose.position.y, 0.0));
 
   for (size_t i = start_idx + 1; i < global_path.size(); ++i) {
+    minco_planner::PlanningDeadline::check();
     const auto & p1 = global_path[i - 1].pose.position;
     const auto & p2 = global_path[i].pose.position;
     double dist = std::hypot(p2.x - p1.x, p2.y - p1.y);
@@ -176,6 +180,7 @@ bool LocalPathProcessor::clipLocalPathByRogBoundary(
   std::vector<Eigen::Vector3d> clipped;
   clipped.reserve(path.size());
   for (size_t i = 0; i < path.size(); ++i) {
+    minco_planner::PlanningDeadline::check();
     if (!inside_boundary(path[i])) {
       if (i == 0U) {
         path.clear();
@@ -191,6 +196,7 @@ bool LocalPathProcessor::clipLocalPathByRogBoundary(
       const Eigen::Vector3d delta = path[i] - path[i - 1U];
       const int samples = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
       for (int s = 1; s <= samples; ++s) {
+        minco_planner::PlanningDeadline::check();
         const double ratio = static_cast<double>(s) / static_cast<double>(samples);
         if (!inside_boundary(path[i - 1U] + ratio * delta)) {
           path.swap(clipped);

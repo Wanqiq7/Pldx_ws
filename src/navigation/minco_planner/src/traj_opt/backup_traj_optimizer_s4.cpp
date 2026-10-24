@@ -1,4 +1,5 @@
 #include "traj_opt/backup_traj_optimizer_s4.h"
+#include "minco_core/planning_deadline.hpp"
 
 #include <cmath>
 #include <limits>
@@ -31,6 +32,7 @@ inline bool extractAxisAlignedBounds(const PolyhedronH & h, Aabb & out)
 
   // Parse half-space rows: n_x x + n_y y + n_z z < d
   for (int i = 0; i < h.rows(); ++i) {
+    minco_planner::PlanningDeadline::check();
     const double nx = h(i, 0);
     const double ny = h(i, 1);
     const double nz = h(i, 2);
@@ -84,6 +86,7 @@ inline double raycastBox(const Eigen::Vector3d & start_pos,
   double tmax = std::numeric_limits<double>::infinity();
 
   for (int axis = 0; axis < 3; ++axis) {
+    minco_planner::PlanningDeadline::check();
     const double o = start_pos(axis);
     const double d = direction(axis);
     const double mn = box_min(axis);
@@ -137,6 +140,7 @@ inline bool buildForwardStopQuintic(const Eigen::Vector3d & p0,
   const double t5 = t4 * t;
 
   for (int axis = 0; axis < 3; ++axis) {
+    minco_planner::PlanningDeadline::check();
     const double p0a = p0(axis);
     const double v0a = v0(axis);
     const double a0a = a0(axis);
@@ -171,6 +175,7 @@ inline Eigen::Vector3d evalPosFromCoeffMat(const Eigen::MatrixXd & coeffMat, dou
   Eigen::Vector3d p = Eigen::Vector3d::Zero();
   double tn = 1.0;
   for (int col = 5; col >= 0; --col) {
+    minco_planner::PlanningDeadline::check();
     p += tn * coeffMat.col(col);
     tn *= t;
   }
@@ -255,6 +260,7 @@ bool BackupTrajOpt::optimize(Trajectory & out_traj) const
   // 对于匀减速运动： p(t) = p0 + v0*t + 0.5*a*t^2
   Eigen::MatrixXd coeffMat = Eigen::MatrixXd::Zero(3, 6);
   for (int axis = 0; axis < 3; ++axis) {
+    minco_planner::PlanningDeadline::check();
     coeffMat(axis, 5) = p0(axis);             // c0
     coeffMat(axis, 4) = v0(axis);             // c1
     coeffMat(axis, 3) = 0.5 * a_final(axis);  // c2

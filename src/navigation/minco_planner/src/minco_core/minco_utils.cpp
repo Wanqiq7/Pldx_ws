@@ -1,4 +1,5 @@
 #include "minco_core/minco_utils.hpp"
+#include "minco_core/planning_deadline.hpp"
 
 #include "data_structure/base/trajectory.h"
 
@@ -87,25 +88,24 @@ Eigen::Vector3d interpolateByArcLength(
   return path[idx0] + ratio * (path[idx1] - path[idx0]);
 }
 
-void publishOptimizedTrajectory(const traj_opt::Trajectory & opt_traj,
+ros_interfaces::msg::MpcPositionCommand sampleOptimizedTrajectory(const traj_opt::Trajectory & opt_traj,
   const traj_opt::Trajectory & yaw_traj,
-  const rclcpp::Publisher<ros_interfaces::msg::MpcPositionCommand>::SharedPtr & pub,
-  uint32_t & trajectory_id_counter,
+  uint32_t traj_id,
   const std_msgs::msg::Header & header,
   int steps,
   double t_step)
 {
-  if (!pub || steps <= 0) {
-    return;
+  if (steps <= 0) {
+    return {};
   }
 
   ros_interfaces::msg::MpcPositionCommand traj_msg;
   traj_msg.header = header;
   traj_msg.command_flag = ros_interfaces::msg::MpcPositionCommand::NORMAL_COMMAND;
   traj_msg.cmds.resize(steps);
-  const uint32_t traj_id = ++trajectory_id_counter;
   const double yaw_total_duration = yaw_traj.getTotalDuration();
   for (int i = 0; i < steps; ++i) {
+    PlanningDeadline::check();
     double t = i * t_step;
     if (t > opt_traj.getTotalDuration()) {
       t = opt_traj.getTotalDuration();
@@ -146,7 +146,21 @@ void publishOptimizedTrajectory(const traj_opt::Trajectory & opt_traj,
   }
 
   traj_msg.mpc_horizon = static_cast<uint32_t>(traj_msg.cmds.size());
-  pub->publish(traj_msg);
+  return traj_msg;
+}
+
+void publishOptimizedTrajectory(const traj_opt::Trajectory & opt_traj,
+  const traj_opt::Trajectory & yaw_traj,
+  const rclcpp::Publisher<ros_interfaces::msg::MpcPositionCommand>::SharedPtr & pub,
+  uint32_t & trajectory_id_counter,
+  const std_msgs::msg::Header & header,
+  int steps,
+  double t_step)
+{
+  if (pub && steps > 0) {
+    pub->publish(
+      sampleOptimizedTrajectory(opt_traj, yaw_traj, ++trajectory_id_counter, header, steps, t_step));
+  }
 }
 
 void publishBackupTrajectory(const traj_opt::Trajectory & backup_traj,
@@ -168,6 +182,7 @@ void publishBackupTrajectory(const traj_opt::Trajectory & backup_traj,
 
   const uint32_t traj_id = ++trajectory_id_counter;
   for (int i = 0; i < steps; ++i) {
+    minco_planner::PlanningDeadline::check();
     double t = i * t_step;
     if (t > backup_traj.getTotalDuration()) {
       t = backup_traj.getTotalDuration();
@@ -286,6 +301,7 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
   std::vector<double> accumulated_dist;
   accumulated_dist.resize(path.size(), 0.0);
   for (size_t i = 1; i < path.size(); ++i) {
+    minco_planner::PlanningDeadline::check();
     double seg_len = (path[i] - path[i - 1]).head<2>().norm();
 
     // Over-curvature penalty
@@ -391,6 +407,7 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
     double best_dist2 = -1.0;
     size_t best_k = (start_idx + end_idx) / 2u;
     for (size_t k = start_idx + 1u; k < end_idx; ++k) {
+      minco_planner::PlanningDeadline::check();
       const Eigen::Vector2d p = path[k].head<2>();
       const double t = clampValue((p - a).dot(ab) / ab2, 0.0, 1.0);
       const Eigen::Vector2d proj = a + t * ab;
@@ -416,6 +433,7 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
 
   size_t last_added = 0u;
   for (int i = 1; i < n_segments; ++i) {
+    minco_planner::PlanningDeadline::check();
     const double t = static_cast<double>(i) * dt;
     const double s = getDistFromTrapezoid(t, total_length, a_ref, v_peak, t_acc, t_flat, t_dec);
     size_t idx = arcLengthToIndex(s);
@@ -440,6 +458,7 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
   // 4) Safety Verification & Repair
   size_t current_safe_idx = 0u;
   for (size_t ti = 1; ti < target_indices.size(); ++ti) {
+    minco_planner::PlanningDeadline::check();
     const size_t target_idx = target_indices[ti];
     if (target_idx <= current_safe_idx || target_idx >= path.size()) {
       continue;
@@ -448,6 +467,7 @@ std::vector<Eigen::Vector3d> getSparseWaypoints(const std::vector<Eigen::Vector3
     // Try to connect current_safe_idx -> target_idx; if collision, insert corner(s).
     size_t guard = 0u;
     while (guard++ < 32u && target_idx > current_safe_idx) {
+      minco_planner::PlanningDeadline::check();
       const bool line_free = is_line_free ? is_line_free(path[current_safe_idx], path[target_idx]) : true;
       if (line_free) {
         Eigen::Vector3d p = path[target_idx];
@@ -593,6 +613,7 @@ void VelPropogation(const std::vector<double> & seg_len, double amax, std::vecto
   const double a_safe = std::max(1e-3, std::abs(amax));
 
   for (int i = n - 2; i >= 0; --i) {
+    minco_planner::PlanningDeadline::check();
     const double L = std::max(0.0, seg_len[static_cast<size_t>(i)]);
     const double v_next = std::max(0.0, local_vmaxs[static_cast<size_t>(i + 1)]);
     const double v_cap = std::sqrt(std::max(0.0, v_next * v_next + 2.0 * a_safe * L));
@@ -601,6 +622,7 @@ void VelPropogation(const std::vector<double> & seg_len, double amax, std::vecto
   }
 
   for (int i = 1; i < n; ++i) {
+    minco_planner::PlanningDeadline::check();
     const double L = std::max(0.0, seg_len[static_cast<size_t>(i - 1)]);
     const double v_prev = std::max(0.0, local_vmaxs[static_cast<size_t>(i - 1)]);
     const double v_cap = std::sqrt(std::max(0.0, v_prev * v_prev + 2.0 * a_safe * L));
@@ -624,6 +646,7 @@ bool isLineFree(
   }
 
   for (int i = 0; i <= steps; ++i) {
+    minco_planner::PlanningDeadline::check();
     double t = static_cast<double>(i) / static_cast<double>(steps);
     Eigen::Vector3d p = p1 + (p2 - p1) * t;
     if (costmap->worldToMap(p.x(), p.y(), mx, my)) {

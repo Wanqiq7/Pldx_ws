@@ -1,6 +1,7 @@
 #include "minco_controller/minco_mpc_controller.hpp"
 #include "color_text.hpp"
 #include "log.hpp"
+#include "nav2_core/controller_exceptions.hpp"
 #include <iostream>
 
 #include <algorithm>
@@ -10,11 +11,6 @@
 #include <optional>
 
 #include <Eigen/Geometry>
-
-#ifdef MINCO_DEBUG
-#include <chrono>
-#include <iostream>
-#endif
 
 #include "nav2_util/node_utils.hpp"
 
@@ -104,6 +100,185 @@ void MincoMpcController::configureMpcPerfLogging(const rclcpp_lifecycle::Lifecyc
   mpc_perf_monitor_.configure(perf_cfg, logger_);
 }
 
+void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node)
+{
+  const DynamicMpcConfig defaults;
+  const auto declare = [&](const std::string & key, const rclcpp::ParameterValue & value) {
+    nav2_util::declare_parameter_if_not_declared(node, name_ + "." + key, value);
+  };
+  declare("dynamic.secondary_reference", rclcpp::ParameterValue(false));
+  declare("dynamic.dt", rclcpp::ParameterValue(defaults.dt));
+  declare("dynamic.lookahead_time", rclcpp::ParameterValue(defaults.dt * defaults.horizon));
+  declare("dynamic.command_lookahead", rclcpp::ParameterValue(defaults.command_lookahead));
+  declare("dynamic.mass", rclcpp::ParameterValue(defaults.mass));
+  declare("dynamic.inertia_z", rclcpp::ParameterValue(defaults.inertia_z));
+  declare("dynamic.friction_coeff", rclcpp::ParameterValue(defaults.friction_coeff));
+  declare("dynamic.max_force", rclcpp::ParameterValue(defaults.max_force));
+  declare("dynamic.max_torque", rclcpp::ParameterValue(defaults.max_torque));
+  declare("dynamic.q_pos_along", rclcpp::ParameterValue(defaults.q_pos_along));
+  declare("dynamic.q_pos_cross", rclcpp::ParameterValue(defaults.q_pos_cross));
+  declare("dynamic.q_vel_along", rclcpp::ParameterValue(defaults.q_vel_along));
+  declare("dynamic.q_vel_cross", rclcpp::ParameterValue(defaults.q_vel_cross));
+  declare("dynamic.q_yaw", rclcpp::ParameterValue(defaults.q_yaw));
+  declare("dynamic.q_omega", rclcpp::ParameterValue(defaults.q_omega));
+  declare("dynamic.r_acc", rclcpp::ParameterValue(defaults.r_acc));
+  declare("dynamic.r_jerk", rclcpp::ParameterValue(defaults.r_jerk));
+  declare("dynamic.r_alpha", rclcpp::ParameterValue(defaults.r_alpha));
+  declare("dynamic.r_dalpha", rclcpp::ParameterValue(defaults.r_dalpha));
+  const DisturbanceObserverConfig observer_defaults;
+  declare("dynamic.slope_gravity", rclcpp::ParameterValue(false));
+  declare("dynamic.gravity_body_roll_offset", rclcpp::ParameterValue(0.0));
+  declare("dynamic.disturbance_observer", rclcpp::ParameterValue(false));
+  declare("dynamic.observer_lag", rclcpp::ParameterValue(-1.0));
+  declare("dynamic.observer_bandwidth", rclcpp::ParameterValue(observer_defaults.bandwidth));
+  declare("dynamic.observer_max_estimate", rclcpp::ParameterValue(observer_defaults.max_estimate));
+  const WheelOdometryConfig wheel_defaults;
+  declare("dynamic.wheel_odometry", rclcpp::ParameterValue(false));
+  declare("dynamic.wheel_odometry_topic", rclcpp::ParameterValue(std::string("/sentry/chassis_velocity")));
+  declare("dynamic.wheel_odometry_max_gap", rclcpp::ParameterValue(wheel_defaults.max_gap));
+  declare("dynamic.wheel_odometry_timeout", rclcpp::ParameterValue(wheel_defaults.timeout));
+  declare("dynamic.force_ff.enable", rclcpp::ParameterValue(false));
+  declare("dynamic.force_ff.gain", rclcpp::ParameterValue(0.0));
+  declare("dynamic.force_ff.lookahead", rclcpp::ParameterValue(0.02));
+  declare("dynamic.force_ff.yaw", rclcpp::ParameterValue(false));
+  declare("dynamic.force_ff.max_force", rclcpp::ParameterValue(100.0));
+  declare("dynamic.force_ff.max_torque", rclcpp::ParameterValue(10.0));
+
+  bool force_ff_requested = false;
+  node->get_parameter(name_ + ".dynamic.force_ff.enable", force_ff_requested);
+
+  auto & c = dynamic_config_;
+  double lookahead_time = defaults.dt * defaults.horizon;
+  node->get_parameter(name_ + ".dynamic.secondary_reference", secondary_reference_);
+  node->get_parameter(name_ + ".dynamic.dt", c.dt);
+  node->get_parameter(name_ + ".dynamic.lookahead_time", lookahead_time);
+  node->get_parameter(name_ + ".dynamic.command_lookahead", c.command_lookahead);
+  node->get_parameter(name_ + ".dynamic.mass", c.mass);
+  node->get_parameter(name_ + ".dynamic.inertia_z", c.inertia_z);
+  node->get_parameter(name_ + ".dynamic.friction_coeff", c.friction_coeff);
+  node->get_parameter(name_ + ".dynamic.max_force", c.max_force);
+  node->get_parameter(name_ + ".dynamic.max_torque", c.max_torque);
+  node->get_parameter(name_ + ".dynamic.q_pos_along", c.q_pos_along);
+  node->get_parameter(name_ + ".dynamic.q_pos_cross", c.q_pos_cross);
+  node->get_parameter(name_ + ".dynamic.q_vel_along", c.q_vel_along);
+  node->get_parameter(name_ + ".dynamic.q_vel_cross", c.q_vel_cross);
+  node->get_parameter(name_ + ".dynamic.q_yaw", c.q_yaw);
+  node->get_parameter(name_ + ".dynamic.q_omega", c.q_omega);
+  node->get_parameter(name_ + ".dynamic.r_acc", c.r_acc);
+  node->get_parameter(name_ + ".dynamic.r_jerk", c.r_jerk);
+  node->get_parameter(name_ + ".dynamic.r_alpha", c.r_alpha);
+  node->get_parameter(name_ + ".dynamic.r_dalpha", c.r_dalpha);
+  const bool positive = c.dt > 0.0 && lookahead_time > 0.0 && c.mass > 0.0 && c.inertia_z > 0.0 &&
+                        c.friction_coeff > 0.0 && c.max_force > 0.0 && c.max_torque > 0.0 &&
+                        c.command_lookahead >= 0.0;
+  const bool finite = std::isfinite(c.dt) && std::isfinite(lookahead_time) && std::isfinite(c.mass) &&
+                      std::isfinite(c.inertia_z) && std::isfinite(c.friction_coeff) &&
+                      std::isfinite(c.max_force) && std::isfinite(c.max_torque) &&
+                      std::isfinite(c.command_lookahead);
+  if (!positive || !finite) {
+    throw std::invalid_argument("Dynamic MPC physical parameters must be finite and positive");
+  }
+  c.horizon = static_cast<int>(std::ceil(lookahead_time / c.dt));
+  dynamic_solver_ = std::make_unique<DynamicMpcSolver>(c);
+
+  DisturbanceObserverConfig observer;
+  node->get_parameter(name_ + ".dynamic.slope_gravity", slope_gravity_);
+  node->get_parameter(name_ + ".dynamic.gravity_body_roll_offset", gravity_body_roll_offset_);
+  node->get_parameter(name_ + ".dynamic.disturbance_observer", disturbance_observer_enabled_);
+  node->get_parameter(name_ + ".dynamic.observer_lag", observer.lag);
+  node->get_parameter(name_ + ".dynamic.observer_bandwidth", observer.bandwidth);
+  node->get_parameter(name_ + ".dynamic.observer_max_estimate", observer.max_estimate);
+  // The command law assumes the chassis lags by command_lookahead; the observer uses the same model.
+  if (observer.lag <= 0.0) {
+    observer.lag = c.command_lookahead;
+  }
+  if (disturbance_observer_enabled_ &&
+      (!std::isfinite(observer.lag) || observer.lag <= 0.0 || !std::isfinite(observer.bandwidth) ||
+        observer.bandwidth <= 0.0 || !std::isfinite(observer.max_estimate) ||
+        observer.max_estimate < 0.0)) {
+    throw std::invalid_argument(
+      "Disturbance observer needs a positive lag (or command_lookahead) and bandwidth");
+  }
+  if (!std::isfinite(gravity_body_roll_offset_)) {
+    throw std::invalid_argument("dynamic.gravity_body_roll_offset must be finite");
+  }
+  disturbance_observer_.setConfig(observer);
+
+  node->get_parameter(name_ + ".dynamic.force_ff.gain", force_ff_gain_);
+  node->get_parameter(name_ + ".dynamic.force_ff.lookahead", force_ff_lookahead_);
+  node->get_parameter(name_ + ".dynamic.force_ff.yaw", force_ff_yaw_);
+  node->get_parameter(name_ + ".dynamic.force_ff.max_force", force_ff_max_force_);
+  node->get_parameter(name_ + ".dynamic.force_ff.max_torque", force_ff_max_torque_);
+  if (force_ff_requested &&
+      (!std::isfinite(force_ff_gain_) || force_ff_gain_ < 0.0 || force_ff_gain_ > 1.0 ||
+        !std::isfinite(force_ff_lookahead_) || force_ff_lookahead_ < 0.0 ||
+        force_ff_lookahead_ > c.command_lookahead || !std::isfinite(force_ff_max_force_) ||
+        force_ff_max_force_ < 0.0 || !std::isfinite(force_ff_max_torque_) || force_ff_max_torque_ < 0.0)) {
+    throw std::invalid_argument(
+      "dynamic.force_ff: gain in [0, 1], 0 <= lookahead <= command_lookahead, limits >= 0");
+  }
+  force_ff_enabled_ = force_ff_requested;
+  RCLCPP_INFO(logger_,
+    "%s: force feedforward %s (gain=%.2f, lookahead=%.3f, yaw=%s, max_force=%.1f N, max_torque=%.1f N*m)",
+    name_.c_str(),
+    force_ff_enabled_ ? "enabled" : "disabled",
+    force_ff_gain_,
+    force_ff_lookahead_,
+    force_ff_yaw_ ? "true" : "false",
+    force_ff_max_force_,
+    force_ff_max_torque_);
+
+  WheelOdometryConfig wheel;
+  std::string wheel_topic;
+  node->get_parameter(name_ + ".dynamic.wheel_odometry", wheel_odometry_enabled_);
+  node->get_parameter(name_ + ".dynamic.wheel_odometry_topic", wheel_topic);
+  node->get_parameter(name_ + ".dynamic.wheel_odometry_max_gap", wheel.max_gap);
+  node->get_parameter(name_ + ".dynamic.wheel_odometry_timeout", wheel.timeout);
+  if (wheel_odometry_enabled_) {
+    if (!std::isfinite(wheel.max_gap) || wheel.max_gap <= 0.0 || !std::isfinite(wheel.timeout) ||
+        wheel.timeout <= 0.0 || wheel_topic.empty()) {
+      throw std::invalid_argument("Wheel odometry needs a topic and positive max_gap/timeout");
+    }
+    {
+      std::lock_guard<std::mutex> lk(data_mtx_);
+      wheel_odometry_.setConfig(wheel);
+    }
+    // High-rate samples: keep a deep queue so executor jitter does not drop them.
+    wheel_odom_sub_ = node->create_subscription<geometry_msgs::msg::TwistStamped>(wheel_topic,
+      rclcpp::SensorDataQoS().keep_last(100),
+      std::bind(&MincoMpcController::onWheelOdometry, this, std::placeholders::_1));
+  } else {
+    wheel_odom_sub_.reset();
+  }
+
+  RCLCPP_INFO(logger_,
+    "%s: wheel odometry %s (topic=%s, max_gap=%.3f, timeout=%.3f)",
+    name_.c_str(),
+    wheel_odometry_enabled_ ? "enabled" : "disabled",
+    wheel_topic.c_str(),
+    wheel.max_gap,
+    wheel.timeout);
+  RCLCPP_INFO(logger_,
+    "%s: force-control MPC (dt=%.3f, horizon=%d, command_lookahead=%.3f, mass=%.2f, Iz=%.3f, "
+    "a_max=%.3f, alpha_max=%.3f, secondary_reference=%s, slope_gravity=%s, body_roll_offset=%.4f, "
+    "disturbance_observer=%s, observer_lag=%.3f, observer_bandwidth=%.2f, d_max=%.3f)",
+    name_.c_str(),
+    c.dt,
+    c.horizon,
+    c.command_lookahead,
+    c.mass,
+    c.inertia_z,
+    dynamic_solver_->translationalAccelerationLimit(),
+    dynamic_solver_->angularAccelerationLimit(),
+    secondary_reference_ ? "true" : "false",
+    slope_gravity_ ? "true" : "false",
+    gravity_body_roll_offset_,
+    disturbance_observer_enabled_ ? "true" : "false",
+    observer.lag,
+    observer.bandwidth,
+    dynamic_solver_->maxDisturbance());
+}
+
 void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
   std::string name,
   std::shared_ptr<tf2_ros::Buffer> tf,
@@ -122,14 +297,6 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   configureMpcPerfLogging(node);
 
   // 声明/读取参数
-  nav2_util::declare_parameter_if_not_declared(node, name + ".dt", rclcpp::ParameterValue(0.05));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".horizon", rclcpp::ParameterValue(10));
-
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".Q", rclcpp::ParameterValue(std::vector<double>{5.0, 5.0, 2.0}));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".R", rclcpp::ParameterValue(std::vector<double>{1.0, 1.0, 0.5}));
-
   nav2_util::declare_parameter_if_not_declared(node, name + ".vx_min", rclcpp::ParameterValue(-1.0));
   nav2_util::declare_parameter_if_not_declared(node, name + ".vx_max", rclcpp::ParameterValue(1.0));
   nav2_util::declare_parameter_if_not_declared(node, name + ".vy_min", rclcpp::ParameterValue(-1.0));
@@ -145,15 +312,6 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
     node, name + ".use_small_gyro_mode", rclcpp::ParameterValue(true));
 
   nav2_util::declare_parameter_if_not_declared(
-    node, name + ".use_acc_constraints", rclcpp::ParameterValue(false));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".ax_min", rclcpp::ParameterValue(-2.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".ax_max", rclcpp::ParameterValue(2.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".ay_min", rclcpp::ParameterValue(-2.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".ay_max", rclcpp::ParameterValue(2.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".alpha_min", rclcpp::ParameterValue(-4.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".alpha_max", rclcpp::ParameterValue(4.0));
-
-  nav2_util::declare_parameter_if_not_declared(
     node, name + ".odom_frame", rclcpp::ParameterValue("camera_init"));
   nav2_util::declare_parameter_if_not_declared(node, name + ".map_frame", rclcpp::ParameterValue("map"));
   nav2_util::declare_parameter_if_not_declared(node, name + ".lidar_offset_x", rclcpp::ParameterValue(0.0));
@@ -161,52 +319,39 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".lidar_roll_offset", rclcpp::ParameterValue(0.0));
 
-  double dt = 0.05;
-  double lookahead_time = 0.5;
-  node->get_parameter(name + ".dt", dt);
-  node->get_parameter(name + ".lookahead_time", lookahead_time);
-
-  std::vector<double> Qv;
-  std::vector<double> Rv;
-  node->get_parameter(name + ".Q", Qv);
-  node->get_parameter(name + ".R", Rv);
-
-  mpc_config_.dt = dt;
-  mpc_config_.lookahead_time = lookahead_time;
-  mpc_config_.horizon = static_cast<int>(std::ceil(lookahead_time / dt));
-  if (Qv.size() == 3) {
-    mpc_config_.Q = Eigen::Vector3d(Qv[0], Qv[1], Qv[2]);
-  }
-  if (Rv.size() == 3) {
-    mpc_config_.R = Eigen::Vector3d(Rv[0], Rv[1], Rv[2]);
-  }
-
-  node->get_parameter(name + ".vx_min", mpc_config_.vx_min);
-  node->get_parameter(name + ".vx_max", mpc_config_.vx_max);
-  node->get_parameter(name + ".vy_min", mpc_config_.vy_min);
-  node->get_parameter(name + ".vy_max", mpc_config_.vy_max);
-  node->get_parameter(name + ".omega_min", mpc_config_.omega_min);
-  node->get_parameter(name + ".omega_max", mpc_config_.omega_max);
+  // Velocity state bounds of the force-control MPC (map frame).
+  node->get_parameter(name + ".vx_min", dynamic_config_.vx_min);
+  node->get_parameter(name + ".vx_max", dynamic_config_.vx_max);
+  node->get_parameter(name + ".vy_min", dynamic_config_.vy_min);
+  node->get_parameter(name + ".vy_max", dynamic_config_.vy_max);
+  node->get_parameter(name + ".omega_min", dynamic_config_.omega_min);
+  node->get_parameter(name + ".omega_max", dynamic_config_.omega_max);
   node->get_parameter(name + ".fixed_wz", fixed_wz_);
   node->get_parameter(name + ".deadzone_speed_threshold", deadzone_speed_threshold_);
   node->get_parameter(name + ".control_delay_compensation", control_delay_compensation_);
   node->get_parameter(name + ".use_small_gyro_mode", use_small_gyro_mode_);
 
-  node->get_parameter(name + ".use_acc_constraints", mpc_config_.use_acc_constraints);
-  node->get_parameter(name + ".ax_min", mpc_config_.ax_min);
-  node->get_parameter(name + ".ax_max", mpc_config_.ax_max);
-  node->get_parameter(name + ".ay_min", mpc_config_.ay_min);
-  node->get_parameter(name + ".ay_max", mpc_config_.ay_max);
-  node->get_parameter(name + ".alpha_min", mpc_config_.alpha_min);
-  node->get_parameter(name + ".alpha_max", mpc_config_.alpha_max);
-
   node->get_parameter(name + ".odom_frame", odom_frame_);
   node->get_parameter(name + ".map_frame", map_frame_);
   node->get_parameter(name + ".lidar_offset_x", lidar_offset_x_);
   node->get_parameter(name + ".lidar_offset_y", lidar_offset_y_);
-  node->get_parameter(name + ".lidar_roll_offset", lidar_roll_offset_);
+  // Only logged: the slope term uses dynamic.gravity_body_roll_offset so the simulation's
+  // level body frame is not tilted by the real robot's mounting value.
+  double lidar_roll_offset = 0.0;
+  node->get_parameter(name + ".lidar_roll_offset", lidar_roll_offset);
 
-  solver_ = std::make_unique<MpcSolver>(mpc_config_);
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".reference_timeout_sec", rclcpp::ParameterValue(2.0));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name + ".odom_timeout_sec", rclcpp::ParameterValue(0.3));
+  node->get_parameter(name + ".reference_timeout_sec", reference_timeout_sec_);
+  node->get_parameter(name + ".odom_timeout_sec", odom_timeout_sec_);
+  if (!std::isfinite(reference_timeout_sec_) || reference_timeout_sec_ <= 0.0 ||
+      !std::isfinite(odom_timeout_sec_) || odom_timeout_sec_ <= 0.0) {
+    throw std::invalid_argument("Controller input timeouts must be finite and positive");
+  }
+
+  configureDynamicModel(node);
 
   // 订阅优化轨迹：/opt_path
   opt_path_sub_ = node->create_subscription<ros_interfaces::msg::MpcPositionCommand>("/opt_path",
@@ -220,23 +365,29 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
 
   mpc_predict_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_predict_path", 1);
   mpc_real_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_real_path", 1);
+  execution_pub_ =
+    node->create_publisher<std_msgs::msg::Bool>("/minco/execution_enabled", rclcpp::QoS(10).reliable());
   cmd_vel_mpc_pub_ = node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_mpc", 1);
+  chassis_cmd_pub_.reset();
+  if (force_ff_enabled_) {
+    // The bridge prefers this topic while it is fresh; /cmd_vel_mpc stays for velocity-only links.
+    chassis_cmd_pub_ = node->create_publisher<ros_interfaces::msg::ChassisCommand>(
+      "/chassis_cmd_mpc", rclcpp::SensorDataQoS().keep_last(1));
+  }
   real_path_history_.clear();
   last_real_path_pub_time_ = node->now();
 
   RCLCPP_INFO(logger_,
-    "%s: MincoMpcController configured (dt=%.3f, lookahead_time=%.3f, deadzone=%.3f, delay_comp=%.3f, "
+    "%s: MincoMpcController configured (deadzone=%.3f, delay_comp=%.3f, "
     "small_gyro=%s, fixed_wz=%.3f, lidar_offset_x=%.3f, lidar_offset_y=%.3f, lidar_roll_offset=%.3f)",
     name_.c_str(),
-    dt,
-    lookahead_time,
     deadzone_speed_threshold_,
     control_delay_compensation_,
     use_small_gyro_mode_ ? "true" : "false",
     fixed_wz_,
     lidar_offset_x_,
     lidar_offset_y_,
-    lidar_roll_offset_);
+    lidar_roll_offset);
 }
 
 void MincoMpcController::compensateLeverArm(double v_lidar_x,
@@ -294,13 +445,17 @@ void MincoMpcController::extractGlobalVelocityAndYaw(const nav_msgs::msg::Odomet
 
 void MincoMpcController::cleanup()
 {
+  reset();
+  execution_pub_.reset();
   mpc_perf_monitor_.close();
   opt_path_sub_.reset();
   odom_sub_.reset();
   mpc_predict_path_pub_.reset();
   mpc_real_path_pub_.reset();
   cmd_vel_mpc_pub_.reset();
-  solver_.reset();
+  chassis_cmd_pub_.reset();
+  wheel_odom_sub_.reset();
+  dynamic_solver_.reset();
 
   std::lock_guard<std::mutex> lk(data_mtx_);
   latest_opt_path_.reset();
@@ -313,12 +468,62 @@ void MincoMpcController::activate()
 
 void MincoMpcController::deactivate()
 {
+  reset();
+}
+
+bool MincoMpcController::cancel()
+{
+  reset();
+  return true;
+}
+
+void MincoMpcController::reset()
+{
+  std::lock_guard<std::mutex> lk(data_mtx_);
+  execution_enabled_ = false;
+  planning_failed_ = false;
+  ++reference_version_;
+  latest_opt_path_.reset();
+  has_tracked_ref_ = false;
+  if (execution_pub_) {
+    std_msgs::msg::Bool enabled;
+    enabled.data = false;
+    execution_pub_->publish(enabled);
+  }
+  publishZeroCommand();
+}
+
+void MincoMpcController::publishZeroCommand()
+{
+  if (cmd_vel_mpc_pub_) {
+    cmd_vel_mpc_pub_->publish(geometry_msgs::msg::Twist{});
+  }
+  if (chassis_cmd_pub_) {
+    ros_interfaces::msg::ChassisCommand chassis;
+    if (auto node = node_.lock()) {
+      chassis.header.stamp = node->now();
+    }
+    chassis.header.frame_id = global_frame_;
+    chassis_cmd_pub_->publish(chassis);
+  }
 }
 
 void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
 {
   std::lock_guard<std::mutex> lk(plan_mtx_);
   global_plan_ = path;
+  std::lock_guard<std::mutex> data_lock(data_mtx_);
+  if (!execution_enabled_ && !path.poses.empty()) {
+    latest_opt_path_.reset();
+    planning_failed_ = false;
+    has_tracked_ref_ = false;
+    execution_start_ = node_.lock()->now();
+    execution_enabled_ = true;
+    ++reference_version_;
+    std_msgs::msg::Bool enabled;
+    enabled.data = true;
+    execution_pub_->publish(enabled);
+  }
 }
 
 void MincoMpcController::setSpeedLimit(const double & speed_limit, const bool & percentage)
@@ -331,6 +536,21 @@ void MincoMpcController::onOptPath(const ros_interfaces::msg::MpcPositionCommand
 {
   std::lock_guard<std::mutex> lk(data_mtx_);
 
+  // Ignore references queued before the new FollowPath execution began.
+  if (!execution_enabled_ || !msg ||
+      rclcpp::Time(msg->header.stamp, execution_start_.get_clock_type()) < execution_start_) {
+    return;
+  }
+  ++reference_version_;
+  planning_failed_ = msg->command_flag == ros_interfaces::msg::MpcPositionCommand::PLANNING_FAILED_COMMAND;
+  if (planning_failed_ || msg->command_flag == ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND ||
+      msg->cmds.empty()) {
+    latest_opt_path_.reset();
+    has_tracked_ref_ = false;
+    publishZeroCommand();
+    return;
+  }
+
   const uint32_t new_traj_id = (msg && !msg->cmds.empty()) ? msg->cmds.front().trajectory_id : 0u;
   const uint32_t old_traj_id = (latest_opt_path_ && !latest_opt_path_->cmds.empty())
                                  ? latest_opt_path_->cmds.front().trajectory_id
@@ -342,6 +562,7 @@ void MincoMpcController::onOptPath(const ros_interfaces::msg::MpcPositionCommand
   }
 
   latest_opt_path_ = msg;
+  reference_received_at_ = std::chrono::steady_clock::now();
 }
 
 void MincoMpcController::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -353,6 +574,60 @@ void MincoMpcController::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
 
   std::lock_guard<std::mutex> lk(data_mtx_);
   latest_odom_ = msg;
+  odom_received_at_ = std::chrono::steady_clock::now();
+}
+
+bool MincoMpcController::inputsFreshLocked() const
+{
+  const auto node = node_.lock();
+  if (!node || !execution_enabled_ || !latest_opt_path_ || latest_opt_path_->cmds.empty() ||
+      !latest_odom_) {
+    return false;
+  }
+  const auto steady_now = std::chrono::steady_clock::now();
+  const auto ros_now = node->now();
+  const auto fresh = [&](const auto & stamp, const auto & received, double timeout) {
+    const double age = (ros_now - rclcpp::Time(stamp, ros_now.get_clock_type())).seconds();
+    const double receive_age = std::chrono::duration<double>(steady_now - received).count();
+    return std::isfinite(age) && age >= 0.0 && age <= timeout && receive_age >= 0.0 &&
+           receive_age <= timeout;
+  };
+  return fresh(latest_opt_path_->header.stamp, reference_received_at_, reference_timeout_sec_) &&
+         fresh(latest_odom_->header.stamp, odom_received_at_, odom_timeout_sec_);
+}
+
+bool MincoMpcController::goalInPoseFrame(const geometry_msgs::msg::PoseStamped & goal,
+  const std::string & pose_frame,
+  geometry_msgs::msg::PoseStamped & out) const
+{
+  const std::string target = pose_frame.empty() ? global_frame_ : pose_frame;
+  // An unstamped goal is taken to be in the pose frame already.
+  if (goal.header.frame_id.empty() || goal.header.frame_id == target) {
+    out = goal;
+    out.header.frame_id = target;
+    return true;
+  }
+  if (!tf_) {
+    return false;
+  }
+  try {
+    const auto transform = tf_->lookupTransform(target, goal.header.frame_id, tf2::TimePointZero);
+    geometry_msgs::msg::PoseStamped transformed;
+    tf2::doTransform(goal, transformed, transform);
+    out = transformed;
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    if (const auto node = node_.lock()) {
+      RCLCPP_WARN_THROTTLE(logger_,
+        *node->get_clock(),
+        5000,
+        "Cannot transform goal from '%s' to '%s' for the goal check: %s",
+        goal.header.frame_id.c_str(),
+        target.c_str(),
+        ex.what());
+    }
+    return false;
+  }
 }
 
 bool MincoMpcController::transformPathToOdom(const ros_interfaces::msg::MpcPositionCommand::SharedPtr & opt,
@@ -428,8 +703,7 @@ bool MincoMpcController::transformPathToOdom(const ros_interfaces::msg::MpcPosit
   return true;
 }
 
-bool MincoMpcController::buildReferenceFromOptPath(
-  const State & curr, std::vector<ReferencePoint> & out_ref) const
+bool MincoMpcController::prepareReference(const State & curr, ReferenceTrajectory & out) const
 {
   auto node = node_.lock();
   if (!node) {
@@ -437,19 +711,14 @@ bool MincoMpcController::buildReferenceFromOptPath(
   }
   const rclcpp::Time now = node->now();
 
-  // 获取最新的优化轨迹和里程计数据，以及当前跟踪状态（索引、时间戳、轨迹ID）
+  // 获取最新的优化轨迹
   ros_interfaces::msg::MpcPositionCommand::SharedPtr opt;
-  double tracked_ref_idx = 0.0;
-  rclcpp::Time tracked_ref_time;
-  uint32_t tracked_opt_traj_id = 0u;
-  bool has_tracked_ref = false;
   {
     std::lock_guard<std::mutex> lk(data_mtx_);
+    if (!inputsFreshLocked()) {
+      return false;
+    }
     opt = latest_opt_path_;
-    tracked_ref_idx = tracked_ref_idx_;
-    tracked_ref_time = tracked_ref_time_;
-    tracked_opt_traj_id = tracked_opt_traj_id_;
-    has_tracked_ref = has_tracked_ref_;
   }
 
   if (!opt || opt->cmds.empty()) {
@@ -457,16 +726,13 @@ bool MincoMpcController::buildReferenceFromOptPath(
   }
 
   // 坐标系转换处理
-  std::vector<ros_interfaces::msg::PositionCommand> cmds;
+  auto & cmds = out.cmds;
   if (!transformPathToOdom(opt, cmds)) {
     return false;
   }
 
   const size_t n_cmds = cmds.size();
-  const double planner_dt = 1.0 / mpc_config_.planner_freq;
-  if (planner_dt <= 1.0e-6) {
-    return false;
-  }
+  out.planner_dt = kPlannerDt;
 
   // 最近点搜索（基于最小欧式距离），并计算更精确的最近点投影索引
   size_t best_idx = 0;
@@ -503,25 +769,6 @@ bool MincoMpcController::buildReferenceFromOptPath(
 
   const uint32_t current_traj_id = (!opt->cmds.empty()) ? opt->cmds.front().trajectory_id : 0u;
 
-  // 轨迹未更新时，按时间持续向前推进参考索引，且不允许回退
-  // const bool same_opt_traj = has_tracked_ref && tracked_opt_traj_id == current_traj_id;
-
-  // double progress_idx_float = nearest_idx_float;
-  // if (same_opt_traj) {
-  //   double dt_pass = (now - tracked_ref_time).seconds();
-  //   dt_pass = std::max(0.0, dt_pass);
-  //   progress_idx_float = tracked_ref_idx + dt_pass / planner_dt;
-  // }
-  // double current_idx_float = std::max(nearest_idx_float, progress_idx_float);
-
-  // // 同一条轨迹若超过阈值仍未更新，判定规划器卡死
-  // const double traj_stamp_sec =
-  //   static_cast<double>(opt->header.stamp.sec) + static_cast<double>(opt->header.stamp.nanosec) * 1.0e-9;
-  // const double absolute_age = now.seconds() - traj_stamp_sec;
-  // if (same_opt_traj && absolute_age > 0.5) {
-  //   return false;
-  // }
-
   double current_idx_float = nearest_idx_float;
   current_idx_float = std::min(current_idx_float, static_cast<double>(n_cmds - 1));
 
@@ -533,66 +780,63 @@ bool MincoMpcController::buildReferenceFromOptPath(
     has_tracked_ref_ = true;
   }
 
-  double current_traj_time = current_idx_float * planner_dt;
+  out.start_time = current_idx_float * kPlannerDt;
+  return true;
+}
 
-  // 让 MPC 始终去追踪未来一段时间的参考点，用于控制延迟补偿
-  double control_delay = control_delay_compensation_;
+ReferencePoint MincoMpcController::sampleReference(const ReferenceTrajectory & traj, double time) const
+{
+  const auto & cmds = traj.cmds;
+  const size_t n_cmds = cmds.size();
+  const double planner_dt = traj.planner_dt;
+  double target_idx_float = time / planner_dt;
 
-  current_traj_time += control_delay;
-
-  const int N = mpc_config_.horizon;
-  const double mpc_dt = mpc_config_.dt;
-  out_ref.clear();
-  out_ref.reserve(static_cast<size_t>(N));
-
-  for (int k = 0; k < N; ++k) {
-    double target_time = current_traj_time + k * mpc_dt;
-    double target_idx_float = target_time / planner_dt;
-
-    if (target_idx_float < 0.0)
-      target_idx_float = 0.0;
-    if (target_idx_float > static_cast<double>(n_cmds - 1)) {
-      target_idx_float = static_cast<double>(n_cmds - 1);
-    }
-
-    size_t target_idx = static_cast<size_t>(std::floor(target_idx_float));
-    size_t next_idx = target_idx + 1;
-    double alpha = target_idx_float - static_cast<double>(target_idx);
-
-    ReferencePoint rp;
-    if (next_idx < n_cmds) {
-      // 二次前馈插值（泰勒展开），使用 P/V/A/J 进行插值，补偿控制延迟带来的误差。
-      const double dt = std::max(0.0, std::min(planner_dt, alpha * planner_dt));
-      const double dt2 = dt * dt;
-      const double dt3 = dt2 * dt;
-
-      const Eigen::Vector2d p_i(cmds[target_idx].position.x, cmds[target_idx].position.y);
-      const Eigen::Vector2d v_i(cmds[target_idx].velocity.x, cmds[target_idx].velocity.y);
-      const Eigen::Vector2d a_i(cmds[target_idx].acceleration.x, cmds[target_idx].acceleration.y);
-      const Eigen::Vector2d j_i(cmds[target_idx].jerk.x, cmds[target_idx].jerk.y);
-
-      rp.pos = p_i + v_i * dt + 0.5 * a_i * dt2 + (1.0 / 6.0) * j_i * dt3;
-      rp.vel = v_i + a_i * dt + 0.5 * j_i * dt2;
-
-      // 线性角度插值
-      rp.yaw = interpolateYaw(cmds[target_idx].yaw, cmds[next_idx].yaw, alpha);
-      rp.yaw_rate = interpolate(cmds[target_idx].yaw_dot, cmds[next_idx].yaw_dot, alpha);
-    } else {
-      const auto & p_end = cmds.back();
-      rp.pos = Eigen::Vector2d(p_end.position.x, p_end.position.y);
-      rp.vel = Eigen::Vector2d(0.0, 0.0);
-      rp.yaw = p_end.yaw;
-      rp.yaw_rate = 0.0;
-    }
-    out_ref.push_back(rp);
+  if (target_idx_float < 0.0)
+    target_idx_float = 0.0;
+  if (target_idx_float > static_cast<double>(n_cmds - 1)) {
+    target_idx_float = static_cast<double>(n_cmds - 1);
   }
 
+  size_t target_idx = static_cast<size_t>(std::floor(target_idx_float));
+  size_t next_idx = target_idx + 1;
+  double alpha = target_idx_float - static_cast<double>(target_idx);
+
+  ReferencePoint rp;
+  if (next_idx < n_cmds) {
+    // 二次前馈插值（泰勒展开），使用 P/V/A/J 进行插值，补偿控制延迟带来的误差。
+    const double dt = std::max(0.0, std::min(planner_dt, alpha * planner_dt));
+    const double dt2 = dt * dt;
+    const double dt3 = dt2 * dt;
+
+    const Eigen::Vector2d p_i(cmds[target_idx].position.x, cmds[target_idx].position.y);
+    const Eigen::Vector2d v_i(cmds[target_idx].velocity.x, cmds[target_idx].velocity.y);
+    const Eigen::Vector2d a_i(cmds[target_idx].acceleration.x, cmds[target_idx].acceleration.y);
+    const Eigen::Vector2d j_i(cmds[target_idx].jerk.x, cmds[target_idx].jerk.y);
+
+    rp.pos = p_i + v_i * dt + 0.5 * a_i * dt2 + (1.0 / 6.0) * j_i * dt3;
+    rp.vel = v_i + a_i * dt + 0.5 * j_i * dt2;
+
+    // 线性角度插值
+    rp.yaw = interpolateYaw(cmds[target_idx].yaw, cmds[next_idx].yaw, alpha);
+    rp.yaw_rate = interpolate(cmds[target_idx].yaw_dot, cmds[next_idx].yaw_dot, alpha);
+  } else {
+    const auto & p_end = cmds.back();
+    rp.pos = Eigen::Vector2d(p_end.position.x, p_end.position.y);
+    rp.vel = Eigen::Vector2d(0.0, 0.0);
+    rp.yaw = p_end.yaw;
+    rp.yaw_rate = 0.0;
+  }
+  return rp;
+}
+
+void MincoMpcController::unwrapReferenceYaw(double curr_yaw, std::vector<ReferencePoint> & out_ref)
+{
   // 对参考序列的 yaw 进行连续性处理
   if (!out_ref.empty()) {
-    double diff = out_ref[0].yaw - curr.yaw;
+    double diff = out_ref[0].yaw - curr_yaw;
     // 将 diff 限制在 [-PI, PI]
     diff = std::atan2(std::sin(diff), std::cos(diff));
-    out_ref[0].yaw = curr.yaw + diff;
+    out_ref[0].yaw = curr_yaw + diff;
 
     for (size_t i = 1; i < out_ref.size(); ++i) {
       double d_yaw = out_ref[i].yaw - out_ref[i - 1].yaw;
@@ -600,50 +844,6 @@ bool MincoMpcController::buildReferenceFromOptPath(
       out_ref[i].yaw = out_ref[i - 1].yaw + d_yaw;
     }
   }
-  return true;
-}
-
-void MincoMpcController::applyGravityCompensation(
-  const nav_msgs::msg::Odometry::SharedPtr & odom, double & vx, double & vy)
-{
-  if (!odom) {
-    return;
-  }
-
-  tf2::Quaternion q;
-  tf2::fromMsg(odom->pose.pose.orientation, q);
-
-  double roll = 0.0;
-  double pitch = 0.0;
-  double yaw = 0.0;
-  tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-  // std::cout << "Original roll: " << roll << ", pitch: " << pitch << ", yaw: " << yaw << std::endl;
-  const double true_roll = roll - lidar_roll_offset_;
-  constexpr double angle_threshold = 0.05;
-  constexpr double k_gravity_x = 1.0;
-  constexpr double k_gravity_y = 20.0;
-
-  double body_comp_x = 0.0;
-  double body_comp_y = 0.0;
-  if (std::abs(pitch) > angle_threshold) {
-    body_comp_x = k_gravity_x * std::sin(-pitch);
-  }
-  if (std::abs(true_roll) > angle_threshold) {
-    body_comp_y = k_gravity_y * std::sin(std::abs(true_roll));
-  }
-
-  if (body_comp_x == 0.0 && body_comp_y == 0.0) {
-    return;
-  }
-
-  const double global_comp_x = body_comp_x * std::cos(yaw) - body_comp_y * std::sin(yaw);
-  const double global_comp_y = body_comp_x * std::sin(yaw) + body_comp_y * std::cos(yaw);
-
-  vx += global_comp_x;
-  vy += global_comp_y;
-
-  vx = std::clamp(vx, mpc_config_.vx_min, mpc_config_.vx_max);
-  vy = std::clamp(vy, mpc_config_.vy_min, mpc_config_.vy_max);
 }
 
 geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
@@ -663,7 +863,70 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     perf->stamp_ros = now.seconds();
     perf->stamp_steady_ns = MpcPerformanceMonitor::steadyNowNs();
   }
+  // Only a successful dynamic solve in this cycle sets a feedforward wrench.
+  pending_wrench_ff_.setZero();
+  nav_msgs::msg::Odometry::SharedPtr latest_odom;
+  uint64_t reference_version;
+  std::chrono::steady_clock::time_point odom_received;
+  bool inputs_fresh;
+  bool planning_failed;
+  {
+    std::lock_guard<std::mutex> lk(data_mtx_);
+    latest_odom = latest_odom_;
+    reference_version = reference_version_;
+    odom_received = odom_received_at_;
+    inputs_fresh = inputsFreshLocked();
+    planning_failed = planning_failed_;
+  }
+  // The planner gave up on this goal. Stop explicitly (the chassis listens to
+  // /cmd_vel_mpc, not Nav2's cmd_vel) and let the BT recover or abort.
+  if (planning_failed) {
+    if (dynamic_solver_) {
+      dynamic_solver_->resetLastAcceleration();
+    }
+    publishZeroCommand();
+    throw nav2_core::NoValidControl("MincoPlanner gave up on the current goal");
+  }
   auto finish = [&](geometry_msgs::msg::TwistStamped out_cmd, bool success, const std::string &) {
+    // Serialize the final output with cancel()/BLOCK and reference replacement.
+    // A cancellation during solve cannot be followed by an old nonzero command.
+    {
+      std::lock_guard<std::mutex> data_lock(data_mtx_);
+      const auto finish_now = node->now();
+      const double sampled_odom_age =
+        latest_odom
+          ? (finish_now - rclcpp::Time(latest_odom->header.stamp, finish_now.get_clock_type())).seconds()
+          : std::numeric_limits<double>::infinity();
+      if (!inputs_fresh || reference_version != reference_version_ || !inputsFreshLocked() ||
+          sampled_odom_age < 0.0 || sampled_odom_age > odom_timeout_sec_ ||
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - odom_received).count() >
+            odom_timeout_sec_) {
+        out_cmd.twist = geometry_msgs::msg::Twist{};
+        success = false;
+      }
+      // A suppressed command was never applied, so it must not seed the next solve.
+      if (!success && dynamic_solver_) {
+        dynamic_solver_->resetLastAcceleration();
+      }
+      if (!success) {
+        pending_wrench_ff_.setZero();
+      }
+      // Every return path publishes the same final command handed back to Nav2.
+      if (cmd_vel_mpc_pub_) {
+        cmd_vel_mpc_pub_->publish(out_cmd.twist);
+      }
+      if (chassis_cmd_pub_) {
+        ros_interfaces::msg::ChassisCommand chassis;
+        chassis.header.stamp = finish_now;
+        chassis.header.frame_id = global_frame_;
+        chassis.twist = out_cmd.twist;
+        chassis.wrench_ff.force.x = pending_wrench_ff_.x();
+        chassis.wrench_ff.force.y = pending_wrench_ff_.y();
+        chassis.wrench_ff.torque.z = pending_wrench_ff_.z();
+        chassis_cmd_pub_->publish(chassis);
+      }
+      last_published_velocity_ = Eigen::Vector2d(out_cmd.twist.linear.x, out_cmd.twist.linear.y);
+    }
     if (perf) {
       perf->success = success;
       perf->cycle_time_ms =
@@ -683,15 +946,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     return out_cmd;
   };
 
-  nav_msgs::msg::Odometry::SharedPtr latest_odom;
-  {
-    std::lock_guard<std::mutex> lk(data_mtx_);
-    latest_odom = latest_odom_;
-  }
-
   // 1) 构造当前状态：位置与航向来自 robot_base_frame（base_link_fake），
   // 世界系速度由 LIO 机体系速度按 body yaw 旋出。
   State curr;
+  Eigen::Vector2d raw_velocity = Eigen::Vector2d::Zero();
   curr.x = pose.pose.position.x;
   curr.y = pose.pose.position.y;
   curr.yaw = normalizeYaw(tf2::getYaw(pose.pose.orientation));
@@ -702,7 +960,8 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     double yaw_lio = normalizeYaw(tf2::getYaw(latest_odom->pose.pose.orientation));
     double omega_global = 0.0;
     compensateLeverArm(vx, vy, omega, yaw_lio, curr.vx, curr.vy, omega_global);
-    curr.omega = 0.0;
+    curr.omega = omega_global;
+    raw_velocity = Eigen::Vector2d(curr.vx, curr.vy);
 
     const double noise_threshold = 0.03;
     if (std::abs(curr.vx) < noise_threshold) {
@@ -724,6 +983,10 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   cmd.header.stamp = now;
   cmd.header.frame_id = global_frame_;
 
+  if (!inputs_fresh) {
+    return finish(cmd, false, "STALE_INPUT");
+  }
+
   // Sync Nav2 success semantics: if GoalChecker says reached, output zero command immediately.
   if (goal_checker != nullptr) {
     geometry_msgs::msg::PoseStamped goal_pose;
@@ -732,14 +995,26 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       std::lock_guard<std::mutex> lk(plan_mtx_);
       if (!global_plan_.poses.empty()) {
         goal_pose = global_plan_.poses.back();
+        if (goal_pose.header.frame_id.empty()) {
+          goal_pose.header.frame_id = global_plan_.header.frame_id;
+        }
         has_goal_pose = true;
       }
     }
 
-    if (has_goal_pose && goal_checker->isGoalReached(pose.pose, goal_pose.pose, velocity)) {
-      std::lock_guard<std::mutex> lk(data_mtx_);
-      has_tracked_ref_ = false;
-      latest_opt_path_.reset();
+    // The plan is in the planner frame (map) while the pose is in the local costmap frame
+    // (camera_init); compare in the pose frame, as controller_server does.
+    if (has_goal_pose && goalInPoseFrame(goal_pose, pose.header.frame_id, goal_pose) &&
+        goal_checker->isGoalReached(pose.pose, goal_pose.pose, velocity)) {
+      {
+        std::lock_guard<std::mutex> lk(data_mtx_);
+        has_tracked_ref_ = false;
+        latest_opt_path_.reset();
+        ++reference_version_;
+      }
+      if (dynamic_solver_) {
+        dynamic_solver_->resetLastAcceleration();
+      }
       cmd.twist.linear.x = 0.0;
       cmd.twist.linear.y = 0.0;
       cmd.twist.angular.z = 0.0;
@@ -747,119 +1022,22 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     }
   }
 
-  if (control_delay_compensation_ > 1e-3) {
-    curr.x += curr.vx * control_delay_compensation_;
-    curr.y += curr.vy * control_delay_compensation_;
-    curr.yaw += curr.omega * control_delay_compensation_;
-    curr.yaw = normalizeYaw(curr.yaw);
-  }
-
-  // 2) 构造参考序列：优先 /opt_path
-  std::vector<ReferencePoint> ref;
-  bool ok_ref = buildReferenceFromOptPath(curr, ref);
-
-  if (!ok_ref || !solver_) {
-    // 无参考则输出 0
-    cmd.twist.linear.x = 0.0;
-    cmd.twist.linear.y = 0.0;
-    cmd.twist.angular.z = 0.0;
-    return finish(cmd, false, ok_ref ? "SOLVER_UNAVAILABLE" : "NO_REFERENCE");
-  }
-  if (perf && !ref.empty()) {
-    perf->ref_vx = ref.front().vel.x();
-    perf->ref_vy = ref.front().vel.y();
-    perf->ref_wz = ref.front().yaw_rate;
-  }
-
-  // 3) 调用 MPC 求解（输出 global_frame_ 系速度，此处为 camera_init）
-  Control u_global;
   std::vector<State> pred_states;
-  const auto solve_start =
-    record_perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-#ifdef MINCO_DEBUG
-  auto t_start = std::chrono::high_resolution_clock::now();
-#endif
-  bool success = solver_->solve(curr, ref, u_global, &pred_states);
-  if (perf) {
-    perf->solve_time_ms =
-      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - solve_start).count();
-  }
-
+  const char * failure = solveDynamic(curr, raw_velocity, latest_odom, now, cmd.twist, pred_states, perf);
   publishVisualization(pred_states, curr);
-
-#ifdef MINCO_DEBUG
-  auto t_end = std::chrono::high_resolution_clock::now();
-  if (success && !ref.empty()) {
-    double dt_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-
-    double plan_vx = u_global.vx;
-    double plan_vy = u_global.vy;
-    double ref_vx = ref[0].vel.x();
-    double ref_vy = ref[0].vel.y();
-    double v_err_x = plan_vx - ref_vx;
-    double v_err_y = plan_vy - ref_vy;
-
-    double curr_x = curr.x;
-    double curr_y = curr.y;
-    double ref_x = ref[0].pos.x();
-    double ref_y = ref[0].pos.y();
-    double p_err_x = curr_x - ref_x;
-    double p_err_y = curr_y - ref_y;
-
-    custom_log::log_block(std::string("\033[34m[MincoMpc] "),
-      NV(plan_vx),
-      NV(plan_vy),
-      NV(ref_vx),
-      NV(ref_vy),
-      NV(v_err_x),
-      NV(v_err_y),
-      NV(curr_x),
-      NV(curr_y),
-      NV(ref_x),
-      NV(ref_y),
-      NV(p_err_x),
-      NV(p_err_y),
-      NV(dt_ms));
+  if (failure) {
+    cmd.twist = geometry_msgs::msg::Twist{};
+    return finish(cmd, false, failure);
   }
-#endif
+  return finish(cmd, true, "NONE");
+}
 
-  if (!success) {
-    std::cout << color_text::RED << "[MincoMpc] Solver Failed!" << color_text::RESET << std::endl;
-    // Debug info for failure
-    if (!ref.empty()) {
-      std::cout << "[MincoMpc] Ref Size: " << ref.size() << std::endl;
-      std::cout << "[MincoMpc] Curr: " << curr.x << ", " << curr.y << ", " << curr.yaw << std::endl;
-      std::cout << "[MincoMpc] Ref[0]: " << ref[0].pos.x() << ", " << ref[0].pos.y() << ", " << ref[0].yaw
-                << std::endl;
-    }
-
-    cmd.twist.linear.x = 0.0;
-    cmd.twist.linear.y = 0.0;
-    cmd.twist.angular.z = 0.0;
-    return finish(cmd, false, "QP_FAILED");
-  }
-
-  // 5) 直接下发全局坐标系速度
-  double vx_mpc = u_global.vx;
-  double vy_mpc = u_global.vy;
-  double wz = fixed_wz_;
-
-  // 小陀螺模式：当启用时，始终输出固定的旋转速度，而不使用 MPC 输出的角速度。
-  if (!use_small_gyro_mode_) {
-    wz = std::min(mpc_config_.omega_max, std::max(mpc_config_.omega_min, u_global.omega));
-  }
-
-  double output_delay = 0.025;
-  double phase_delay = curr.omega * output_delay;
-  double cos_phase = std::cos(phase_delay);
-  double sin_phase = std::sin(phase_delay);
-  double vx = cos_phase * vx_mpc + sin_phase * vy_mpc;
-  double vy = -sin_phase * vx_mpc + cos_phase * vy_mpc;
-  // 5) 处理 Nav2 setSpeedLimit
+double MincoMpcController::applySpeedLimit(double & vx, double & vy) const
+{
+  double scale = 1.0;
   if (speed_limit_ > 1e-6) {
     const double v_norm = std::hypot(vx, vy);
     if (v_norm > 1e-6) {
-      double scale = 1.0;
       if (speed_limit_percentage_) {
         scale = std::clamp(speed_limit_ / 100.0, 0.0, 1.0);
       } else {
@@ -869,50 +1047,247 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       vy *= scale;
     }
   }
+  return scale;
+}
 
-  // 6) 死区截断
-  const double deadzone = deadzone_speed_threshold_;
-  if (std::hypot(vx, vy) < deadzone) {
+Eigen::Vector2d MincoMpcController::estimateDisturbance(
+  const Eigen::Vector2d & raw_velocity, const nav_msgs::msg::Odometry::SharedPtr & odom)
+{
+  Eigen::Vector2d d = Eigen::Vector2d::Zero();
+  if (!odom) {
+    return d;
+  }
+  if (slope_gravity_) {
+    const auto & o = odom->pose.pose.orientation;
+    d += slopeGravity(Eigen::Quaterniond(o.w, o.x, o.y, o.z), gravity_body_roll_offset_);
+  }
+  if (disturbance_observer_enabled_) {
+    // One observer step per odometry sample. The chassis has been executing the last
+    // published command since the previous sample; the gravity term is part of the
+    // known model, so only the remainder is estimated.
+    const rclcpp::Time stamp(odom->header.stamp, observer_odom_stamp_.get_clock_type());
+    if (stamp != observer_odom_stamp_) {
+      observer_odom_stamp_ = stamp;
+      const double lag = disturbance_observer_.config().lag;
+      disturbance_observer_.update(stamp.seconds(), raw_velocity, last_published_velocity_ + lag * d);
+    }
+    d += disturbance_observer_.estimate();
+  }
+  return d;
+}
+
+void MincoMpcController::onWheelOdometry(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
+{
+  if (!msg) {
+    return;
+  }
+  const double stamp = rclcpp::Time(msg->header.stamp, RCL_ROS_TIME).seconds();
+  std::lock_guard<std::mutex> lk(data_mtx_);
+  wheel_odometry_.push(
+    stamp, Eigen::Vector3d(msg->twist.linear.x, msg->twist.linear.y, msg->twist.angular.z));
+}
+
+bool MincoMpcController::propagateWithWheelOdometry(
+  const nav_msgs::msg::Odometry::SharedPtr & odom, const rclcpp::Time & now, State & curr)
+{
+  if (!odom) {
+    return false;
+  }
+  // The pose (robot_base_frame via TF) and the LIO odom share the LIO stamp. Integrate the
+  // body-frame wheel velocity from there to now. The heading for the rotation is the LIO
+  // yaw: base_link_fake cancels yaw, so the pose yaw is not the chassis heading on the robot.
+  const double t0 = rclcpp::Time(odom->header.stamp, RCL_ROS_TIME).seconds();
+  const double t1 = now.seconds();
+  const double yaw_lio = tf2::getYaw(odom->pose.pose.orientation);
+  Eigen::Vector2d p1;
+  double yaw1 = yaw_lio;
+  Eigen::Vector3d v_body;
+  bool ok = false;
+  {
+    std::lock_guard<std::mutex> lk(data_mtx_);
+    ok = wheel_odometry_.propagate(t0, t1, Eigen::Vector2d(curr.x, curr.y), yaw_lio, p1, yaw1, v_body);
+  }
+  if (!ok) {
+    return false;
+  }
+  const double c = std::cos(yaw1);
+  const double s = std::sin(yaw1);
+  curr.x = p1.x();
+  curr.y = p1.y();
+  curr.yaw = normalizeYaw(curr.yaw + (yaw1 - yaw_lio));
+  curr.vx = c * v_body.x() - s * v_body.y();
+  curr.vy = s * v_body.x() + c * v_body.y();
+  curr.omega = v_body.z();
+  return true;
+}
+
+const char * MincoMpcController::solveDynamic(const State & measured,
+  const Eigen::Vector2d & raw_velocity,
+  const nav_msgs::msg::Odometry::SharedPtr & odom,
+  const rclcpp::Time & now,
+  geometry_msgs::msg::Twist & out_twist,
+  std::vector<State> & pred_states,
+  std::optional<MpcPerfSample> & perf)
+{
+  if (!dynamic_solver_) {
+    return "SOLVER_UNAVAILABLE";
+  }
+  const auto & config = dynamic_solver_->config();
+  const double d_max = dynamic_solver_->maxDisturbance();
+  const Eigen::Vector2d disturbance =
+    estimateDisturbance(raw_velocity, odom).cwiseMax(-d_max).cwiseMin(d_max);
+  if (perf) {
+    perf->dist_x = disturbance.x();
+    perf->dist_y = disturbance.y();
+  }
+
+  // control_delay_compensation is the lead from the odom stamp to when the command acts.
+  // Wheel odometry measures the part up to now; only the remainder is predicted.
+  State curr = measured;
+  double delay = control_delay_compensation_;
+  if (wheel_odometry_enabled_) {
+    if (propagateWithWheelOdometry(odom, now, curr)) {
+      delay -= (now - rclcpp::Time(odom->header.stamp, now.get_clock_type())).seconds();
+      delay = std::max(0.0, delay);
+    } else {
+      ++wheel_odometry_fallbacks_;
+      RCLCPP_WARN_THROTTLE(logger_,
+        *node_.lock()->get_clock(),
+        5000,
+        "Wheel odometry unavailable or stale; using LIO-only state (%lu fallbacks)",
+        static_cast<unsigned long>(wheel_odometry_fallbacks_));
+    }
+  }
+  // Propagate with the last applied input plus the drift instead of constant velocity.
+  if (delay > 1e-3) {
+    Eigen::Vector3d a = dynamic_solver_->getLastAcceleration();
+    a.head<2>() += disturbance;
+    curr.x += curr.vx * delay + 0.5 * a.x() * delay * delay;
+    curr.y += curr.vy * delay + 0.5 * a.y() * delay * delay;
+    curr.yaw = normalizeYaw(curr.yaw + curr.omega * delay + 0.5 * a.z() * delay * delay);
+    curr.vx += a.x() * delay;
+    curr.vy += a.y() * delay;
+    curr.omega += a.z() * delay;
+  }
+
+  // The projected position already accounts for the delay, so the reference starts there.
+  ReferenceTrajectory traj;
+  if (!prepareReference(curr, traj)) {
+    return "NO_REFERENCE";
+  }
+  const int n = config.horizon;
+  std::vector<ReferencePoint> ref(static_cast<size_t>(n + 1));
+  for (int k = 0; k <= n; ++k) {
+    ref[k] = sampleReference(traj, traj.start_time + k * config.dt);
+  }
+  unwrapReferenceYaw(curr.yaw, ref);
+  if (perf) {
+    perf->ref_vx = ref.front().vel.x();
+    perf->ref_vy = ref.front().vel.y();
+    perf->ref_wz = ref.front().yaw_rate;
+  }
+
+  const auto solve_start =
+    perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  DynamicControl u;
+  bool success = dynamic_solver_->solve(curr, ref, u, &pred_states, !secondary_reference_, disturbance);
+  if (success && secondary_reference_) {
+    // Shrink each reference step by cos(angle(v_pred, v_ref)): when the first plan heads
+    // away from the reference, along-track progress is traded for cross-track accuracy.
+    constexpr double kMinSpeed = 0.05;
+    double t = traj.start_time;
+    std::vector<ReferencePoint> shrunk(ref.size());
+    shrunk[0] = sampleReference(traj, t);
+    for (int k = 1; k <= n; ++k) {
+      const Eigen::Vector2d v_pred(pred_states[k].vx, pred_states[k].vy);
+      const Eigen::Vector2d & v_ref = ref[k].vel;
+      double alpha = 1.0;
+      if (v_pred.norm() > kMinSpeed && v_ref.norm() > kMinSpeed) {
+        alpha = std::max(0.0, v_pred.dot(v_ref) / (v_pred.norm() * v_ref.norm()));
+      }
+      t += alpha * config.dt;
+      shrunk[k] = sampleReference(traj, t);
+    }
+    unwrapReferenceYaw(curr.yaw, shrunk);
+    DynamicControl second;
+    std::vector<State> second_pred;
+    if (dynamic_solver_->solve(curr, shrunk, second, &second_pred, true, disturbance)) {
+      u = second;
+      pred_states = std::move(second_pred);
+    } else {
+      // Keep the valid first pass and record it as the applied input.
+      success = dynamic_solver_->solve(curr, ref, u, &pred_states, true, disturbance);
+    }
+  }
+  if (perf) {
+    perf->solve_time_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - solve_start).count();
+  }
+  if (!success) {
+    std::cout << color_text::RED << "[MincoMpc] Dynamic Solver Failed!" << color_text::RESET << std::endl;
+    std::cout << "[MincoMpc] Curr: " << curr.x << ", " << curr.y << ", " << curr.yaw << " v: " << curr.vx
+              << ", " << curr.vy << ", " << curr.omega << std::endl;
+    std::cout << "[MincoMpc] Ref[0]: " << ref[0].pos.x() << ", " << ref[0].pos.y() << ", " << ref[0].yaw
+              << std::endl;
+    return "QP_FAILED";
+  }
+
+  double vx = u.velocity.vx;
+  double vy = u.velocity.vy;
+  double omega = u.velocity.omega;
+  Eigen::Vector3d wrench_ff = Eigen::Vector3d::Zero();
+  if (force_ff_enabled_) {
+    // With gain k the feedforward supplies k of the planned force, so the velocity lead
+    // that made the firmware PID produce it shrinks from command_lookahead to ff_lookahead.
+    const double k = force_ff_gain_;
+    const double lead = (1.0 - k) * config.command_lookahead + k * force_ff_lookahead_;
+    DynamicSample at_lead;
+    DynamicSample at_ff;
+    if (!dynamic_solver_->sample(lead, at_lead) || !dynamic_solver_->sample(force_ff_lookahead_, at_ff)) {
+      return "QP_FAILED";
+    }
+    vx = at_lead.velocity.vx;
+    vy = at_lead.velocity.vy;
+    omega = at_lead.velocity.omega;
+    // The drive input already cancels the disturbance (a = a_ref - d), so m·input is the
+    // full planned drive force, slope term included.
+    Eigen::Vector2d force = k * config.mass * at_ff.input.head<2>();
+    if (force.norm() > force_ff_max_force_) {
+      force *= force_ff_max_force_ / force.norm();
+    }
+    const double torque =
+      force_ff_yaw_
+        ? std::clamp(k * config.inertia_z * at_ff.input.z(), -force_ff_max_torque_, force_ff_max_torque_)
+        : 0.0;
+    wrench_ff = Eigen::Vector3d(force.x(), force.y(), torque);
+  }
+  double wz = fixed_wz_;
+  if (!use_small_gyro_mode_) {
+    wz = std::clamp(omega, config.omega_min, config.omega_max);
+  }
+  // The speed limit scales the planned motion, so it scales the planned force too.
+  wrench_ff.head<2>() *= applySpeedLimit(vx, vy);
+
+  // A small command is still meaningful while the plan accelerates from rest. Only treat
+  // it as a dead zone when the reference itself is stationary over the whole horizon.
+  bool reference_stationary = true;
+  for (const auto & r : ref) {
+    if (r.vel.norm() >= deadzone_speed_threshold_) {
+      reference_stationary = false;
+      break;
+    }
+  }
+  if (reference_stationary && std::hypot(vx, vy) < deadzone_speed_threshold_) {
     vx = 0.0;
     vy = 0.0;
+    // A zeroed velocity must not leave a feedforward force acting on its own.
+    wrench_ff.setZero();
   }
-  constexpr double goal_pos_threshold = 0.3;
-  bool stop_mpc_cmd = false;
-  geometry_msgs::msg::PoseStamped goal_pose_stamped;
-  {
-    std::lock_guard<std::mutex> lk(plan_mtx_);
-    if (!global_plan_.poses.empty()) {
-      goal_pose_stamped = global_plan_.poses.back();
-    }
-  }
-  if (!goal_pose_stamped.header.frame_id.empty()) {
-    geometry_msgs::msg::PoseStamped goal_pose_in_odom = goal_pose_stamped;
-    if (goal_pose_in_odom.header.frame_id != odom_frame_) {
-      try {
-        goal_pose_in_odom = tf_->transform(goal_pose_in_odom, odom_frame_);
-      } catch (const tf2::TransformException &) {
-        goal_pose_in_odom.header.frame_id.clear();
-      }
-    }
-    if (!goal_pose_in_odom.header.frame_id.empty()) {
-      const double dx = pose.pose.position.x - goal_pose_in_odom.pose.position.x;
-      const double dy = pose.pose.position.y - goal_pose_in_odom.pose.position.y;
-      const double dist = std::hypot(dx, dy);
-      stop_mpc_cmd = (dist <= goal_pos_threshold);
-    }
-  }
-  if (cmd_vel_mpc_pub_) {
-    geometry_msgs::msg::Twist raw_cmd;
-    raw_cmd.linear.x = stop_mpc_cmd ? 0.0 : vx;
-    raw_cmd.linear.y = stop_mpc_cmd ? 0.0 : vy;
-    raw_cmd.angular.z = stop_mpc_cmd ? 0.0 : wz;
-    cmd_vel_mpc_pub_->publish(raw_cmd);
-  }
-  // applyGravityCompensation(latest_odom, vx, vy);
-  cmd.twist.linear.x = vx;
-  cmd.twist.linear.y = vy;
-  cmd.twist.angular.z = wz;
-  return finish(cmd, true, "NONE");
+  pending_wrench_ff_ = wrench_ff;
+  out_twist.linear.x = vx;
+  out_twist.linear.y = vy;
+  out_twist.angular.z = wz;
+  return nullptr;
 }
 
 void MincoMpcController::publishVisualization(

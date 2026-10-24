@@ -56,6 +56,13 @@ void VelPropogation(const std::vector<double> & seg_len, double amax, std::vecto
 // === Trajectory Command Publishing ===
 // --- Optimized Trajectory Publishing ---
 
+ros_interfaces::msg::MpcPositionCommand sampleOptimizedTrajectory(const traj_opt::Trajectory & opt_traj,
+  const traj_opt::Trajectory & yaw_traj,
+  uint32_t trajectory_id,
+  const std_msgs::msg::Header & header,
+  int steps,
+  double t_step);
+
 void publishOptimizedTrajectory(const traj_opt::Trajectory & opt_traj,
   const traj_opt::Trajectory & yaw_traj,
   const rclcpp::Publisher<ros_interfaces::msg::MpcPositionCommand>::SharedPtr & pub,

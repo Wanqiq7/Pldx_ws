@@ -8,7 +8,7 @@
 
 `bt_manager` 不直接实现轨迹规划或底盘闭环控制，而是决定机器人“当前应该做什么”：选择战术模式、生成导航目标、切换姿态、请求资源、处理人工接管，并将结果写入共享 blackboard 或发布到 ROS 2 接口。
 
-模块使用 BehaviorTree.CPP v3。主程序以多线程执行器处理 ROS 回调，行为树以 **10 Hz** tick；多个子树共享同一 blackboard。
+模块使用 BehaviorTree.CPP v4（`behaviortree_cpp`）。主程序以多线程执行器处理 ROS 回调，行为树主循环以 **30 Hz** tick（`main.cpp`）；多个子树共享同一 blackboard。
 
 ## 🧠 模块流程图
 
@@ -33,7 +33,7 @@ flowchart TD
 
 ### 流程概述
 
-ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写入共享 blackboard。主循环以 10 Hz tick 多棵行为树；每棵树按 XML 中当前未注释节点和响应式控制节点的顺序评估，写回战术模式、导航目标、姿态、资源或云台指令。导航目标交给 Nav2，姿态/资源等指令经 ROS topic 交给视觉工程，再由唯一的 USB CDC owner 发送到底盘和裁判链路。
+ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写入共享 blackboard。主循环以 30 Hz tick 多棵行为树；每棵树按 XML 中当前未注释节点和响应式控制节点的顺序评估，写回战术模式、导航目标、姿态、资源或云台指令。导航目标交给 Nav2，姿态/资源等指令经 ROS topic 交给视觉工程，再由唯一的 USB CDC owner 发送到底盘和裁判链路。
 
 ## 🧪 技术方向
 
@@ -44,7 +44,7 @@ ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写
 
 ## ⚡ 性能方向
 
-- 10 Hz tick 与 ROS 多线程执行器分离；日志以状态变化为主，避免逐 tick 高频输出。
+- 30 Hz 主循环与 ROS 多线程执行器分离；日志以状态变化为主，避免逐 tick 高频输出。
 - `bt_debug_logs`、`bt_debug_log_to_file` 和日志路径参数控制转移日志，文件日志默认关闭。
 - `/sentry/area_markers` 使用 `KeepLast(1) + reliable + transient_local`，RViz 后加入时仍能取得最近一组区域 Marker。
 - 本模块当前没有逐 tick CSV `PerformanceMonitor`；BT 的可观测性来自状态转移日志、ROS topic 和 Marker，不应与导航链路的性能 CSV 混为一谈。
@@ -73,6 +73,7 @@ Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、�
 | `tactical_mode` | 战术层模式 | tactical tree → navigation/stance/resource |
 | `current_mode` | 当前导航/行为模式 | mode 节点与 ROS 通信 |
 | `nav_goal` | 当前导航目标 | nav tree → Nav2 action 节点 |
+| `navigation_abort_retry` | 最近中止目标、连续失败计数及下次允许发送时间 | 共享 blackboard 上的导航 action 实例 |
 | `desired_stance` | 目标姿态 | stance tree → 通信接口 |
 | `current_stance` | 实际姿态反馈 | 裁判/下位机回调 → stance conditions |
 | `desired_lifter_pos` | 目标升降位置 | 姿态动作 → 通信接口 |
@@ -96,30 +97,17 @@ Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、�
 - `/aft_mapped_to_init`：定位状态。
 - `/opt_path`：当前优化轨迹。
 - `/cmd_vel`：底盘速度状态。
-- `vision/target_observation`：正式视觉目标输入，消息类型为
-  `pldx_vision_interfaces/msg/TargetObservation`。目标位置单位为米，通常使用
-  `header.frame_id=vision_gimbal`；默认 QoS 为 Reliable + KeepLast(1)。
+- `/sentry/offline_info`：升降、变形、电容、隧道和云台反馈等底盘/机器人状态。
 
-视觉回调只在 `valid=true`、ID 为 `1..8`、置信度不低于 `0.4`、坐标有限、消息年龄不超过
-`200 ms` 且 `map <- header.frame_id` 的**最新** TF（`TimePointZero`）可用时更新 `target_valid`、
-`target_pose` 和 `target_armor_id`。任何校验或 TF 失败都会立即清空这三个键，并按秒节流告警。
-
-`/sentry/offline_info` 仍提供升降、变形、电容、隧道和云台反馈，但其中历史视觉字段不再
-影响 BT。`auto_aim_target_pos` 是兼容接口，不属于导航正式输入；MCU 不中继视觉目标。
+当前导航栈已不再依赖外部视觉进程或 `vision/*` ROS 话题；如有目标锁定/瞄准相关状态，需由当前节点自己的 ROS 输入或内部黑板更新，而不是外部视觉通信链路。
 
 ### 输出
 
 | Topic | 说明 |
 |---|---|
 | `/sentry/behaivor_send` | 哨兵行为、资源与姿态指令；名称沿用现有接口拼写 |
-| `vision/target_directive` | `pldx_vision_interfaces/msg/VisionTargetDirective`；与行为话题同一 10 Hz 定时器 |
 | `/cmd_vel` | 明确恢复/接管场景中的速度指令链路 |
 | `/sentry/area_markers` | 战术区域可视化 |
-
-视觉部署必须提供导航所需的 `map <- vision_gimbal`（或消息实际 frame）TF。
-`body -> base_link` 和 `base_link_fake` 由 Nav2 侧的 `fake_vel_transform` 发布，不依赖 BT。`body -> vision_gimbal` 由 launch 发静态单位姿。视觉 `transformPoseToMap(..., "vision_gimbal")` 沿 TF 链到 map。
-`not_aim_enemy==true` 时 `VisionTargetDirective.valid=true` 且 `restrict_to_preferred_targets=true`、
-列表为空、`source_mask=SOURCE_NAVIGATION`；否则 `valid=false`。
 
 通信协议位段与下位机约定是跨模块接口，不能只修改发送端或单个枚举。
 
@@ -150,7 +138,7 @@ wait_for_service_timeout = 10 s
 模块通常由系统 launch 拉起。独立调试时，在工作空间完成环境加载后可运行：
 
 ```bash
-ros2 run bt_manager bt_manager
+ros2 run bt_manager bt_manager_node
 ```
 
 推荐检查：
@@ -162,6 +150,38 @@ ros2 topic echo /sentry/area_markers --once
 ```
 
 节点实际名称以运行时 `ros2 node list` 为准。启动失败时首先确认包 share 目录内已安装 `tree/` XML 文件。
+
+## 导航失败退避
+
+`NavigateToPoseAction` 在 Nav2 返回 `ABORTED` 后，对同一 XY 目标（1 cm 比较阈值）
+按 **2、4、8、16、16… 秒**退避。状态保存在共享 blackboard 的
+`navigation_abort_retry`，切换到另一个导航 action 实例也不能绕过等待。
+退避期间使用 Nav2 基类的 `should_send_goal_ = false`，返回 `FAILURE` 且不发送新 goal；
+后续分支仍由原行为树决定，退避不会阻塞整棵树。
+
+- 换目标立即允许发送；新目标第一次中止重新从初始延迟计数。
+- 导航成功、活动导航被取消时清除失败历史，保留到点后的正常重复下发。
+- 仅 halt 已失败或被退避阻止的节点不会清除共享退避。
+- 等待采用 ROS 节点时钟，仿真使用 `/clock`；巡逻超时仍沿用原来的 steady clock。
+
+XML 端口 `abort_backoff_initial_sec` / `abort_backoff_max_sec` 默认分别为 `2.0` / `16.0`。
+非有限值或非正值回退到对应默认值；最大延迟不会小于初始延迟。
+这是同目标中止后的重试限流；上层策略仍可选择其他目标。
+
+在工作空间根目录执行回归测试：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+colcon build --symlink-install --packages-select bt_manager --cmake-args -DBUILD_TESTING=ON
+ROS_DOMAIN_ID=221 colcon test --packages-select bt_manager --event-handlers console_cohesion+
+colcon test-result --test-result-base build/bt_manager --verbose
+```
+
+`test_nav_action` 使用真实 ROS Action 服务端，覆盖跨实例共享、指数封顶、真实等待窗口、
+换目标、无效参数以及成功/取消清理。仿真入口 `scripts/check_sim_bt_backoff.py` 会启动已安装的
+真实 `bt_manager_node`，通过 `/sentry/game_info` 下发人工点并观察自然中止、停车和换目标。
+完整命令、结果和边界见[退避验收记录](../../../docs/ai_refactor_records/20261024_bt_manager_abort_backoff.md)。
 
 ## 🧩 修改行为树的安全准则
 

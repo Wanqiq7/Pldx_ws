@@ -5,6 +5,7 @@
 
 #include <behaviortree_cpp/behavior_tree.h>
 #include <behaviortree_cpp/bt_factory.h>
+#include <behaviortree_cpp/loggers/groot2_publisher.h>
 
 namespace Sentry_BT {
 
@@ -14,7 +15,9 @@ public:
   SentryBTManager() = default;
   ~SentryBTManager() = default;
 
-  bool initialize(std::shared_ptr<BT::Blackboard> blackboard, const std::string & tree_root_dir);
+  bool initialize(std::shared_ptr<BT::Blackboard> blackboard,
+    const std::string & tree_root_dir,
+    unsigned groot2_port = 1667);
 
   // Main loop framework: tick main tree exactly once at a fixed rate.
   void run(double frequency_hz = 10.0);
@@ -37,6 +40,7 @@ private:
 
   // Default main tree can be adjusted later if needed.
   BT::Tree * main_tree_ = nullptr;
+  std::unique_ptr<BT::Groot2Publisher> groot2_publisher_;
   std::string tree_root_dir_;
 };
 
