@@ -4,6 +4,8 @@
 Run with the simulation's ROS_DOMAIN_ID after sourcing the workspace. Writes
 samples.jsonl and result.json, then exits nonzero on localization/goal errors.
 Use --stationary-only to isolate localization from planning and control.
+Use --resend-seconds to mimic bt_manager, which re-sends the same goal on every
+tick after NavigateToPose succeeds, so the robot is pulled back if it drifts.
 """
 import argparse
 import json
@@ -38,12 +40,13 @@ def pose(p):
 
 
 class Accuracy(Node):
-    def __init__(self, directory):
+    def __init__(self, directory, goal_timeout=90.0):
         super().__init__(
             "goal_accuracy_probe",
             parameter_overrides=[Parameter("use_sim_time", value=True)],
         )
         self.directory = Path(directory)
+        self.goal_timeout = goal_timeout
         self.directory.mkdir(parents=True, exist_ok=True)
         self.samples = (self.directory / "samples.jsonl").open("w")
         self.gt = deque(maxlen=1000)
@@ -52,6 +55,8 @@ class Accuracy(Node):
         self.phase = "initializing"
         self.latest = None
         self.records = []
+        self.window_target = None
+        self.window_errors = []
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
         self.create_subscription(
@@ -98,6 +103,8 @@ class Accuracy(Node):
         record = self.measurement(gt)
         if record is not None:
             self.latest = record
+            if self.window_target is not None:
+                self.window_errors.append(math.dist(record["truth"][:2], self.window_target))
             self.samples.write(json.dumps(record) + "\n")
             self.samples.flush()
 
@@ -174,11 +181,22 @@ class Accuracy(Node):
         if at_time is None:
             data = dict(self.latest)
         else:
-            gt = min(self.gt, key=lambda m: abs(stamp(m.header.stamp) - at_time))
-            data = self.measurement(gt)
-            assert data is not None, "missing TF at action completion"
+            data = None
+
+            def result_sample_ready():
+                nonlocal data
+                if not self.gt:
+                    return False
+                gt = min(self.gt, key=lambda m: abs(stamp(m.header.stamp) - at_time))
+                if abs(stamp(gt.header.stamp) - at_time) >= 0.015:
+                    return False
+                data = self.measurement(gt)
+                return data is not None
+
+            # Align the action result with TF and truth at the same timestamp.
+            self.wait(result_sample_ready, 30)
             data["action_result_t"] = at_time
-            data["sample_time_error_sec"] = stamp(gt.header.stamp) - at_time
+            data["sample_time_error_sec"] = data["t"] - at_time
             assert abs(data["sample_time_error_sec"]) < 0.015
         assert self.get_clock().now().nanoseconds * 1e-9 - data["t"] < 0.5
         data.update(label=label, status=status, target=target)
@@ -202,8 +220,7 @@ class Accuracy(Node):
         self.spin_for(1)
         self.snapshot("initial_stationary")
 
-    def navigate(self, target):
-        self.phase = "goal_" + str(target)
+    def send_and_wait(self, target):
         goal = NavigateToPose.Goal()
         goal.pose = PoseStamped()
         goal.pose.header.frame_id = "map"
@@ -216,20 +233,57 @@ class Accuracy(Node):
         assert handle.accepted
         result = handle.get_result_async()
         try:
-            self.wait(result.done, 90)
+            self.wait(result.done, self.goal_timeout)
         finally:
             if not result.done():
                 canceled = handle.cancel_goal_async()
                 self.wait(canceled.done, 10)
-        status = result.result().status
-        result_t = self.get_clock().now().nanoseconds * 1e-9
+        return result.result().status, self.get_clock().now().nanoseconds * 1e-9
+
+    def navigate(self, target, resend_seconds=0.0, resend_period=0.1):
+        self.phase = "goal_" + str(target)
+        status, result_t = self.send_and_wait(target)
         # Allow TF and truth publishers to cover the result timestamp.
         self.spin_for(0.3)
         self.snapshot("action_result", target, status, at_time=result_t)
-        self.phase = "settled_" + str(target)
-        self.spin_for(1.5)
-        self.snapshot("settled", target, status)
         assert status == 4, f"navigation failed: {status}"
+        if resend_seconds > 0.0:
+            self.resend_window(target, resend_seconds, resend_period)
+        self.phase = "settled_" + str(target)
+        settle_after = self.get_clock().now().nanoseconds * 1e-9 + 1.5
+        self.wait(lambda: self.latest is not None and self.latest["t"] >= settle_after, 30)
+        self.snapshot("settled", target, status)
+
+    def resend_window(self, target, seconds, period):
+        """Re-send the reached goal like a bt_manager tick loop and summarize the hold."""
+        self.phase = "resend_" + str(target)
+        self.window_target = target
+        self.window_errors = []
+        start = self.get_clock().now().nanoseconds * 1e-9
+        statuses, durations = [], []
+        while self.get_clock().now().nanoseconds * 1e-9 - start < seconds:
+            t0 = self.get_clock().now().nanoseconds * 1e-9
+            status, t1 = self.send_and_wait(target)
+            statuses.append(status)
+            durations.append(t1 - t0)
+            self.spin_for(period)
+        end = self.get_clock().now().nanoseconds * 1e-9
+        errors = self.window_errors
+        self.window_target = None
+        summary = {
+            "label": "resend_window",
+            "target": target,
+            "seconds": end - start,
+            "resends": len(statuses),
+            "failed": sum(1 for st in statuses if st != 4),
+            # Resends that had to drive back instead of succeeding at once.
+            "moving_resends": sum(1 for d in durations if d > 0.5),
+            "max_duration": max(durations) if durations else 0.0,
+            "max_truth_error": max(errors) if errors else float("nan"),
+            "final_truth_error": errors[-1] if errors else float("nan"),
+        }
+        self.records.append(summary)
+        print(json.dumps(summary), flush=True)
 
 
 def main():
@@ -240,6 +294,12 @@ def main():
     parser.add_argument("--max-goal-error", type=float, default=0.15)
     parser.add_argument("--max-vertical-drift", type=float, default=0.2)
     parser.add_argument("--goals", default="[[4.5,8.5],[4.5,7.3]]")
+    parser.add_argument(
+        "--resend-seconds",
+        type=float,
+        default=0.0,
+        help="after each success, keep re-sending the same goal for this long (bt_manager behaviour)",
+    )
     args = parser.parse_args()
     rclpy.init()
     node = Accuracy(args.directory)
@@ -248,12 +308,20 @@ def main():
         node.ready()
         if not args.stationary_only:
             for target in json.loads(args.goals):
-                node.navigate(target)
+                node.navigate(target, args.resend_seconds)
         initial = node.records[0]
         initial_z_offset = (
             initial["tf"]["map/base_link"]["pose"][2] - initial["truth"][2]
         )
         for r in node.records:
+            if r["label"] == "resend_window":
+                if r["failed"]:
+                    violations.append(f"{r['target']} {r['failed']} re-sent goals failed")
+                if not r["max_truth_error"] <= args.max_goal_error:
+                    violations.append(
+                        f"{r['target']} drifted {r['max_truth_error']:.3f}m > {args.max_goal_error}m while re-sending"
+                    )
+                continue
             r["vertical_drift"] = (
                 r["tf"]["map/base_link"]["pose"][2] - r["truth"][2] - initial_z_offset
             )
@@ -266,7 +334,7 @@ def main():
                     f"{r['label']} localization error {r['localization_error']:.3f}m > {args.max_localization_error}m"
                 )
             if (
-                r["label"] in ["action_result", "settled"]
+                r["label"] in (["action_result"] if args.resend_seconds else ["action_result", "settled"])
                 and r["truth_error"] > args.max_goal_error
             ):
                 violations.append(
@@ -277,7 +345,9 @@ def main():
                 or abs(r["truth_velocity"][2]) > 0.15
             ):
                 violations.append(f"{r['target']} succeeded while moving")
-            if r["label"] == "settled" and (
+            # With re-sending, bt_manager keeps commanding the goal; "settled" is taken after
+            # it stops and is judged by the resend window instead.
+            if r["label"] == "settled" and not args.resend_seconds and (
                 math.hypot(*r["truth_velocity"][:2]) > 0.02
                 or abs(r["truth_velocity"][2]) > 0.02
                 or max(abs(v) for v in r["cmd"]) > 0.01
