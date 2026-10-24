@@ -16,6 +16,9 @@ public:
     double cooldown_sec{2.0};
     double recovery_window_sec{1.5};
     double escape_speed{0.4};
+    // Recovery attempts (escape or no-escape stop) allowed per goal without a
+    // committed reference; the next one fails the goal instead.
+    int32_t max_attempts{3};
   };
 
   // --- Recovery Decision ---
@@ -66,6 +69,7 @@ public:
   bool shouldTryRecovery(double now_s) const;
   bool inRecovery(double now_s) const;
   int32_t consecutiveFailures() const;
+  int32_t maxAttempts() const;
 
 private:
   // === Utility & Helper Functions ===

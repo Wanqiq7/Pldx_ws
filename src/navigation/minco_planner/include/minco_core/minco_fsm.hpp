@@ -19,6 +19,7 @@ public:
     GENERATE_TRAJ,
     FOLLOW_TRAJ,
     RECOVERING,
+    FAILED,  // Recovery attempts exhausted; waits for a new goal or cancellation.
   };
 
   using PlannerPtr = std::shared_ptr<MincoPlanner>;
@@ -38,6 +39,10 @@ private:
   // === Utility & Helper Functions ===
   // --- State Transition ---
   void changeState(const char * caller, State new_state);
+  // Counts one recovery attempt; returns false (and fails the goal) once the
+  // attempts since the last committed reference exceed the configured limit.
+  bool admitRecoveryAttempt(const char * caller);
+  void failGoal(const char * caller);
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
   PlannerPtr planner_;
@@ -64,6 +69,9 @@ private:
   bool goal_stop_published_{false};
   double emer_stop_start_time_{0.0};
   Eigen::Vector2d current_escape_vel_{0.0, 0.0};
+  // Reset by a new goal, cancellation or a committed reference only, never by
+  // RecoverServer::reset(), so repeated escape cycles stay bounded.
+  int32_t recovery_attempts_{0};
 };
 
 }  // namespace minco_planner

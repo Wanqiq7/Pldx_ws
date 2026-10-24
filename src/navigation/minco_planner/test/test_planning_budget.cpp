@@ -2,8 +2,10 @@
 #include "minco_core/planning_deadline.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <future>
 #include <gtest/gtest.h>
+#include <limits>
 #include <numeric>
 #include <rcl/time.h>
 #include <thread>
@@ -53,10 +55,22 @@ public:
     p.candidate_ = MincoPlanner::Candidate{traj, traj, command};
     p.computing_version_ = p.planning_version_.load();
     p.computed_at_ = std::chrono::steady_clock::now() - (old ? 200ms : 0ms);
-    p.planning_result_ = true;
+    p.planning_result_ = MincoPlanner::PlanOutcome::COMMITTED;
   }
 
-  static void followTrajectory(MincoPlanner & p, double duration = 5.0)
+  // Simulates the worker finishing the pending request without a candidate.
+  static void readyOutcome(MincoPlanner & p, MincoPlanner::PlanOutcome outcome, bool global_search)
+  {
+    std::lock_guard<std::mutex> lock(p.planning_mutex_);
+    p.pending_planning_request_.reset();
+    p.candidate_.reset();
+    p.computing_version_ = p.planning_version_.load();
+    p.computing_global_search_ = global_search;
+    p.computed_at_ = std::chrono::steady_clock::now();
+    p.planning_result_ = outcome;
+  }
+
+  static void generateTrajectory(MincoPlanner & p)
   {
     p.latest_odom_.header.frame_id = "map";
     p.latest_odom_.pose.pose.position.x = 1.0;
@@ -72,11 +86,40 @@ public:
     goal.pose.orientation.w = 1.0;
     ASSERT_EQ(p.createPlan(goal, goal, {}).poses.size(), 2U);
     p.fsm_->callMainFsmOnce();
+    ASSERT_EQ(p.fsm_->getState(), MincoFsm::State::GENERATE_TRAJ);
+  }
+
+  static void followTrajectory(MincoPlanner & p, double duration = 5.0)
+  {
+    generateTrajectory(p);
     readyCandidate(p, false, duration);
     p.fsm_->callMainFsmOnce();
     ASSERT_EQ(p.fsm_->getState(), MincoFsm::State::FOLLOW_TRAJ);
   }
   static void tick(MincoPlanner & p) { p.fsm_->callMainFsmOnce(); }
+  static MincoFsm::State state(const MincoPlanner & p) { return p.fsm_->getState(); }
+  static int recoveryFailures(const MincoPlanner & p) { return p.recovery_server_->consecutiveFailures(); }
+  static void recordRecoveryFailure(MincoPlanner & p)
+  {
+    p.recovery_server_->onReplanFailure(p.nowSeconds());
+  }
+  // Answers every submitted request with INFEASIBLE until the FSM fails the goal.
+  // Returns the simulated time at which FAILED was reached, or nullopt.
+  static std::optional<double> failUntilGoalFails(
+    MincoPlanner & p, const std::function<void(double)> & set_time, double t0, double limit_s)
+  {
+    for (double t = t0; t < t0 + limit_s; t += 0.05) {
+      set_time(t);
+      tick(p);
+      if (state(p) == MincoFsm::State::FAILED) {
+        return t;
+      }
+      if (requestedGlobalSearch(p).has_value()) {
+        readyOutcome(p, MincoPlanner::PlanOutcome::INFEASIBLE, *requestedGlobalSearch(p));
+      }
+    }
+    return std::nullopt;
+  }
   static std::optional<bool> requestedGlobalSearch(MincoPlanner & p)
   {
     if (!p.pending_planning_request_) {
@@ -210,22 +253,29 @@ public:
     return false;
   }
 
-  static traj_opt::Trajectory optimizeStraightSegment(MincoPlanner & p,
-    const std::shared_ptr<rog_map::MapQueryInterface> & query,
-    double lookahead,
-    double current_x = 1.0)
+  static void seedStraightGlobalPath(MincoPlanner & p)
   {
-    configureOptimization(p, query, lookahead);
     for (int i = 0; i <= 50; ++i) {
       geometry_msgs::msg::PoseStamped point;
       point.pose.position.x = 1.0 + 0.1 * i;
       point.pose.position.y = 1.0;
       p.latest_global_path_.push_back(point);
     }
+  }
+
+  static void setPlanningBudget(MincoPlanner & p, double seconds) { p.planning_budget_sec_ = seconds; }
+
+  static traj_opt::Trajectory optimizeStraightSegment(MincoPlanner & p,
+    const std::shared_ptr<rog_map::MapQueryInterface> & query,
+    double lookahead,
+    double current_x = 1.0)
+  {
+    configureOptimization(p, query, lookahead);
+    seedStraightGlobalPath(p);
     geometry_msgs::msg::PoseStamped current;
     current.pose.position.x = current_x;
     current.pose.position.y = 1.0;
-    if (!p.ReplanLocal(current) || !p.candidate_) {
+    if (p.ReplanLocal(current) != MincoPlanner::PlanOutcome::COMMITTED || !p.candidate_) {
       return {};
     }
     return p.candidate_->position;
@@ -374,7 +424,7 @@ TEST_F(PlanningBudgetTest, ComplexGlobalSearchProducesExecutableReference)
   start.pose.orientation.w = goal.pose.orientation.w = 1.0;
   ASSERT_FALSE(p.planAsync(start, goal, true).has_value());
   ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
-  EXPECT_EQ(p.planAsync(start, goal, true), std::optional<bool>(true));
+  EXPECT_EQ(p.planAsync(start, goal, true), std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   ASSERT_TRUE(MincoPlannerTestPeer::hasTrajectory(p));
   ASSERT_EQ(executor.spin_until_future_complete(result, 1s), rclcpp::FutureReturnCode::SUCCESS);
   EXPECT_GT(result.get().cmds.size(), 2U);
@@ -434,7 +484,7 @@ TEST_F(PlanningBudgetTest, HotStartUsesElapsedTrajectoryTime)
   MincoPlannerTestPeer::initialize(p, node, false);
   MincoPlannerTestPeer::readyCandidate(p, false, 5.0, 0.5, 0.5, 1.0);
   ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
-    std::optional<bool>(true));
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   setTime(12.0);
   // Elapsed trajectory time is 2 s; spatial progress is only 1.75 s.
   constexpr double progress = 1.75;
@@ -544,7 +594,7 @@ TEST_F(PlanningBudgetTest, CommitsOnlyCurrentExecutionAndGoal)
   MincoPlannerTestPeer::initialize(p, node);
   MincoPlannerTestPeer::readyCandidate(p);
   ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
-    std::optional<bool>(true));
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   EXPECT_TRUE(MincoPlannerTestPeer::hasTrajectory(p));
 
   MincoPlannerTestPeer::readyCandidate(p);
@@ -564,13 +614,230 @@ TEST_F(PlanningBudgetTest, CommitsOnlyCurrentExecutionAndGoal)
   EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
 }
 
-TEST_F(PlanningBudgetTest, RejectsResultDelayedBeforeCommit)
+TEST_F(PlanningBudgetTest, DelayedResultIsResubmittedNotFailed)
 {
   MincoPlanner p;
-  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::initialize(p, node, false);
   MincoPlannerTestPeer::readyCandidate(p, true);
-  EXPECT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
-    std::optional<bool>(false));
+  EXPECT_FALSE(
+    p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false).has_value());
+  EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
+  EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(false));
+}
+
+TEST_F(PlanningBudgetTest, StaleResultIsResubmittedInSameTick)
+{
+  setTime(10.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::readyCandidate(p);
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "map";
+  goal.pose.position.x = 2.0;
+  p.createPlan(goal, goal, {});
+  EXPECT_FALSE(p.planAsync(goal, goal, true).has_value());
+  EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
+  EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(true));
+}
+
+TEST_F(PlanningBudgetTest, ExpiredFollowTimeoutRetriesLocallyWithoutRecoveryCount)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::followTrajectory(p, 0.5);
+  setTime(0.61);
+  MincoPlannerTestPeer::tick(p);
+  ASSERT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(false));
+  MincoPlannerTestPeer::readyOutcome(p, MincoPlanner::PlanOutcome::TIMEOUT, false);
+  setTime(0.62);
+  MincoPlannerTestPeer::tick(p);
+  // Previously a failed expired refresh escalated to GENERATE_TRAJ (global search).
+  EXPECT_EQ(MincoPlannerTestPeer::state(p), MincoFsm::State::FOLLOW_TRAJ);
+  EXPECT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 0);
+  setTime(0.83);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(false));
+}
+
+TEST_F(PlanningBudgetTest, GenerateTimeoutWaitsForCooldownWithoutRecoveryCount)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::generateTrajectory(p);
+  MincoPlannerTestPeer::tick(p);
+  ASSERT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(true));
+  MincoPlannerTestPeer::readyOutcome(p, MincoPlanner::PlanOutcome::TIMEOUT, true);
+  setTime(0.15);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::state(p), MincoFsm::State::GENERATE_TRAJ);
+  EXPECT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 0);
+  // Default 0.05 s cooldown blocks the same-mode retry, then lets it through.
+  setTime(0.17);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_FALSE(MincoPlannerTestPeer::requestedGlobalSearch(p).has_value());
+  setTime(0.21);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(true));
+}
+
+TEST_F(PlanningBudgetTest, GenerateInfeasibleRetriesEveryTick)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::generateTrajectory(p);
+  MincoPlannerTestPeer::tick(p);
+  MincoPlannerTestPeer::readyOutcome(p, MincoPlanner::PlanOutcome::INFEASIBLE, true);
+  setTime(0.15);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 1);
+  EXPECT_EQ(MincoPlannerTestPeer::state(p), MincoFsm::State::GENERATE_TRAJ);
+  // The 50 ms cooldown expires exactly at the next 50 ms FSM tick.
+  setTime(0.20);
+  MincoPlannerTestPeer::tick(p);
+  ASSERT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(true));
+  MincoPlannerTestPeer::readyOutcome(p, MincoPlanner::PlanOutcome::INFEASIBLE, true);
+  setTime(0.25);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 2);
+}
+
+TEST_F(PlanningBudgetTest, NewGoalInterruptsTimeoutCooldown)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::generateTrajectory(p);
+  MincoPlannerTestPeer::tick(p);
+  MincoPlannerTestPeer::readyOutcome(p, MincoPlanner::PlanOutcome::TIMEOUT, true);
+  setTime(0.15);
+  MincoPlannerTestPeer::tick(p);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_FALSE(MincoPlannerTestPeer::requestedGlobalSearch(p).has_value());
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "map";
+  goal.pose.position.x = 20.0;
+  goal.pose.orientation.w = 1.0;
+  p.createPlan(goal, goal, {});
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(true));
+}
+
+TEST_F(PlanningBudgetTest, KeptPreviousDoesNotResetRecoveryFailures)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::followTrajectory(p);
+  MincoPlannerTestPeer::recordRecoveryFailure(p);
+  ASSERT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 1);
+  setTime(1.01);
+  MincoPlannerTestPeer::tick(p);
+  MincoPlannerTestPeer::readyOutcome(p, MincoPlanner::PlanOutcome::KEPT_PREVIOUS, false);
+  setTime(1.06);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::state(p), MincoFsm::State::FOLLOW_TRAJ);
+  EXPECT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 1);
+  // A committed refresh still clears the count.
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::recoveryFailures(p), 0);
+}
+
+TEST_F(PlanningBudgetTest, RepeatedRecoveryWithoutCommitFailsGoal)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::generateTrajectory(p);
+  // Leaving RECOVERING resets RecoverServer, so without a per-goal bound the
+  // fail -> escape -> fail cycle never ends. Defaults: 3 failures, 1.5 s window, 3 attempts.
+  const auto failed_at = MincoPlannerTestPeer::failUntilGoalFails(
+    p,
+    [this](double t) {
+      setTime(t);
+    },
+    0.15,
+    30.0);
+  ASSERT_TRUE(failed_at.has_value());
+  EXPECT_LT(*failed_at, 10.0);
+  EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
+  // FAILED is terminal for the goal: no further planning requests.
+  for (int i = 0; i < 10; ++i) {
+    setTime(*failed_at + 0.05 * (i + 1));
+    MincoPlannerTestPeer::tick(p);
+  }
+  EXPECT_EQ(MincoPlannerTestPeer::state(p), MincoFsm::State::FAILED);
+  EXPECT_FALSE(MincoPlannerTestPeer::requestedGlobalSearch(p).has_value());
+}
+
+TEST_F(PlanningBudgetTest, FailedGoalIsRetriedWhenResubmitted)
+{
+  setTime(0.1);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::generateTrajectory(p);
+  const auto failed_at = MincoPlannerTestPeer::failUntilGoalFails(
+    p,
+    [this](double t) {
+      setTime(t);
+    },
+    0.15,
+    30.0);
+  ASSERT_TRUE(failed_at.has_value());
+  // The BT re-requests the identical goal after recovery; it must not be deduplicated.
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "map";
+  goal.pose.position.x = 10.0;
+  goal.pose.orientation.w = 1.0;
+  p.createPlan(goal, goal, {});
+  setTime(*failed_at + 0.05);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::state(p), MincoFsm::State::GENERATE_TRAJ);
+  setTime(*failed_at + 0.10);
+  MincoPlannerTestPeer::tick(p);
+  EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(true));
+}
+
+TEST(RecoverServerTest, StopWithoutEscapeDirectionDoesNotDisableLaterRecovery)
+{
+  RecoverServer server;
+  RecoverServer::Config config;
+  config.fail_threshold = 1;
+  config.cooldown_sec = 1.0;
+  server.configure(config);
+  geometry_msgs::msg::PoseStamped pose;
+  const auto no_map = [](const Eigen::Vector3d &) {
+    return std::numeric_limits<double>::quiet_NaN();
+  };
+  Eigen::Vector2d escape_vel;
+  EXPECT_EQ(server.handleReplanFailure(1.0, pose, no_map, escape_vel),
+    RecoverServer::RecoveryDecision::ENTER_EMER_STOP);
+  EXPECT_FALSE(server.inRecovery(1.0));
+  // Within the cooldown no new recovery starts.
+  EXPECT_EQ(
+    server.handleReplanFailure(1.5, pose, no_map, escape_vel), RecoverServer::RecoveryDecision::NONE);
+  // Previously recovery_active_ leaked and every later decision was NONE.
+  EXPECT_EQ(server.handleReplanFailure(2.1, pose, no_map, escape_vel),
+    RecoverServer::RecoveryDecision::ENTER_EMER_STOP);
+}
+
+TEST_F(PlanningBudgetTest, ExhaustedBudgetReportsTimeout)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::configureOptimization(p, std::make_shared<SlowQuery>(&costmap), 6.0);
+  MincoPlannerTestPeer::seedStraightGlobalPath(p);
+  MincoPlannerTestPeer::setPlanningBudget(p, 0.005);
+  geometry_msgs::msg::PoseStamped current;
+  current.pose.position.x = current.pose.position.y = 1.0;
+  ASSERT_FALSE(p.planAsync(current, current, false).has_value());
+  ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
+  EXPECT_EQ(p.planAsync(current, current, false), std::optional(MincoPlanner::PlanOutcome::TIMEOUT));
   EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
 }
 
@@ -595,7 +862,7 @@ TEST_F(PlanningBudgetTest, ExecutionSubscriptionRunsWhilePlanningWithoutParentEx
   MincoPlannerTestPeer::initialize(p, node);
   MincoPlannerTestPeer::readyCandidate(p);
   ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
-    std::optional<bool>(true));
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   MincoPlannerTestPeer::installSafety(p, query);
   MincoPlannerTestPeer::startCallbacks(p, node);
   auto publisher = node->create_publisher<std_msgs::msg::Bool>("/minco/execution_enabled", 10);
@@ -635,7 +902,7 @@ TEST_F(PlanningBudgetTest, SafetyBudgetExhaustionRevokesReference)
   MincoPlannerTestPeer::initialize(p, node);
   MincoPlannerTestPeer::readyCandidate(p);
   ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
-    std::optional<bool>(true));
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   MincoPlannerTestPeer::installSafety(p, query);
   const auto before = std::chrono::steady_clock::now();
   p.safetyTimerCallback();
@@ -883,7 +1150,7 @@ TEST_F(PlanningBudgetTest, SafetyCheckP95P99)
   MincoPlannerTestPeer::initialize(p, node);
   MincoPlannerTestPeer::readyCandidate(p);
   ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
-    std::optional<bool>(true));
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   MincoPlannerTestPeer::installSafety(p, query);
 
   constexpr int warmup = 10;

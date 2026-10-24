@@ -20,6 +20,12 @@ void RecoverServer::configure(const Config & config)
       : 0.5;
   config_.escape_speed =
     (std::isfinite(config.escape_speed) && config.escape_speed > 0.0) ? config.escape_speed : 0.4;
+  config_.max_attempts = (config.max_attempts > 0) ? config.max_attempts : 1;
+}
+
+int32_t RecoverServer::maxAttempts() const
+{
+  return config_.max_attempts;
 }
 
 void RecoverServer::reset()
@@ -83,6 +89,9 @@ RecoverServer::RecoveryDecision RecoverServer::handleReplanFailure(double now_s,
     return RecoveryDecision::DO_ESCAPE;
   }
 
+  // onReplanFailure() already started a recovery. Without an escape direction it
+  // ends at once; leaving it active would make shouldTryRecovery() false forever.
+  finishRecovery(false, now_s);
   return RecoveryDecision::ENTER_EMER_STOP;
 }
 

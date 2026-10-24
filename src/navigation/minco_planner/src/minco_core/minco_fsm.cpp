@@ -22,6 +22,7 @@ void MincoFsm::cancelGoal()
 {
   has_goal_ = false;
   last_replan_time_ = 0.0;
+  recovery_attempts_ = 0;
   if (recovery_server_) {
     recovery_server_->clearMissionGoal();
   }
@@ -48,6 +49,7 @@ void MincoFsm::callMainFsmOnce()
     if (planner_->consumePendingGoal(new_goal)) {
       goal_ = new_goal;
       has_goal_ = true;
+      recovery_attempts_ = 0;
       recovery_server_->setMissionGoal(new_goal);
       changeState("NewGoal", State::GENERATE_TRAJ);
     }
@@ -95,36 +97,32 @@ void MincoFsm::callMainFsmOnce()
         },
         escape_vel);
 
+      if (decision != RecoverServer::RecoveryDecision::NONE && !admitRecoveryAttempt(emer_reason)) {
+        return;
+      }
+
       if (decision == RecoverServer::RecoveryDecision::DO_ESCAPE) {
         current_escape_vel_ = escape_vel;
         changeState(escape_reason, State::RECOVERING);
         return;
       }
 
-      if (decision == RecoverServer::RecoveryDecision::ENTER_EMER_STOP) {
-        // Disabled to prevent zero-velocity deadlock
-        // changeState(emer_reason, State::EMER_STOP);
-        changeState(emer_reason, State::GENERATE_TRAJ);
-        return;
-      }
-
-      // Recovery threshold not reached yet: stay in GENERATE_TRAJ and keep accumulating failures.
-      // Disabled to prevent zero-velocity deadlock
-      // if (!stop_published_) {
-      //   planner_->publishEmergencyStop(current_pose);
-      //   stop_published_ = true;
-      // }
+      // ENTER_EMER_STOP (no escape direction, attempt counted) or NONE (threshold
+      // not reached): stay in GENERATE_TRAJ and retry. EMER_STOP stays disabled
+      // to prevent the zero-velocity deadlock.
     };
 
     const auto result = planner_->planAsync(current_pose, goal_, true);
-    if (!result) {
+    // A timeout is not evidence of being stuck; the planner retries after its cooldown.
+    if (!result || *result == MincoPlanner::PlanOutcome::TIMEOUT) {
       return;
     }
-    if (!*result) {
+    if (*result == MincoPlanner::PlanOutcome::INFEASIBLE || *result == MincoPlanner::PlanOutcome::UNSAFE) {
       handle_generate_replan_failure("GEN_STUCK_TRIGGER_RECOVERING", "GENERATE_RECOVERY_FAIL");
       return;
     }
 
+    recovery_attempts_ = 0;
     traveled_dist_ = 0.0;
     changeState("GENERATE_TRAJ", State::FOLLOW_TRAJ);
     break;
@@ -160,10 +158,12 @@ void MincoFsm::callMainFsmOnce()
     }
 
     const auto result = planner_->planAsync(current_pose, goal_, false);
-    if (!result) {
+    // KEPT_PREVIOUS means the refresh failed: keep tracking without resetting the
+    // recovery failure count.
+    if (!result || *result == MincoPlanner::PlanOutcome::KEPT_PREVIOUS) {
       return;
     }
-    if (!*result) {
+    if (*result != MincoPlanner::PlanOutcome::COMMITTED) {
       const bool can_follow_old_trajectory = trajectory_safe && planner_->isTrajSafe();
       // A failed refresh may fall back to an unexpired safe trajectory. An
       // unsafe trajectory must be revoked even when its nominal duration remains.
@@ -173,6 +173,12 @@ void MincoFsm::callMainFsmOnce()
 
       if (!can_follow_old_trajectory) {
         planner_->invalidateTrajectory();
+      }
+
+      // Budget exhaustion says nothing about blockage: retry locally after the
+      // planner cooldown instead of escalating to global search or recovery.
+      if (*result == MincoPlanner::PlanOutcome::TIMEOUT) {
+        return;
       }
 
       // 1. 失败诊断：区分是”前方路被挡”还是”自身被卡死”
@@ -196,6 +202,11 @@ void MincoFsm::callMainFsmOnce()
         },
         escape_vel);
 
+      if (decision != RecoverServer::RecoveryDecision::NONE &&
+          !admitRecoveryAttempt("FOLLOW_REPLAN_RECOVERY")) {
+        return;
+      }
+
       if (decision == RecoverServer::RecoveryDecision::DO_ESCAPE) {
         current_escape_vel_ = escape_vel;
         changeState("STUCK_TRIGGER_RECOVERING", State::RECOVERING);
@@ -203,8 +214,7 @@ void MincoFsm::callMainFsmOnce()
       }
 
       if (decision == RecoverServer::RecoveryDecision::ENTER_EMER_STOP) {
-        // Disabled to prevent zero-velocity deadlock
-        // changeState("FOLLOW_REPLAN_RECOVERY", State::EMER_STOP);
+        // EMER_STOP stays disabled (zero-velocity deadlock); retry with a global search.
         changeState("FOLLOW_REPLAN_RECOVERY", State::GENERATE_TRAJ);
         return;
       }
@@ -219,6 +229,7 @@ void MincoFsm::callMainFsmOnce()
     }
 
     recovery_server_->onReplanSuccess();
+    recovery_attempts_ = 0;
 
     traveled_dist_ = 0.0;
     return;
@@ -253,6 +264,14 @@ void MincoFsm::callMainFsmOnce()
     planner_->publishEscapeCommand(current_pose, current_escape_vel_);
     return;
   }
+
+  case State::FAILED:
+    // Terminal for this goal. The failure notice already stopped the controller;
+    // only a new goal (consumed above) or cancellation leaves this state.
+    if (!has_goal_) {
+      changeState("FAILED", State::WAIT_GOAL);
+    }
+    return;
 
     // Disabled to prevent zero-velocity deadlock
     /*
@@ -328,6 +347,8 @@ namespace {
     return "FOLLOW_TRAJ";
   case MincoFsm::State::RECOVERING:
     return "RECOVERING";
+  case MincoFsm::State::FAILED:
+    return "FAILED";
   // Disabled to prevent zero-velocity deadlock
   // case MincoFsm::State::EMER_STOP:
   //   return "EMER_STOP";
@@ -337,6 +358,26 @@ namespace {
 }
 
 }  // namespace
+
+bool MincoFsm::admitRecoveryAttempt(const char * caller)
+{
+  if (++recovery_attempts_ <= recovery_server_->maxAttempts()) {
+    return true;
+  }
+  failGoal(caller);
+  return false;
+}
+
+void MincoFsm::failGoal(const char * caller)
+{
+  // has_goal_ stays set: FAILED belongs to this goal. createPlan() resubmits an
+  // identical goal while the FSM is FAILED instead of deduplicating it.
+  recovery_server_->reset();
+  changeState(caller, State::FAILED);
+  planner_->invalidateTrajectory(true);
+  std::cerr << "[MincoFSM] [" << (caller ? caller : "?") << "] goal failed after "
+            << (recovery_attempts_ - 1) << " recovery attempts without a committed reference" << std::endl;
+}
 
 void MincoFsm::changeState(const char * caller, State new_state)
 {

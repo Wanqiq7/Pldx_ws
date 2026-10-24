@@ -4,7 +4,7 @@
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="3" name="NavigateRecovery">
       <MincoGoalUpdater input_goal="{goal}" output_goal="{updated_goal}">
         <PipelineSequence name="NavigateWithReplanning">
           <GoalUpdatedController goal="{updated_goal}">
