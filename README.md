@@ -60,9 +60,9 @@
 - **GICP 重定位**：离线加载地图 PCD，在线累积点云后做粗/精两阶段 GICP，确认后持续发布 `map → camera_init` TF。
 - **ROGMap + Signed ESDF**：滑动三维概率占据、动态遗忘、地形语义投影，以及障碍外正距离 / 障碍内负距离的连续梯度场。
 - **MINCO 双模式规划**：`PRIORMAP` 利用 Nav2 先验地图全局引导；`EXPLORATION` 直接在 ROGMap 有效边界内搜索。
-- **力控 MPC**：状态 `[x, y, yaw, vx, vy, omega]`，输入质量归一化驱动力 `[Fx/m, Fy/m, Mz/Iz]`，qpOASES 求解，输出世界系速度；可选坡道扰动补偿、轮速融合与力前馈（`/chassis_cmd_mpc`）。
+- **力控 MPC**：状态 `[x, y, yaw, vx, vy, omega]`，输入质量归一化驱动力 `[Fx/m, Fy/m, Mz/Iz]`，qpOASES 求解，输出首步世界系驱动力（`/chassis_cmd_mpc`）；支持坡道扰动补偿与轮速融合。
 - **比赛行为树**：BehaviorTree.CPP XML 定义战术、导航、姿态、资源、云台和恢复策略。
-- **裁判 / 底盘通信**：`ros2_libxr` 经 USB CDC 直连 MC02 下位机，转发 `/cmd_vel_mpc` 与 `/sentry/behaivor_send`，并发布 `/sentry/*` 裁判与状态话题；不再依赖外部视觉工程的 ROS 启动链路。
+- **裁判 / 底盘通信**：`ros2_libxr` 经 USB CDC 直连 MC02 下位机，转发 `/chassis_cmd_mpc` 与 `/sentry/behaivor_send`，并发布 `/sentry/*` 裁判与状态话题；不再依赖外部视觉工程的 ROS 启动链路。
 
 ## 🧩 功能模块
 
@@ -223,7 +223,7 @@ ros2 launch ros2_libxr ros2_libxr_launch.py   # 连接底盘时
 ros2 launch bt_manager bt_manager.launch.py
 ```
 
-MPC 控制器输出 `/cmd_vel_mpc`，由 `ros2_libxr` 经 USB CDC 转发到底盘；指令中断 150 ms 后桥接节点发送零速保活。
+MPC 控制器输出 `/chassis_cmd_mpc`，由 `ros2_libxr` 经 USB CDC 转发到底盘；指令中断 150 ms 后桥接节点发送零力保活。
 
 ### 一键实车启动
 
@@ -284,8 +284,7 @@ ros2 launch sentry_simulation simulation.launch.py
 | 话题                        | 类型                                    | 方向 | 说明                          |
 | --------------------------- | --------------------------------------- | ---- | ----------------------------- |
 | `/opt_path`                 | `ros_interfaces/msg/MpcPositionCommand` | 发布 | MINCO 优化轨迹（P/V/A/J/Yaw） |
-| `/cmd_vel_mpc`              | `geometry_msgs/msg/Twist`               | 发布 | MPC 世界系速度                |
-| `/chassis_cmd_mpc`          | `ros_interfaces/msg/ChassisCommand`     | 发布 | 速度 + 力前馈（可选）         |
+| `/chassis_cmd_mpc`          | `ros_interfaces/msg/ChassisCommand`     | 发布 | MPC 世界系驱动力 Fx/Fy/Mz         |
 | `/opt_path_vis`             | `nav_msgs/msg/Path`                     | 发布 | 优化轨迹可视化                |
 | `/astar_path_vis`           | `nav_msgs/msg/Path`                     | 发布 | 搜索路径可视化                |
 | `/minco_control_points_vis` | `visualization_msgs/msg/Marker`         | 发布 | MINCO 控制点                  |
@@ -334,7 +333,7 @@ ros2 launch sentry_simulation simulation.launch.py
 ros2 topic hz /aft_mapped_to_init
 ros2 topic hz /cloud_registered_full
 ros2 topic hz /opt_path
-ros2 topic hz /cmd_vel_mpc
+ros2 topic hz /chassis_cmd_mpc
 ```
 
 ## ⚙️ 配置文件
@@ -500,7 +499,7 @@ flowchart LR
     BT[BehaviorTree.CPP]
     MCU[底盘 MCU]
     BT --> N2
-    MPC -->|/cmd_vel_mpc| MCU
+    MPC -->|/chassis_cmd_mpc| MCU
   end
 
   PL -->|/aft_mapped_to_init| N2
@@ -518,7 +517,7 @@ flowchart LR
 | GICP                | TF`map → camera_init`    | Nav2 / 规划                           | 先验地图对齐          |
 | ROGMap              | 进程内`MapQueryInterface` | MincoPlanner                          | 占据、投影、ESDF 查询 |
 | MincoPlanner        | `/opt_path`               | MincoMpcController                    | 优化轨迹前馈          |
-| MincoMpcController  | `/cmd_vel_mpc`            | 底盘 / 后端控制链路                   | 世界系速度            |
+| MincoMpcController  | `/chassis_cmd_mpc`            | 底盘 / 后端控制链路                   | 世界系驱动力          |
 | bt_manager          | Nav2 action / blackboard  | Nav2、通信                            | 比赛策略              |
 
 ## 🏗 软件架构

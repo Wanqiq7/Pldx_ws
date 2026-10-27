@@ -27,19 +27,13 @@ public:
   // @param commit 成功时是否把首步输入记为已下发（用于输入差分代价与延迟外推）
   // @param disturbance map 系平移扰动加速度 d（重力分量、观测器估计），模型为
   //        v_{k+1} = v_k + dt·(a_k + d)。按 maxDisturbance() 截断以保留可行余量。
-  //        a_ref 前馈变为 a_ref - d，wrench 为抵消 d 所需的驱动力；输出速度不含 d 的
-  //        漂移（下位机速度环看不到 d，命令需提前补偿）。
+  //        a_ref 前馈变为 a_ref - d，输出 wrench 已包含抵消 d 的驱动力。
   bool solve(const State & curr,
     const std::vector<ReferencePoint> & ref_traj,
     DynamicControl & out_u,
     std::vector<State> * out_pred = nullptr,
     bool commit = true,
     const Eigen::Vector2d & disturbance = Eigen::Vector2d::Zero());
-
-  // 在最近一次成功 solve() 的预测上取 t0 + tau 处的速度与驱动输入（力前馈 = m·input）。
-  // 输入逐步保持，速度在步内线性；速度扣除扰动漂移 tau·d，与 DynamicControl::velocity 一致。
-  // 尚无成功求解时返回 false。
-  bool sample(double tau, DynamicSample & out) const;
 
   // 最近一次已下发的 [ax, ay, alpha]
   Eigen::Vector3d getLastAcceleration() const { return last_acc_; }

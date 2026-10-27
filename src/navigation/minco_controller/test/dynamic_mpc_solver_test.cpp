@@ -288,15 +288,12 @@ TEST(DynamicMpcSolver, StationaryReferenceAtRestHoldsStill)
   DynamicControl u;
   ASSERT_TRUE(solver.solve(s, refs, u));
   EXPECT_NEAR(u.acceleration.norm(), 0.0, 1e-8);
-  EXPECT_NEAR(u.velocity.vx, 0.0, 1e-8);
-  EXPECT_NEAR(u.velocity.vy, 0.0, 1e-8);
-  EXPECT_NEAR(u.velocity.omega, 0.0, 1e-8);
+  EXPECT_NEAR(u.wrench.norm(), 0.0, 1e-8);
 }
 
 TEST(DynamicMpcSolver, StartsFromRestTowardsMovingReference)
 {
   auto c = testConfig();
-  c.command_lookahead = 0.01;  // inside the first step, so v = lookahead · a0
   DynamicMpcSolver solver(c);
   std::vector<ReferencePoint> refs(c.horizon + 1);
   for (int k = 0; k <= c.horizon; ++k) {
@@ -307,8 +304,7 @@ TEST(DynamicMpcSolver, StartsFromRestTowardsMovingReference)
   DynamicControl u;
   ASSERT_TRUE(solver.solve({}, refs, u));
   EXPECT_GT(u.acceleration.x(), 0.5);
-  EXPECT_GT(u.velocity.vx, 0.0);
-  EXPECT_NEAR(u.velocity.vx, c.command_lookahead * u.acceleration.x(), 1e-9);
+  EXPECT_NEAR(u.wrench.x(), c.mass * u.acceleration.x(), 1e-9);
 }
 
 TEST(DynamicMpcSolver, StaysFeasibleWhenInitialVelocityExceedsBounds)
@@ -334,28 +330,6 @@ TEST(DynamicMpcSolver, StaysFeasibleWhenInitialVelocityExceedsBounds)
   EXPECT_LE(pred.back().vx, c.vx_max + 1e-6);
   EXPECT_GE(pred.back().vy, c.vy_min - 1e-6);
   EXPECT_LE(pred.back().omega, c.omega_max + 1e-6);
-}
-
-TEST(DynamicMpcSolver, CommandVelocityInterpolatesPrediction)
-{
-  for (double lookahead : {0.0, 0.01, 0.02, 0.05, 0.1234, 100.0}) {
-    SCOPED_TRACE(::testing::Message() << "lookahead=" << lookahead);
-    auto c = testConfig();
-    c.command_lookahead = lookahead;
-    DynamicMpcSolver solver(c);
-    State s;
-    s.vx = 0.3;
-    s.omega = 0.2;
-    DynamicControl u;
-    std::vector<State> pred;
-    ASSERT_TRUE(solver.solve(s, makeReference(c, 7), u, &pred));
-    const double tau = std::min(lookahead, c.horizon * c.dt);
-    const int idx = std::min(static_cast<int>(tau / c.dt), c.horizon - 1);
-    const double frac = tau / c.dt - idx;
-    EXPECT_NEAR(u.velocity.vx, pred[idx].vx + frac * (pred[idx + 1].vx - pred[idx].vx), 1e-12);
-    EXPECT_NEAR(u.velocity.vy, pred[idx].vy + frac * (pred[idx + 1].vy - pred[idx].vy), 1e-12);
-    EXPECT_NEAR(u.velocity.omega, pred[idx].omega + frac * (pred[idx + 1].omega - pred[idx].omega), 1e-12);
-  }
 }
 
 TEST(DynamicMpcSolver, CommitControlsRecordedInput)
@@ -476,7 +450,6 @@ TEST(DynamicMpcSolver, MatchesDenseFormulationWithDrift)
 TEST(DynamicMpcSolver, HoldsStillAgainstKnownSlopeDrift)
 {
   auto c = testConfig();
-  c.command_lookahead = 0.15;
   c.r_jerk = c.r_dalpha = 0.0;  // otherwise the first input ramps from the previous one
   DynamicMpcSolver solver(c);
   std::vector<ReferencePoint> refs(c.horizon + 1);
@@ -499,9 +472,6 @@ TEST(DynamicMpcSolver, HoldsStillAgainstKnownSlopeDrift)
     EXPECT_NEAR(p.x, 2.0, 1e-8);
     EXPECT_NEAR(p.vy, 0.0, 1e-8);
   }
-  // The velocity loop cannot see the drift, so the command leads uphill by tau·|d|.
-  EXPECT_NEAR(u.velocity.vx, -c.command_lookahead * drift.x(), 1e-8);
-  EXPECT_NEAR(u.velocity.vy, -c.command_lookahead * drift.y(), 1e-8);
 }
 
 TEST(DynamicMpcSolver, ClampsExcessiveDriftAndStaysFeasible)
@@ -527,39 +497,6 @@ TEST(DynamicMpcSolver, ClampsExcessiveDriftAndStaysFeasible)
     nullptr,
     true,
     Eigen::Vector2d(std::numeric_limits<double>::quiet_NaN(), 0.0)));
-}
-
-TEST(DynamicMpcSolver, SampleMatchesSolveOutputAndPrediction)
-{
-  auto c = testConfig();
-  c.command_lookahead = 0.07;
-  DynamicMpcSolver solver(c);
-  DynamicSample sample;
-  EXPECT_FALSE(solver.sample(0.0, sample));  // no successful solve yet
-  State s;
-  s.vx = 0.4;
-  s.omega = 0.3;
-  const Eigen::Vector2d drift(0.3, -0.2);
-  DynamicControl u;
-  std::vector<State> pred;
-  ASSERT_TRUE(solver.solve(s, makeReference(c, 5), u, &pred, true, drift));
-  ASSERT_TRUE(solver.sample(c.command_lookahead, sample));
-  EXPECT_DOUBLE_EQ(sample.velocity.vx, u.velocity.vx);
-  EXPECT_DOUBLE_EQ(sample.velocity.vy, u.velocity.vy);
-  EXPECT_DOUBLE_EQ(sample.velocity.omega, u.velocity.omega);
-  // tau = 0 is the current state, and its input is the first-step input.
-  ASSERT_TRUE(solver.sample(0.0, sample));
-  EXPECT_DOUBLE_EQ(sample.velocity.vx, s.vx);
-  EXPECT_EQ(sample.input, u.acceleration);
-  // Inside step k the input is step k's; velocity excludes the drift accumulated up to tau.
-  const double tau = 3.5 * c.dt;
-  ASSERT_TRUE(solver.sample(tau, sample));
-  const double ax3 = (pred[4].vx - pred[3].vx) / c.dt - drift.x();
-  EXPECT_NEAR(sample.input.x(), ax3, 1e-9);
-  EXPECT_NEAR(sample.velocity.vx, 0.5 * (pred[3].vx + pred[4].vx) - tau * drift.x(), 1e-12);
-  // A failed solve invalidates the snapshot.
-  EXPECT_FALSE(solver.solve(s, {}, u));
-  EXPECT_FALSE(solver.sample(0.0, sample));
 }
 
 TEST(DynamicMpcSolver, DISABLED_Benchmark)

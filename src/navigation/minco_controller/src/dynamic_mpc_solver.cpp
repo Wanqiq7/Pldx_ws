@@ -138,8 +138,6 @@ struct DynamicMpcSolver::Workspace
     yaw_s1.resize(n + 1);
     yaw_sv.resize(n + 1);
     pred.resize(n + 1);
-    sample_pred.resize(n + 1);
-    sample_inputs.resize(n);
 
     qpOASES::Options options;
     options.setToMPC();
@@ -172,10 +170,6 @@ struct DynamicMpcSolver::Workspace
   std::vector<State> pred;
 
   // Snapshot of the last successful solve, read by sample().
-  bool has_sample{false};
-  std::vector<State> sample_pred;
-  std::vector<Eigen::Vector3d> sample_inputs;
-  Eigen::Vector2d sample_drift{Eigen::Vector2d::Zero()};
 };
 
 namespace {
@@ -228,29 +222,6 @@ double DynamicMpcSolver::octagonFaceLimit() const
   return kOctagonFace * translationalAccelerationLimit();
 }
 
-bool DynamicMpcSolver::sample(double tau, DynamicSample & out) const
-{
-  if (!workspace_ || !workspace_->has_sample || !std::isfinite(tau)) {
-    return false;
-  }
-  const auto & w = *workspace_;
-  const int n = w.n;
-  const double dt = config_.dt;
-  // Inputs are piecewise constant, so velocity is linear inside each step.
-  tau = std::clamp(tau, 0.0, n * dt);
-  const int idx = std::min(static_cast<int>(tau / dt), n - 1);
-  const double frac = tau / dt - idx;
-  const State & a = w.sample_pred[idx];
-  const State & b = w.sample_pred[idx + 1];
-  // The chassis velocity loop does not see d: remove its drift so the command leads by
-  // tau·(-d), i.e. the velocity that only the drive input would produce.
-  out.velocity.vx = a.vx + (b.vx - a.vx) * frac - tau * w.sample_drift.x();
-  out.velocity.vy = a.vy + (b.vy - a.vy) * frac - tau * w.sample_drift.y();
-  out.velocity.omega = a.omega + (b.omega - a.omega) * frac;
-  out.input = w.sample_inputs[idx];
-  return true;
-}
-
 double DynamicMpcSolver::maxDisturbance() const
 {
   return 0.5 * octagonFaceLimit() / std::sqrt(2.0);
@@ -280,8 +251,6 @@ bool DynamicMpcSolver::solve(const State & curr,
     return false;
   }
   auto & w = *workspace_;
-  // Any failed solve invalidates sample(); a success below sets it again.
-  w.has_sample = false;
   if (static_cast<int>(ref_traj.size()) < config_.horizon + 1 || !finite(curr) ||
       !disturbance.allFinite()) {
     return false;
@@ -506,16 +475,6 @@ bool DynamicMpcSolver::solve(const State & curr,
     w.pred[k + 1] = state;
   }
 
-  w.sample_pred = w.pred;
-  for (int k = 0; k < n; ++k) {
-    w.sample_inputs[k] =
-      Eigen::Vector3d(w.translation_solution(2 * k), w.translation_solution(2 * k + 1), w.yaw_solution(k));
-  }
-  w.sample_drift = drift;
-  w.has_sample = true;
-  DynamicSample at_command;
-  sample(config_.command_lookahead, at_command);
-  out_u.velocity = at_command.velocity;
   out_u.acceleration =
     Eigen::Vector3d(w.translation_solution(0), w.translation_solution(1), w.yaw_solution(0));
   out_u.wrench = Eigen::Vector3d(config_.mass * out_u.acceleration.x(),

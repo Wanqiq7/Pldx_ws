@@ -109,7 +109,6 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   declare("dynamic.secondary_reference", rclcpp::ParameterValue(false));
   declare("dynamic.dt", rclcpp::ParameterValue(defaults.dt));
   declare("dynamic.lookahead_time", rclcpp::ParameterValue(defaults.dt * defaults.horizon));
-  declare("dynamic.command_lookahead", rclcpp::ParameterValue(defaults.command_lookahead));
   declare("dynamic.mass", rclcpp::ParameterValue(defaults.mass));
   declare("dynamic.inertia_z", rclcpp::ParameterValue(defaults.inertia_z));
   declare("dynamic.friction_coeff", rclcpp::ParameterValue(defaults.friction_coeff));
@@ -129,7 +128,6 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   declare("dynamic.slope_gravity", rclcpp::ParameterValue(false));
   declare("dynamic.gravity_body_roll_offset", rclcpp::ParameterValue(0.0));
   declare("dynamic.disturbance_observer", rclcpp::ParameterValue(false));
-  declare("dynamic.observer_lag", rclcpp::ParameterValue(-1.0));
   declare("dynamic.observer_bandwidth", rclcpp::ParameterValue(observer_defaults.bandwidth));
   declare("dynamic.observer_max_estimate", rclcpp::ParameterValue(observer_defaults.max_estimate));
   const WheelOdometryConfig wheel_defaults;
@@ -137,22 +135,11 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   declare("dynamic.wheel_odometry_topic", rclcpp::ParameterValue(std::string("/sentry/chassis_velocity")));
   declare("dynamic.wheel_odometry_max_gap", rclcpp::ParameterValue(wheel_defaults.max_gap));
   declare("dynamic.wheel_odometry_timeout", rclcpp::ParameterValue(wheel_defaults.timeout));
-  declare("dynamic.force_ff.enable", rclcpp::ParameterValue(false));
-  declare("dynamic.force_ff.gain", rclcpp::ParameterValue(0.0));
-  declare("dynamic.force_ff.lookahead", rclcpp::ParameterValue(0.02));
-  declare("dynamic.force_ff.yaw", rclcpp::ParameterValue(false));
-  declare("dynamic.force_ff.max_force", rclcpp::ParameterValue(100.0));
-  declare("dynamic.force_ff.max_torque", rclcpp::ParameterValue(10.0));
-
-  bool force_ff_requested = false;
-  node->get_parameter(name_ + ".dynamic.force_ff.enable", force_ff_requested);
-
   auto & c = dynamic_config_;
   double lookahead_time = defaults.dt * defaults.horizon;
   node->get_parameter(name_ + ".dynamic.secondary_reference", secondary_reference_);
   node->get_parameter(name_ + ".dynamic.dt", c.dt);
   node->get_parameter(name_ + ".dynamic.lookahead_time", lookahead_time);
-  node->get_parameter(name_ + ".dynamic.command_lookahead", c.command_lookahead);
   node->get_parameter(name_ + ".dynamic.mass", c.mass);
   node->get_parameter(name_ + ".dynamic.inertia_z", c.inertia_z);
   node->get_parameter(name_ + ".dynamic.friction_coeff", c.friction_coeff);
@@ -169,12 +156,10 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   node->get_parameter(name_ + ".dynamic.r_alpha", c.r_alpha);
   node->get_parameter(name_ + ".dynamic.r_dalpha", c.r_dalpha);
   const bool positive = c.dt > 0.0 && lookahead_time > 0.0 && c.mass > 0.0 && c.inertia_z > 0.0 &&
-                        c.friction_coeff > 0.0 && c.max_force > 0.0 && c.max_torque > 0.0 &&
-                        c.command_lookahead >= 0.0;
+                        c.friction_coeff > 0.0 && c.max_force > 0.0 && c.max_torque > 0.0;
   const bool finite = std::isfinite(c.dt) && std::isfinite(lookahead_time) && std::isfinite(c.mass) &&
                       std::isfinite(c.inertia_z) && std::isfinite(c.friction_coeff) &&
-                      std::isfinite(c.max_force) && std::isfinite(c.max_torque) &&
-                      std::isfinite(c.command_lookahead);
+                      std::isfinite(c.max_force) && std::isfinite(c.max_torque);
   if (!positive || !finite) {
     throw std::invalid_argument("Dynamic MPC physical parameters must be finite and positive");
   }
@@ -185,48 +170,17 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   node->get_parameter(name_ + ".dynamic.slope_gravity", slope_gravity_);
   node->get_parameter(name_ + ".dynamic.gravity_body_roll_offset", gravity_body_roll_offset_);
   node->get_parameter(name_ + ".dynamic.disturbance_observer", disturbance_observer_enabled_);
-  node->get_parameter(name_ + ".dynamic.observer_lag", observer.lag);
   node->get_parameter(name_ + ".dynamic.observer_bandwidth", observer.bandwidth);
   node->get_parameter(name_ + ".dynamic.observer_max_estimate", observer.max_estimate);
-  // The command law assumes the chassis lags by command_lookahead; the observer uses the same model.
-  if (observer.lag <= 0.0) {
-    observer.lag = c.command_lookahead;
-  }
   if (disturbance_observer_enabled_ &&
-      (!std::isfinite(observer.lag) || observer.lag <= 0.0 || !std::isfinite(observer.bandwidth) ||
-        observer.bandwidth <= 0.0 || !std::isfinite(observer.max_estimate) ||
-        observer.max_estimate < 0.0)) {
-    throw std::invalid_argument(
-      "Disturbance observer needs a positive lag (or command_lookahead) and bandwidth");
+      (!std::isfinite(observer.bandwidth) || observer.bandwidth <= 0.0 ||
+        !std::isfinite(observer.max_estimate) || observer.max_estimate < 0.0)) {
+    throw std::invalid_argument("Disturbance observer needs a positive bandwidth");
   }
   if (!std::isfinite(gravity_body_roll_offset_)) {
     throw std::invalid_argument("dynamic.gravity_body_roll_offset must be finite");
   }
   disturbance_observer_.setConfig(observer);
-
-  node->get_parameter(name_ + ".dynamic.force_ff.gain", force_ff_gain_);
-  node->get_parameter(name_ + ".dynamic.force_ff.lookahead", force_ff_lookahead_);
-  node->get_parameter(name_ + ".dynamic.force_ff.yaw", force_ff_yaw_);
-  node->get_parameter(name_ + ".dynamic.force_ff.max_force", force_ff_max_force_);
-  node->get_parameter(name_ + ".dynamic.force_ff.max_torque", force_ff_max_torque_);
-  if (force_ff_requested &&
-      (!std::isfinite(force_ff_gain_) || force_ff_gain_ < 0.0 || force_ff_gain_ > 1.0 ||
-        !std::isfinite(force_ff_lookahead_) || force_ff_lookahead_ < 0.0 ||
-        force_ff_lookahead_ > c.command_lookahead || !std::isfinite(force_ff_max_force_) ||
-        force_ff_max_force_ < 0.0 || !std::isfinite(force_ff_max_torque_) || force_ff_max_torque_ < 0.0)) {
-    throw std::invalid_argument(
-      "dynamic.force_ff: gain in [0, 1], 0 <= lookahead <= command_lookahead, limits >= 0");
-  }
-  force_ff_enabled_ = force_ff_requested;
-  RCLCPP_INFO(logger_,
-    "%s: force feedforward %s (gain=%.2f, lookahead=%.3f, yaw=%s, max_force=%.1f N, max_torque=%.1f N*m)",
-    name_.c_str(),
-    force_ff_enabled_ ? "enabled" : "disabled",
-    force_ff_gain_,
-    force_ff_lookahead_,
-    force_ff_yaw_ ? "true" : "false",
-    force_ff_max_force_,
-    force_ff_max_torque_);
 
   WheelOdometryConfig wheel;
   std::string wheel_topic;
@@ -259,13 +213,12 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
     wheel.max_gap,
     wheel.timeout);
   RCLCPP_INFO(logger_,
-    "%s: force-control MPC (dt=%.3f, horizon=%d, command_lookahead=%.3f, mass=%.2f, Iz=%.3f, "
+    "%s: force-control MPC (dt=%.3f, horizon=%d, mass=%.2f, Iz=%.3f, "
     "a_max=%.3f, alpha_max=%.3f, secondary_reference=%s, slope_gravity=%s, body_roll_offset=%.4f, "
-    "disturbance_observer=%s, observer_lag=%.3f, observer_bandwidth=%.2f, d_max=%.3f)",
+    "disturbance_observer=%s, observer_bandwidth=%.2f, d_max=%.3f)",
     name_.c_str(),
     c.dt,
     c.horizon,
-    c.command_lookahead,
     c.mass,
     c.inertia_z,
     dynamic_solver_->translationalAccelerationLimit(),
@@ -274,7 +227,6 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
     slope_gravity_ ? "true" : "false",
     gravity_body_roll_offset_,
     disturbance_observer_enabled_ ? "true" : "false",
-    observer.lag,
     observer.bandwidth,
     dynamic_solver_->maxDisturbance());
 }
@@ -303,13 +255,8 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   nav2_util::declare_parameter_if_not_declared(node, name + ".vy_max", rclcpp::ParameterValue(1.0));
   nav2_util::declare_parameter_if_not_declared(node, name + ".omega_min", rclcpp::ParameterValue(-2.0));
   nav2_util::declare_parameter_if_not_declared(node, name + ".omega_max", rclcpp::ParameterValue(2.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".fixed_wz", rclcpp::ParameterValue(0.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".deadzone_speed_threshold", rclcpp::ParameterValue(0.02));
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".control_delay_compensation", rclcpp::ParameterValue(0.25));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name + ".use_small_gyro_mode", rclcpp::ParameterValue(true));
 
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".odom_frame", rclcpp::ParameterValue("camera_init"));
@@ -326,10 +273,7 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   node->get_parameter(name + ".vy_max", dynamic_config_.vy_max);
   node->get_parameter(name + ".omega_min", dynamic_config_.omega_min);
   node->get_parameter(name + ".omega_max", dynamic_config_.omega_max);
-  node->get_parameter(name + ".fixed_wz", fixed_wz_);
-  node->get_parameter(name + ".deadzone_speed_threshold", deadzone_speed_threshold_);
   node->get_parameter(name + ".control_delay_compensation", control_delay_compensation_);
-  node->get_parameter(name + ".use_small_gyro_mode", use_small_gyro_mode_);
 
   node->get_parameter(name + ".odom_frame", odom_frame_);
   node->get_parameter(name + ".map_frame", map_frame_);
@@ -367,24 +311,16 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   mpc_real_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_real_path", 1);
   execution_pub_ =
     node->create_publisher<std_msgs::msg::Bool>("/minco/execution_enabled", rclcpp::QoS(10).reliable());
-  cmd_vel_mpc_pub_ = node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel_mpc", 1);
-  chassis_cmd_pub_.reset();
-  if (force_ff_enabled_) {
-    // The bridge prefers this topic while it is fresh; /cmd_vel_mpc stays for velocity-only links.
-    chassis_cmd_pub_ = node->create_publisher<ros_interfaces::msg::ChassisCommand>(
-      "/chassis_cmd_mpc", rclcpp::SensorDataQoS().keep_last(1));
-  }
+  chassis_cmd_pub_ = node->create_publisher<ros_interfaces::msg::ChassisCommand>(
+    "/chassis_cmd_mpc", rclcpp::SensorDataQoS().keep_last(1));
   real_path_history_.clear();
   last_real_path_pub_time_ = node->now();
 
   RCLCPP_INFO(logger_,
-    "%s: MincoMpcController configured (deadzone=%.3f, delay_comp=%.3f, "
-    "small_gyro=%s, fixed_wz=%.3f, lidar_offset_x=%.3f, lidar_offset_y=%.3f, lidar_roll_offset=%.3f)",
+    "%s: force MPC configured (delay_comp=%.3f, "
+    "lidar_offset_x=%.3f, lidar_offset_y=%.3f, lidar_roll_offset=%.3f)",
     name_.c_str(),
-    deadzone_speed_threshold_,
     control_delay_compensation_,
-    use_small_gyro_mode_ ? "true" : "false",
-    fixed_wz_,
     lidar_offset_x_,
     lidar_offset_y_,
     lidar_roll_offset);
@@ -452,7 +388,6 @@ void MincoMpcController::cleanup()
   odom_sub_.reset();
   mpc_predict_path_pub_.reset();
   mpc_real_path_pub_.reset();
-  cmd_vel_mpc_pub_.reset();
   chassis_cmd_pub_.reset();
   wheel_odom_sub_.reset();
   dynamic_solver_.reset();
@@ -495,9 +430,8 @@ void MincoMpcController::reset()
 
 void MincoMpcController::publishZeroCommand()
 {
-  if (cmd_vel_mpc_pub_) {
-    cmd_vel_mpc_pub_->publish(geometry_msgs::msg::Twist{});
-  }
+  pending_wrench_.setZero();
+  last_published_acceleration_.setZero();
   if (chassis_cmd_pub_) {
     ros_interfaces::msg::ChassisCommand chassis;
     if (auto node = node_.lock()) {
@@ -528,6 +462,9 @@ void MincoMpcController::setPlan(const nav_msgs::msg::Path & path)
 
 void MincoMpcController::setSpeedLimit(const double & speed_limit, const bool & percentage)
 {
+  if (!std::isfinite(speed_limit) || speed_limit < 0.0) {
+    throw std::invalid_argument("Speed limit must be finite and nonnegative");
+  }
   speed_limit_ = speed_limit;
   speed_limit_percentage_ = percentage;
 }
@@ -863,8 +800,8 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     perf->stamp_ros = now.seconds();
     perf->stamp_steady_ns = MpcPerformanceMonitor::steadyNowNs();
   }
-  // Only a successful dynamic solve in this cycle sets a feedforward wrench.
-  pending_wrench_ff_.setZero();
+  // Only a successful solve in this cycle supplies a drive wrench.
+  Eigen::Vector3d wrench = Eigen::Vector3d::Zero();
   nav_msgs::msg::Odometry::SharedPtr latest_odom;
   uint64_t reference_version;
   std::chrono::steady_clock::time_point odom_received;
@@ -878,9 +815,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     inputs_fresh = inputsFreshLocked();
     planning_failed = planning_failed_;
   }
-  // The planner gave up on this goal. Stop explicitly (the chassis listens to
-  // /cmd_vel_mpc, not Nav2's cmd_vel) and let the BT recover or abort.
+  // Stop the force channel explicitly before the BT recovers or aborts.
   if (planning_failed) {
+    std::lock_guard<std::mutex> data_lock(data_mtx_);
     if (dynamic_solver_) {
       dynamic_solver_->resetLastAcceleration();
     }
@@ -908,24 +845,17 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
       if (!success && dynamic_solver_) {
         dynamic_solver_->resetLastAcceleration();
       }
-      if (!success) {
-        pending_wrench_ff_.setZero();
-      }
-      // Every return path publishes the same final command handed back to Nav2.
-      if (cmd_vel_mpc_pub_) {
-        cmd_vel_mpc_pub_->publish(out_cmd.twist);
-      }
+      pending_wrench_ = success ? wrench : Eigen::Vector3d::Zero();
       if (chassis_cmd_pub_) {
         ros_interfaces::msg::ChassisCommand chassis;
         chassis.header.stamp = finish_now;
         chassis.header.frame_id = global_frame_;
-        chassis.twist = out_cmd.twist;
-        chassis.wrench_ff.force.x = pending_wrench_ff_.x();
-        chassis.wrench_ff.force.y = pending_wrench_ff_.y();
-        chassis.wrench_ff.torque.z = pending_wrench_ff_.z();
+        chassis.wrench.force.x = pending_wrench_.x();
+        chassis.wrench.force.y = pending_wrench_.y();
+        chassis.wrench.torque.z = pending_wrench_.z();
         chassis_cmd_pub_->publish(chassis);
       }
-      last_published_velocity_ = Eigen::Vector2d(out_cmd.twist.linear.x, out_cmd.twist.linear.y);
+      last_published_acceleration_ = pending_wrench_.head<2>() / dynamic_config_.mass;
     }
     if (perf) {
       perf->success = success;
@@ -938,9 +868,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         }
       }
       last_mpc_perf_stamp_ns_ = perf->stamp_steady_ns;
-      perf->cmd_vx = out_cmd.twist.linear.x;
-      perf->cmd_vy = out_cmd.twist.linear.y;
-      perf->cmd_wz = out_cmd.twist.angular.z;
+      perf->cmd_fx = success ? wrench.x() : 0.0;
+      perf->cmd_fy = success ? wrench.y() : 0.0;
+      perf->cmd_mz = success ? wrench.z() : 0.0;
       mpc_perf_monitor_.recordMpcSample(*perf);
     }
     return out_cmd;
@@ -958,6 +888,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     double vy = latest_odom->twist.twist.linear.y;
     double omega = latest_odom->twist.twist.angular.z;
     double yaw_lio = normalizeYaw(tf2::getYaw(latest_odom->pose.pose.orientation));
+    curr.yaw = yaw_lio;
     double omega_global = 0.0;
     compensateLeverArm(vx, vy, omega, yaw_lio, curr.vx, curr.vy, omega_global);
     curr.omega = omega_global;
@@ -1023,31 +954,13 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
 
   std::vector<State> pred_states;
-  const char * failure = solveDynamic(curr, raw_velocity, latest_odom, now, cmd.twist, pred_states, perf);
+  const char * failure = solveDynamic(curr, raw_velocity, latest_odom, now, wrench, pred_states, perf);
   publishVisualization(pred_states, curr);
   if (failure) {
     cmd.twist = geometry_msgs::msg::Twist{};
     return finish(cmd, false, failure);
   }
   return finish(cmd, true, "NONE");
-}
-
-double MincoMpcController::applySpeedLimit(double & vx, double & vy) const
-{
-  double scale = 1.0;
-  if (speed_limit_ > 1e-6) {
-    const double v_norm = std::hypot(vx, vy);
-    if (v_norm > 1e-6) {
-      if (speed_limit_percentage_) {
-        scale = std::clamp(speed_limit_ / 100.0, 0.0, 1.0);
-      } else {
-        scale = std::min(1.0, speed_limit_ / v_norm);
-      }
-      vx *= scale;
-      vy *= scale;
-    }
-  }
-  return scale;
 }
 
 Eigen::Vector2d MincoMpcController::estimateDisturbance(
@@ -1068,8 +981,12 @@ Eigen::Vector2d MincoMpcController::estimateDisturbance(
     const rclcpp::Time stamp(odom->header.stamp, observer_odom_stamp_.get_clock_type());
     if (stamp != observer_odom_stamp_) {
       observer_odom_stamp_ = stamp;
-      const double lag = disturbance_observer_.config().lag;
-      disturbance_observer_.update(stamp.seconds(), raw_velocity, last_published_velocity_ + lag * d);
+      Eigen::Vector2d applied;
+      {
+        std::lock_guard<std::mutex> lock(data_mtx_);
+        applied = last_published_acceleration_;
+      }
+      disturbance_observer_.update(stamp.seconds(), raw_velocity, applied + d);
     }
     d += disturbance_observer_.estimate();
   }
@@ -1125,12 +1042,28 @@ const char * MincoMpcController::solveDynamic(const State & measured,
   const Eigen::Vector2d & raw_velocity,
   const nav_msgs::msg::Odometry::SharedPtr & odom,
   const rclcpp::Time & now,
-  geometry_msgs::msg::Twist & out_twist,
+  Eigen::Vector3d & out_wrench,
   std::vector<State> & pred_states,
   std::optional<MpcPerfSample> & perf)
 {
   if (!dynamic_solver_) {
     return "SOLVER_UNAVAILABLE";
+  }
+  // Constrain the prediction itself; scaling a force would also weaken braking.
+  auto limited = dynamic_config_;
+  if (speed_limit_ > 0.0) {
+    const double scale = speed_limit_percentage_ ? std::clamp(speed_limit_ / 100.0, 0.0, 1.0) : 1.0;
+    const double axis_limit =
+      speed_limit_percentage_ ? std::numeric_limits<double>::infinity() : speed_limit_ / std::sqrt(2.0);
+    limited.vx_min = std::max(scale * limited.vx_min, -axis_limit);
+    limited.vx_max = std::min(scale * limited.vx_max, axis_limit);
+    limited.vy_min = std::max(scale * limited.vy_min, -axis_limit);
+    limited.vy_max = std::min(scale * limited.vy_max, axis_limit);
+  }
+  const auto & previous = dynamic_solver_->config();
+  if (limited.vx_min != previous.vx_min || limited.vx_max != previous.vx_max ||
+      limited.vy_min != previous.vy_min || limited.vy_max != previous.vy_max) {
+    dynamic_solver_->setConfig(limited);
   }
   const auto & config = dynamic_solver_->config();
   const double d_max = dynamic_solver_->maxDisturbance();
@@ -1232,61 +1165,8 @@ const char * MincoMpcController::solveDynamic(const State & measured,
     return "QP_FAILED";
   }
 
-  double vx = u.velocity.vx;
-  double vy = u.velocity.vy;
-  double omega = u.velocity.omega;
-  Eigen::Vector3d wrench_ff = Eigen::Vector3d::Zero();
-  if (force_ff_enabled_) {
-    // With gain k the feedforward supplies k of the planned force, so the velocity lead
-    // that made the firmware PID produce it shrinks from command_lookahead to ff_lookahead.
-    const double k = force_ff_gain_;
-    const double lead = (1.0 - k) * config.command_lookahead + k * force_ff_lookahead_;
-    DynamicSample at_lead;
-    DynamicSample at_ff;
-    if (!dynamic_solver_->sample(lead, at_lead) || !dynamic_solver_->sample(force_ff_lookahead_, at_ff)) {
-      return "QP_FAILED";
-    }
-    vx = at_lead.velocity.vx;
-    vy = at_lead.velocity.vy;
-    omega = at_lead.velocity.omega;
-    // The drive input already cancels the disturbance (a = a_ref - d), so m·input is the
-    // full planned drive force, slope term included.
-    Eigen::Vector2d force = k * config.mass * at_ff.input.head<2>();
-    if (force.norm() > force_ff_max_force_) {
-      force *= force_ff_max_force_ / force.norm();
-    }
-    const double torque =
-      force_ff_yaw_
-        ? std::clamp(k * config.inertia_z * at_ff.input.z(), -force_ff_max_torque_, force_ff_max_torque_)
-        : 0.0;
-    wrench_ff = Eigen::Vector3d(force.x(), force.y(), torque);
-  }
-  double wz = fixed_wz_;
-  if (!use_small_gyro_mode_) {
-    wz = std::clamp(omega, config.omega_min, config.omega_max);
-  }
-  // The speed limit scales the planned motion, so it scales the planned force too.
-  wrench_ff.head<2>() *= applySpeedLimit(vx, vy);
-
-  // A small command is still meaningful while the plan accelerates from rest. Only treat
-  // it as a dead zone when the reference itself is stationary over the whole horizon.
-  bool reference_stationary = true;
-  for (const auto & r : ref) {
-    if (r.vel.norm() >= deadzone_speed_threshold_) {
-      reference_stationary = false;
-      break;
-    }
-  }
-  if (reference_stationary && std::hypot(vx, vy) < deadzone_speed_threshold_) {
-    vx = 0.0;
-    vy = 0.0;
-    // A zeroed velocity must not leave a feedforward force acting on its own.
-    wrench_ff.setZero();
-  }
-  pending_wrench_ff_ = wrench_ff;
-  out_twist.linear.x = vx;
-  out_twist.linear.y = vy;
-  out_twist.angular.z = wz;
+  // Apply the first optimized input of the receding horizon directly.
+  out_wrench = u.wrench;
   return nullptr;
 }
 

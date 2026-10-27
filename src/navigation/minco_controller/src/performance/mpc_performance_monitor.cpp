@@ -107,7 +107,7 @@ void MpcPerformanceMonitor::writeDetailedHeader()
   }
 
   detailed_csv_ << "run_id,scenario,variant,stamp_ros,stamp_steady_ns,success,solve_time_ms,cycle_time_ms,"
-                   "controller_hz,cmd_vx,cmd_vy,cmd_wz,ref_vx,ref_vy,ref_wz,dist_x,dist_y\n";
+                   "controller_hz,cmd_fx,cmd_fy,cmd_mz,ref_vx,ref_vy,ref_wz,dist_x,dist_y\n";
 }
 
 void MpcPerformanceMonitor::writeDetailedRow(const MpcPerfSample & sample)
@@ -116,8 +116,8 @@ void MpcPerformanceMonitor::writeDetailedRow(const MpcPerfSample & sample)
                 << sanitize(config_.variant) << ',' << num(sample.stamp_ros) << ','
                 << sample.stamp_steady_ns << ',' << boolean(sample.success) << ','
                 << num(sample.solve_time_ms) << ',' << num(sample.cycle_time_ms) << ','
-                << num(sample.controller_hz) << ',' << num(sample.cmd_vx) << ',' << num(sample.cmd_vy)
-                << ',' << num(sample.cmd_wz) << ',' << num(sample.ref_vx) << ',' << num(sample.ref_vy)
+                << num(sample.controller_hz) << ',' << num(sample.cmd_fx) << ',' << num(sample.cmd_fy)
+                << ',' << num(sample.cmd_mz) << ',' << num(sample.ref_vx) << ',' << num(sample.ref_vy)
                 << ',' << num(sample.ref_wz) << ',' << num(sample.dist_x) << ',' << num(sample.dist_y)
                 << '\n';
 }
