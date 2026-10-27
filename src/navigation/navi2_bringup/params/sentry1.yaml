@@ -87,10 +87,6 @@ controller_server:
       # 独立失效保护（秒）：同时检查消息时间戳与稳态接收时间。
       reference_timeout_sec: 2.0
       odom_timeout_sec: 0.3
-      # 是否启用小陀螺模式；该模式会压低旋转带宽并适合特定机器人。
-      use_small_gyro_mode: false
-      # 当速度低于该阈值时，认为车辆处于死区，减少抖动信号。
-      deadzone_speed_threshold: 0.1
       # odom 时间戳到命令生效的时延，期间按上一次下发的加速度外推。
       control_delay_compensation: 0.05
 
@@ -99,27 +95,22 @@ controller_server:
       vx_max: 3.0
       vy_min: -3.0
       vy_max: 3.0
-      fixed_wz: 4.18 # rad/s，开启 use_small_gyro_mode 时使用的固定角速度
       omega_min: -5.0
       omega_max: 5.0
 
-      # 力控（动力学）MPC：状态 [p, yaw, v, omega]，输入 [Fx, Fy, Mz]，输出速度命令（可选力前馈）。
-      # 加速度上限 min(mu·g, max_force/mass)。mass/inertia_z/friction_coeff/max_force 为占位值，
-      # 实机需标定，并实测底盘速度环时间常数来设定 command_lookahead。
+      # 力控 MPC：状态 [p, yaw, v, omega]，只下发首步优化驱动力 Fx/Fy/Mz。
+      # 加速度上限 min(mu·g, max_force/mass)；质量/惯量与 MC02 配置对应，仍需实测标定。
       dynamic:
         dt: 0.02
         lookahead_time: 0.8
-        # 输出预测轨迹上 t0 + command_lookahead 处的速度，补偿下位机速度环与通信延迟。
-        # 应接近底盘速度环等效时间常数：仿真底盘约 0.2 s，0.05 会导致到点超调；实车需重新测定。
-        command_lookahead: 0.2
         # 二次参考：按预测速度与参考速度夹角余弦缩短时间步，牺牲纵向进度换横向精度。
         secondary_reference: false
-        # 物理参数（占位值，需实车标定）：平移加速度上限 min(mu·g, max_force/mass)。
-        mass: 25.0
-        inertia_z: 1.0
+        # 平移推力上限 m*2 m/s²；偏航力矩上限 Iz*4 rad/s²。
+        mass: 28.0
+        inertia_z: 0.58
         friction_coeff: 0.6
-        max_force: 60.0
-        max_torque: 5.0
+        max_force: 56.0
+        max_torque: 2.32
         # 位置/速度权重按参考速度切向分解为沿轨迹与横向。
         q_pos_along: 5.0
         q_pos_cross: 40.0
@@ -132,15 +123,12 @@ controller_server:
         r_jerk: 0.002
         r_alpha: 0.02
         r_dalpha: 0.001
-        # 坡道扰动 d 进入模型 v' = a + d，输出速度额外提前 command_lookahead·(-d)。
-        # 重力项：按 odom 姿态计算坡面切向重力。底盘速度环自带积分时会重复补偿
-        # （仿真中更差），默认关闭；阶段 3 力前馈时 wrench 已包含 -m·d。
+        # 坡道扰动 d 进入模型 v'=F/m+d，优化驱动力包含抵消扰动的分量。
         slope_gravity: false
         # body 相对底盘的固定安装横滚（rad）。仿真 body 水平取 0；实车需按安装标定，
         # 不要直接沿用 lidar_roll_offset（错的值会在平地产生恒定横向扰动）。
         gravity_body_roll_offset: 0.0
-        # 扰动观测器：一阶滞后（时间常数 observer_lag，默认 = command_lookahead）加集总扰动的
-        # Luenberger 观测器。仿真两轮结果不一致，默认关闭，实车需单独验证。
+        # 基于已下发驱动加速度和速度测量的扰动观测器，默认关闭。
         disturbance_observer: false
         observer_bandwidth: 4.0
         observer_max_estimate: 1.0
@@ -153,20 +141,6 @@ controller_server:
         wheel_odometry_topic: /sentry/chassis_velocity
         wheel_odometry_max_gap: 0.05
         wheel_odometry_timeout: 0.05
-        # 力前馈（阶段 3）：额外发布 /chassis_cmd_mpc（ros_interfaces/ChassisCommand），
-        # 速度与 F_ff = gain·m·a_plan(t0+lookahead) 同一控制周期、同一坐标系（与 /cmd_vel_mpc
-        # 相同，bridge 默认原样直通）。gain 从 0 逐步加大；速度提前量随之从 command_lookahead
-        # 线性缩到 lookahead，避免速度 PID 与前馈重复提供同一加速度。
-        # 固件 Omni 另有 ff_max_force_n / ff_max_torque_nm 限幅。yaw 力矩默认关闭：
-        # 导航/小陀螺模式下固件自行决定 wz。
-        force_ff:
-          enable: false
-          gain: 0.0
-          lookahead: 0.02
-          yaw: false
-          max_force: 100.0
-          max_torque: 10.0
-
       # 激光雷达外参参数，用于将传感器坐标系与机器人基坐标系对齐。
       lidar_offset_x: 0.0
       lidar_offset_y: -0.20

@@ -12,13 +12,10 @@ namespace minco_controller {
 Eigen::Vector2d slopeGravity(
   const Eigen::Quaterniond & q_world_body, double body_roll_offset, double g = 9.81);
 
-// 平移扰动观测器（每轴独立，map 系）。
-// 底盘速度环近似为一阶滞后加集总扰动：v' = (v_cmd - v) / T + d，d' = 0。
-// 以速度测量为输出的 Luenberger 观测器，两个极点均置于 -bandwidth，
-// 不对噪声速度求导，d 的估计带宽由 bandwidth 决定。
+// Global-frame force-input disturbance observer: v_dot = a_cmd + d.
+// Velocity residuals correct the velocity/disturbance estimates without differentiating noise.
 struct DisturbanceObserverConfig
 {
-  double lag{0.2};           // T，应与输出前瞻 command_lookahead 一致
   double bandwidth{4.0};     // rad/s，越大跟随越快、越受速度噪声影响
   double max_estimate{1.0};  // m/s²，每轴截断
   double max_gap{0.2};       // s，样本间隔超过此值视为数据中断并重置
@@ -39,8 +36,8 @@ public:
 
   // @param stamp 速度测量时间戳（s）
   // @param v_meas 测得的 map 系平移速度
-  // @param v_cmd 上一次测量至今底盘正在执行的速度命令（map 系）
-  void update(double stamp, const Eigen::Vector2d & v_meas, const Eigen::Vector2d & v_cmd);
+  // @param a_cmd drive acceleration applied since the previous sample (map frame, m/s²)
+  void update(double stamp, const Eigen::Vector2d & v_meas, const Eigen::Vector2d & a_cmd);
 
   bool initialized() const { return initialized_; }
   Eigen::Vector2d estimate() const { return initialized_ ? d_hat_ : Eigen::Vector2d::Zero(); }

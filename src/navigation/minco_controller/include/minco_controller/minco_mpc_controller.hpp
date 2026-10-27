@@ -88,20 +88,18 @@ private:
   bool propagateWithWheelOdometry(
     const nav_msgs::msg::Odometry::SharedPtr & odom, const rclcpp::Time & now, State & curr);
 
-  // Force-control MPC: fills the velocity command and prediction, or returns a failure reason.
+  // Force-control MPC: fills the drive wrench and prediction, or returns a failure reason.
   // raw_velocity is the global-frame odom velocity before the small-speed dead band.
   const char * solveDynamic(const State & measured,
     const Eigen::Vector2d & raw_velocity,
     const nav_msgs::msg::Odometry::SharedPtr & odom,
     const rclcpp::Time & now,
-    geometry_msgs::msg::Twist & out_twist,
+    Eigen::Vector3d & out_wrench,
     std::vector<State> & pred_states,
     std::optional<MpcPerfSample> & perf);
   // Gravity along the ground plus the observer estimate, in the global frame.
   Eigen::Vector2d estimateDisturbance(
     const Eigen::Vector2d & raw_velocity, const nav_msgs::msg::Odometry::SharedPtr & odom);
-  // Scales vx/vy to the Nav2 speed limit; returns the applied factor (1 when unlimited).
-  double applySpeedLimit(double & vx, double & vy) const;
 
   // Plan end pose in the robot pose frame for the goal check; false if TF is unavailable.
   bool goalInPoseFrame(const geometry_msgs::msg::PoseStamped & goal,
@@ -150,8 +148,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_predict_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_real_path_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_mpc_pub_;
-  // Velocity plus planned drive wrench (force feedforward); same frame as /cmd_vel_mpc.
+  // Planned drive wrench in the controller global frame.
   rclcpp::Publisher<ros_interfaces::msg::ChassisCommand>::SharedPtr chassis_cmd_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr execution_pub_;
   bool execution_enabled_{false};
@@ -213,12 +210,9 @@ private:
   // Other controller parameters.
   // Sample period of /opt_path (MincoPlanner publishes at 20 Hz).
   static constexpr double kPlannerDt = 0.05;
-  double fixed_wz_{0.0};
-  double deadzone_speed_threshold_{0.02};
   double control_delay_compensation_{0.25};
   double lidar_offset_x_{0.0};
   double lidar_offset_y_{0.0};
-  bool use_small_gyro_mode_{true};
   MpcPerformanceMonitor mpc_perf_monitor_;
   long long last_mpc_perf_stamp_ns_{0};
 
@@ -228,20 +222,9 @@ private:
   bool disturbance_observer_enabled_{false};
   DisturbanceObserver disturbance_observer_;
   rclcpp::Time observer_odom_stamp_{0, 0, RCL_ROS_TIME};
-  // Last command actually published on /cmd_vel_mpc, i.e. what the chassis executes next.
-  Eigen::Vector2d last_published_velocity_{0.0, 0.0};
-
-  // Force feedforward (stage 3): F_ff = k·m·a_plan(t0 + ff_lookahead), sent with the velocity
-  // setpoint. The velocity lead shrinks from command_lookahead to ff_lookahead as k grows, so the
-  // firmware velocity PID and the feedforward do not both supply the planned acceleration.
-  bool force_ff_enabled_{false};
-  double force_ff_gain_{0.0};
-  double force_ff_lookahead_{0.02};
-  bool force_ff_yaw_{false};
-  double force_ff_max_force_{100.0};
-  double force_ff_max_torque_{10.0};
-  // Wrench for the command being built; published with it, zeroed on any suppression.
-  Eigen::Vector3d pending_wrench_ff_{0.0, 0.0, 0.0};
+  // Last published drive input, used by the force-input disturbance observer.
+  Eigen::Vector2d last_published_acceleration_{0.0, 0.0};
+  Eigen::Vector3d pending_wrench_{0.0, 0.0, 0.0};
 
   // Wheel odometry (body-frame chassis velocity) integrated from the delayed LIO pose to now.
   bool wheel_odometry_enabled_{false};

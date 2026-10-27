@@ -17,10 +17,9 @@ Eigen::Vector2d slopeGravity(const Eigen::Quaterniond & q_world_body, double bod
 }
 
 void DisturbanceObserver::update(
-  double stamp, const Eigen::Vector2d & v_meas, const Eigen::Vector2d & v_cmd)
+  double stamp, const Eigen::Vector2d & v_meas, const Eigen::Vector2d & a_cmd)
 {
-  if (!std::isfinite(stamp) || !v_meas.allFinite() || !v_cmd.allFinite() || config_.lag <= 0.0 ||
-      config_.bandwidth <= 0.0) {
+  if (!std::isfinite(stamp) || !v_meas.allFinite() || !a_cmd.allFinite() || config_.bandwidth <= 0.0) {
     reset();
     return;
   }
@@ -38,12 +37,9 @@ void DisturbanceObserver::update(
   }
   last_stamp_ = stamp;
 
-  // Predict with the exact first-order lag, then correct both states from the velocity residual.
-  // Gains place both error poles of [v̂, d̂] at -bandwidth.
-  const double decay = std::exp(-dt / config_.lag);
-  const Eigen::Vector2d v_pred = v_cmd + (v_hat_ - v_cmd) * decay + config_.lag * (1.0 - decay) * d_hat_;
+  const Eigen::Vector2d v_pred = v_hat_ + dt * (a_cmd + d_hat_);
   const double w = config_.bandwidth;
-  const double l1 = std::max(0.0, 2.0 * w - 1.0 / config_.lag);
+  const double l1 = 2.0 * w;
   const double l2 = w * w;
   const Eigen::Vector2d innovation = v_meas - v_pred;
   v_hat_ = v_pred + dt * l1 * innovation;

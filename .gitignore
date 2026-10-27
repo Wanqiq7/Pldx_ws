@@ -72,3 +72,31 @@ paper_revision_outputs/
 latex_article_final/
 award/
 
+# Documentation and AI notes (keep README variants at every level)
+*.md
+*.markdown
+*.rst
+*.pdf
+*.doc
+*.docx
+*.odt
+*.ppt
+*.pptx
+*.odp
+*.tex
+*.ipynb
+docs/**
+doc/**
+!docs/**/
+!doc/**/
+![Rr][Ee][Aa][Dd][Mm][Ee]
+![Rr][Ee][Aa][Dd][Mm][Ee].*
+INSTALL.txt
+
+# Local agent instructions and session artifacts
+[Aa][Gg][Ee][Nn][Tt].[Mm][Dd]
+[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
+[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]
+[Gg][Ee][Mm][Ii][Nn][Ii].[Mm][Dd]
+ai_refactor_records/
+

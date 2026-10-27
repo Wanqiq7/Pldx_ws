@@ -3,16 +3,13 @@
 #   ./start_sim.sh
 #   ./start_sim.sh robot_model:=real
 #   ./start_sim.sh world:=rmuc_2024 headless:=true rviz:=false
-#   SIM_WHEEL_ODOM=1 SIM_SLOPE_COMP=1 SIM_FORCE_FF=1.0 ./start_sim.sh
+#   SIM_WHEEL_ODOM=1 SIM_SLOPE_COMP=1 ./start_sim.sh
 # It writes a copy of sentry1.yaml to log/sim_params/sentry1_sim.yaml with the mass of
 # the simulated chassis, so the shared real-robot configuration stays unchanged. An
 # explicit params_file:= argument takes precedence and is passed through unchanged.
 # SIM_WHEEL_ODOM=1 also runs scripts/sim_wheel_odometry.py (noisy ground-truth body
 # velocity on /sentry/chassis_velocity) and enables dynamic.wheel_odometry in the copy.
 # SIM_SLOPE_COMP=1 enables dynamic.slope_gravity and dynamic.disturbance_observer.
-# SIM_FORCE_FF=<gain in [0,1]> enables dynamic.force_ff (stage 3: /chassis_cmd_mpc,
-# applied by the simulated chassis as a body-frame force); SIM_FORCE_FF_LOOKAHEAD
-# sets its lookahead (default 0.15 s).
 set -eo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,8 +53,7 @@ if [[ "$has_params" == false ]]; then
     sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
     mkdir -p "$(dirname "${sim_params}")"
     # Physical parameters of the simulated omni chassis (sentry_omni model mass;
-    # max_force keeps the 2.4 m/s^2 limit of the real-robot placeholders). They
-    # only scale the drive wrench, which the force feedforward path forwards.
+    # max_force sets the 2.4 m/s^2 limit of this simulation model).
     sed -E -e "s/^(        mass:) [0-9.]+\$/\1 38.15/" \
         -e "s/^(        max_force:) [0-9.]+\$/\1 91.56/" "${base_params}" > "${sim_params}"
     if ! grep -qE "^        mass: 38.15\$" "${sim_params}"; then
@@ -71,27 +67,6 @@ if [[ "$has_params" == false ]]; then
             exit 1
         fi
     fi
-    if [[ -n "${SIM_FORCE_FF:-}" ]]; then
-        if ! [[ "${SIM_FORCE_FF}" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
-            echo "SIM_FORCE_FF must be a gain in [0, 1], got '${SIM_FORCE_FF}'" >&2
-            exit 1
-        fi
-        ff_lookahead="${SIM_FORCE_FF_LOOKAHEAD:-0.15}"
-        if ! [[ "${ff_lookahead}" =~ ^0(\.[0-9]+)?$ ]]; then
-            echo "SIM_FORCE_FF_LOOKAHEAD must be in [0, 1), got '${ff_lookahead}'" >&2
-            exit 1
-        fi
-        sed -i -E "/^        force_ff:\$/,/^          max_torque:/{
-            s/^(          enable:) (true|false)\$/\1 true/
-            s/^(          gain:) [0-9.]+\$/\1 ${SIM_FORCE_FF}/
-            s/^(          lookahead:) [0-9.]+\$/\1 ${ff_lookahead}/
-        }" "${sim_params}"
-        if ! sed -n "/^        force_ff:\$/,/^          max_torque:/p" "${sim_params}" |
-            grep -qE "^          gain: ${SIM_FORCE_FF}\$"; then
-            echo "FollowPath.dynamic.force_ff not found in ${base_params}" >&2
-            exit 1
-        fi
-    fi
     if [[ "${SIM_SLOPE_COMP:-0}" == 1 ]]; then
         for key in slope_gravity disturbance_observer; do
             sed -i -E "s/^(        ${key}:) (true|false)\$/\1 true/" "${sim_params}"
@@ -102,7 +77,7 @@ if [[ "$has_params" == false ]]; then
         done
     fi
     echo "Force-control MPC: wheel odometry: ${SIM_WHEEL_ODOM:-0}," \
-        "slope compensation: ${SIM_SLOPE_COMP:-0}, force feedforward: ${SIM_FORCE_FF:-off}" \
+        "slope compensation: ${SIM_SLOPE_COMP:-0}, drive wrench output" \
         "(params: ${sim_params})"
     set -- "$@" "params_file:=${sim_params}"
 fi

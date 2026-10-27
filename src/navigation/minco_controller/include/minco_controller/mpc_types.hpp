@@ -17,15 +17,6 @@ struct State
   double omega{0.0};
 };
 
-// 控制量：速度命令 (vx, vy, omega)
-// 约定：对外输出为全局系 (camera_init/map) 下速度；视觉 transport owner 负责下位机坐标转换。
-struct Control
-{
-  double vx{0.0};
-  double vy{0.0};
-  double omega{0.0};
-};
-
 // 参考点：来自 Minco 轨迹的高精度前馈信息
 struct ReferencePoint
 {
@@ -41,10 +32,6 @@ struct DynamicMpcConfig
 {
   double dt{0.02};
   int horizon{40};
-  // 输出预测轨迹上 t0 + command_lookahead 处的速度，补偿求解、通信与下位机速度环延迟。
-  // 应接近底盘速度环的等效时间常数；过短会使规划的加减速无法兑现（起步慢、到点超调）。
-  double command_lookahead{0.2};
-
   // 物理参数：平移合力受 min(mu·m·g, max_force) 限制，按摩擦圆内接八边形线性化。
   double mass{25.0};
   double inertia_z{1.0};
@@ -82,14 +69,6 @@ struct DynamicControl
 {
   Eigen::Vector3d acceleration{0.0, 0.0, 0.0};  // 首步 [ax, ay, alpha]，map 系
   Eigen::Vector3d wrench{0.0, 0.0, 0.0};        // 首步 [Fx, Fy, Mz] = [m·ax, m·ay, Iz·alpha]
-  Control velocity;                             // command_lookahead 处的预测速度
-};
-
-// 预测轨迹在 t0 + tau 处的采样（tau 截断到 [0, N·dt]）。
-struct DynamicSample
-{
-  Control velocity;                      // 仅由驱动输入产生的速度（扣除扰动漂移 tau·d）
-  Eigen::Vector3d input{0.0, 0.0, 0.0};  // 该时刻所在步的驱动输入 [ax, ay, alpha]
 };
 
 }  // namespace minco_controller

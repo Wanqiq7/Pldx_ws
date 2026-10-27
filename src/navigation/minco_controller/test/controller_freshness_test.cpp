@@ -22,9 +22,12 @@ public:
     p.global_frame_ = "map";
     p.execution_enabled_ = true;
     p.execution_start_ = node->now();
-    p.fixed_wz_ = 1.0;  // stale inputs must also suppress fixed gyro commands
     p.dynamic_solver_ = std::make_unique<DynamicMpcSolver>(p.dynamic_config_);
     p.execution_pub_ = node->create_publisher<std_msgs::msg::Bool>("test_execution", 1);
+    auto publisher = node->create_publisher<ros_interfaces::msg::ChassisCommand>(
+      "test_chassis_command", rclcpp::SensorDataQoS());
+    publisher->on_activate();
+    p.chassis_cmd_pub_ = publisher;
     p.global_plan_.poses.resize(1);
   }
   static void receive(MincoMpcController & p)
@@ -130,12 +133,21 @@ public:
     std::lock_guard<std::mutex> lk(p.plan_mtx_);
     p.global_plan_ = plan;
   }
-  static void enableForceFeedforward(MincoMpcController & p, double gain)
+  static Eigen::Vector3d pendingWrench(const MincoMpcController & p) { return p.pending_wrench_; }
+  static void stationaryReferenceWhileMoving(MincoMpcController & p)
   {
-    p.force_ff_enabled_ = true;
-    p.force_ff_gain_ = gain;
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    reference->header.stamp = p.node_.lock()->now();
+    for (auto & cmd : reference->cmds) {
+      cmd.position.x = 0.0;
+      cmd.velocity.x = 0.0;
+    }
+    p.onOptPath(reference);
+    auto odom = std::make_shared<nav_msgs::msg::Odometry>(*p.latest_odom_);
+    odom->header.stamp = p.node_.lock()->now();
+    odom->twist.twist.linear.x = 0.5;
+    p.onOdom(odom);
   }
-  static Eigen::Vector3d pendingWrench(const MincoMpcController & p) { return p.pending_wrench_ff_; }
   // Clears the committed input so consecutive cycles start from the same solver state.
   static void resetSolverHistory(MincoMpcController & p) { p.dynamic_solver_->resetLastAcceleration(); }
   static double mass(const MincoMpcController & p) { return p.dynamic_solver_->config().mass; }
@@ -183,7 +195,6 @@ private:
   std::function<void()> callback_;
 };
 
-// Every freshness and cancellation guarantee must hold for both controller models.
 // Position-only goal check that records the distance it was given.
 class DistanceGoalChecker : public nav2_core::GoalChecker
 {
@@ -225,6 +236,7 @@ protected:
     EXPECT_DOUBLE_EQ(cmd.twist.linear.x, 0.0);
     EXPECT_DOUBLE_EQ(cmd.twist.linear.y, 0.0);
     EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 0.0);
+    EXPECT_EQ(MincoMpcControllerTestPeer::pendingWrench(controller), Eigen::Vector3d::Zero());
   }
   rclcpp_lifecycle::LifecycleNode::SharedPtr node;
   MincoMpcController controller;
@@ -235,8 +247,50 @@ TEST_F(ControllerFreshnessTest, FreshInputProducesMotion)
 {
   ASSERT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
   const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_GT(cmd.twist.linear.x, 0.0);
-  EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
+  EXPECT_DOUBLE_EQ(cmd.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 0.0);
+  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
+}
+
+TEST_F(ControllerFreshnessTest, StationaryReferenceBrakesMovingChassis)
+{
+  MincoMpcControllerTestPeer::stationaryReferenceWhileMoving(controller);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_LT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
+}
+
+TEST_F(ControllerFreshnessTest, PublishesForceAndCancelPublishesZero)
+{
+  auto receiver = std::make_shared<rclcpp::Node>("force_command_receiver");
+  std::vector<ros_interfaces::msg::ChassisCommand> received;
+  auto subscription =
+    receiver->create_subscription<ros_interfaces::msg::ChassisCommand>("test_chassis_command",
+      rclcpp::SensorDataQoS(),
+      [&](ros_interfaces::msg::ChassisCommand::ConstSharedPtr msg) {
+        received.push_back(*msg);
+      });
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (received.empty() && std::chrono::steady_clock::now() < deadline) {
+    MincoMpcControllerTestPeer::receive(controller);
+    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+    rclcpp::spin_some(receiver);
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_FALSE(received.empty());
+  EXPECT_EQ(received.back().header.frame_id, "map");
+  EXPECT_GT(received.back().wrench.force.x, 0.0);
+  received.clear();
+  controller.cancel();
+  const auto cancel_deadline = std::chrono::steady_clock::now() + 2s;
+  while ((received.empty() || received.back().wrench.force.x != 0.0) &&
+         std::chrono::steady_clock::now() < cancel_deadline) {
+    rclcpp::spin_some(receiver);
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_FALSE(received.empty());
+  EXPECT_DOUBLE_EQ(received.back().wrench.force.x, 0.0);
+  EXPECT_DOUBLE_EQ(received.back().wrench.force.y, 0.0);
+  EXPECT_DOUBLE_EQ(received.back().wrench.torque.z, 0.0);
 }
 
 TEST_F(ControllerFreshnessTest, ReferenceUpdateDuringComputationDiscardsPreviousCommand)
@@ -319,8 +373,8 @@ TEST_F(ControllerFreshnessTest, RestartDuringComputationDiscardsPreviousCommand)
   // belongs to the execution that reset() cancelled.
   expectStopped(&checker);
   EXPECT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
-  EXPECT_GT(
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
 }
 TEST_F(ControllerFreshnessTest, PlanningFailureFailsFollowPathUntilNextExecution)
 {
@@ -334,16 +388,16 @@ TEST_F(ControllerFreshnessTest, PlanningFailureFailsFollowPathUntilNextExecution
     nav2_core::NoValidControl);
   // A new FollowPath execution (reset + setPlan) starts clean.
   MincoMpcControllerTestPeer::restart(controller);
-  EXPECT_GT(
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
 }
 
 TEST_F(ControllerFreshnessTest, WheelOdometryIsUsedWhenFreshAndFallsBackOtherwise)
 {
   MincoMpcControllerTestPeer::enableWheelOdometry(controller);
   // No samples yet: falls back to the LIO state and still moves.
-  EXPECT_GT(
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
   EXPECT_EQ(MincoMpcControllerTestPeer::wheelFallbacks(controller), 1u);
   // Samples covering the odom stamp up to now are used.
   const rclcpp::Time t0 = MincoMpcControllerTestPeer::odomStamp(controller);
@@ -351,8 +405,8 @@ TEST_F(ControllerFreshnessTest, WheelOdometryIsUsedWhenFreshAndFallsBackOtherwis
     MincoMpcControllerTestPeer::pushWheel(controller, t0 + rclcpp::Duration::from_seconds(0.005 * i), 0.2);
   }
   MincoMpcControllerTestPeer::pushWheel(controller, node->now(), 0.2);
-  EXPECT_GT(
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
   EXPECT_EQ(MincoMpcControllerTestPeer::wheelFallbacks(controller), 1u);
   // Stale samples fall back again.
   std::this_thread::sleep_for(80ms);
@@ -361,47 +415,29 @@ TEST_F(ControllerFreshnessTest, WheelOdometryIsUsedWhenFreshAndFallsBackOtherwis
   EXPECT_EQ(MincoMpcControllerTestPeer::wheelFallbacks(controller), 2u);
 }
 
-TEST_F(ControllerFreshnessTest, ForceFeedforwardScalesWithGainAndStopsWithTheCommand)
+TEST_F(ControllerFreshnessTest, FirstOptimizedWrenchDrivesFromRestAndStopsWithStaleInput)
 {
-  // From rest towards a 1 m/s reference the plan accelerates forwards.
   MincoMpcControllerTestPeer::resetSolverHistory(controller);
-  const double vx_no_ff =
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x;
-  EXPECT_EQ(MincoMpcControllerTestPeer::pendingWrench(controller), Eigen::Vector3d::Zero());
-
-  MincoMpcControllerTestPeer::enableForceFeedforward(controller, 0.0);
-  MincoMpcControllerTestPeer::receive(controller);
-  MincoMpcControllerTestPeer::resetSolverHistory(controller);
-  const double vx_k0 =
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x;
-  // k = 0 keeps the velocity-only command and sends no force.
-  EXPECT_NEAR(vx_k0, vx_no_ff, 1e-6);
-  EXPECT_EQ(MincoMpcControllerTestPeer::pendingWrench(controller), Eigen::Vector3d::Zero());
-
-  MincoMpcControllerTestPeer::enableForceFeedforward(controller, 1.0);
-  MincoMpcControllerTestPeer::receive(controller);
-  MincoMpcControllerTestPeer::resetSolverHistory(controller);
-  const double vx_k1 =
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x;
-  const Eigen::Vector3d wrench = MincoMpcControllerTestPeer::pendingWrench(controller);
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_DOUBLE_EQ(cmd.twist.linear.x, 0.0);
+  const auto wrench = MincoMpcControllerTestPeer::pendingWrench(controller);
   EXPECT_GT(wrench.x(), 0.0);
-  EXPECT_LE(wrench.head<2>().norm(), 100.0 + 1e-9);
-  EXPECT_DOUBLE_EQ(wrench.z(), 0.0);  // yaw feedforward is off by default
-  // The feedforward takes over the acceleration, so the velocity lead is shorter.
-  EXPECT_GT(vx_k1, 0.0);
-  EXPECT_LT(vx_k1, vx_k0);
-
-  MincoMpcControllerTestPeer::enableForceFeedforward(controller, 0.5);
-  MincoMpcControllerTestPeer::receive(controller);
-  MincoMpcControllerTestPeer::resetSolverHistory(controller);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_NEAR(
-    MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.5 * wrench.x(), 0.05 * wrench.x());
-
-  // A suppressed command carries no feedforward.
+  EXPECT_LE(wrench.head<2>().norm(), 60.0);
   MincoMpcControllerTestPeer::expireOdomStamp(controller);
   expectStopped();
-  EXPECT_EQ(MincoMpcControllerTestPeer::pendingWrench(controller), Eigen::Vector3d::Zero());
+}
+
+TEST_F(ControllerFreshnessTest, SpeedLimitConstrainsPredictionAndRejectsInvalidLimits)
+{
+  controller.setSpeedLimit(0.1, false);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  const auto limited = MincoMpcControllerTestPeer::pendingWrench(controller);
+  EXPECT_GT(limited.x(), 0.0);
+  controller.setSpeedLimit(0.0, false);
+  MincoMpcControllerTestPeer::resetSolverHistory(controller);
+  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), limited.x());
+  EXPECT_THROW(controller.setSpeedLimit(NAN, false), std::invalid_argument);
 }
 
 TEST_F(ControllerFreshnessTest, GoalCheckComparesInThePoseFrame)

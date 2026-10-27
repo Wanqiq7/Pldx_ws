@@ -57,26 +57,19 @@ TEST(SlopeGravity, BodyRollOffsetRemovesMountingTilt)
   EXPECT_NEAR(d.y(), 0.0, 1e-9);
 }
 
-// First-order velocity loop plus constant disturbance, integrated finely between samples.
-struct LagPlant
+// A force-driven plant: acceleration is known input plus an unknown disturbance.
+struct ForcePlant
 {
-  double lag;
   Eigen::Vector2d d;
   Eigen::Vector2d v{Eigen::Vector2d::Zero()};
-  void step(const Eigen::Vector2d & cmd, double dt)
-  {
-    constexpr int substeps = 20;
-    for (int i = 0; i < substeps; ++i) {
-      v += dt / substeps * ((cmd - v) / lag + d);
-    }
-  }
+  void step(const Eigen::Vector2d & cmd, double dt) { v += dt * (cmd + d); }
 };
 
 TEST(DisturbanceObserver, ConvergesToConstantDisturbance)
 {
   DisturbanceObserverConfig config;
   DisturbanceObserver observer(config);
-  LagPlant plant{config.lag, Eigen::Vector2d(-1.2, 0.4)};
+  ForcePlant plant{Eigen::Vector2d(-1.2, 0.4)};
   config.max_estimate = 2.0;
   observer.setConfig(config);
   const double dt = 0.01;
@@ -97,7 +90,7 @@ TEST(DisturbanceObserver, ConvergesToConstantDisturbance)
 TEST(DisturbanceObserver, StaysNearZeroWhenModelMatchesAndFiltersNoise)
 {
   DisturbanceObserver observer;
-  LagPlant plant{observer.config().lag, Eigen::Vector2d::Zero()};
+  ForcePlant plant{Eigen::Vector2d::Zero()};
   std::mt19937 rng(7);
   std::normal_distribution<double> noise(0.0, 0.03);
   const double dt = 0.01;
@@ -121,7 +114,7 @@ TEST(DisturbanceObserver, ClampsAndResetsOnGapsAndInvalidInput)
   DisturbanceObserverConfig config;
   config.max_estimate = 0.5;
   DisturbanceObserver observer(config);
-  LagPlant plant{config.lag, Eigen::Vector2d(3.0, -3.0)};
+  ForcePlant plant{Eigen::Vector2d(3.0, -3.0)};
   for (int i = 0; i < 300; ++i) {
     observer.update(i * 0.01, plant.v, Eigen::Vector2d::Zero());
     plant.step(Eigen::Vector2d::Zero(), 0.01);
