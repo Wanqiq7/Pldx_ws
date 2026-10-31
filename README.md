@@ -117,6 +117,7 @@ sudo apt install -y \
   ros-${ROS_DISTRO}-pcl-ros \
   ros-${ROS_DISTRO}-pcl-conversions \
   ros-${ROS_DISTRO}-ament-cmake \
+  ros-${ROS_DISTRO}-foxglove-bridge \
   ros-${ROS_DISTRO}-behaviortree-cpp \
   ros-${ROS_DISTRO}-spatio-temporal-voxel-layer
 
@@ -239,6 +240,9 @@ bash start.bash
 4. Nav2 + ROGMap + MincoPlanner + MincoMpcController
 5. `ros2_libxr` USB 通信桥（`LIBXR_BRIDGE_ENABLE=0` 关闭）
 6. bt_manager；`BT_MANAGER_ENABLE=0` 时改为持续发布默认 DEFEND 行为，`start_nav.sh` 即此模式
+7. Foxglove Bridge（`FOXGLOVE_ENABLE=0` 关闭；未安装时提示并跳过）
+
+在 Foxglove 中通过 Foxglove WebSocket 连接 `ws://<机器人IP>:8765`（本机使用 `ws://localhost:8765`），添加 Plot 面板并选择 ROS 话题中的数值字段。脚本保持运行，按 Ctrl+C 停止所启动的进程。
 
 `start.bash` 只启动本工作区中的导航节点，不再拉起或等待外部视觉工程进程。
 

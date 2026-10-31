@@ -22,6 +22,7 @@ set -u
 PTP_ENABLE="${PTP_ENABLE:-0}"
 BT_MANAGER_ENABLE="${BT_MANAGER_ENABLE:-1}"
 LIBXR_BRIDGE_ENABLE="${LIBXR_BRIDGE_ENABLE:-1}"
+FOXGLOVE_ENABLE="${FOXGLOVE_ENABLE:-1}"
 # Vision startup is intentionally disabled in the navigation workspace.
 # The navigation stack no longer owns or waits for the external vision process.
 # /cloud_registered_full is published only after Point-LIO IMU gravity alignment.
@@ -36,6 +37,15 @@ cleanup_children() {
   for pid in "${CHILD_PIDS[@]}"; do kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true; done
 }
 trap cleanup_children EXIT INT TERM
+
+if [[ "${FOXGLOVE_ENABLE}" == "1" ]]; then
+  if ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+    run_foxglove=1
+  else
+    echo "[start] Foxglove Bridge not installed; install ros-${ROS_DISTRO}-foxglove-bridge" >&2
+    run_foxglove=0
+  fi
+fi
 
 run_terminal() {
   local title="$1"
@@ -149,5 +159,9 @@ ROSBAG_TOPICS=(
 )
 # gnome-terminal -- bash -c "mkdir -p ~/rosbag && ros2 bag record -o ~/rosbag/$(date +%Y%m%d_%H%M%S) ${ROSBAG_TOPICS[*]}; exec bash"
 
-# Foxglove
-# gnome-terminal -- bash -c "ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765; exec bash"
+if [[ "${FOXGLOVE_ENABLE}" == "1" && "${run_foxglove}" == "1" ]]; then
+  run_terminal "Foxglove Bridge" "ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765"
+  echo "[start] Foxglove WebSocket: ws://<robot-ip>:8765"
+fi
+
+wait
