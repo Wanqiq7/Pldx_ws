@@ -134,6 +134,12 @@ public:
            MincoPlanner::PlanningState::COLD_START;
   }
   static void markUnsafe(MincoPlanner & p) { p.is_traj_safe_.store(false); }
+  static void markSpliced(MincoPlanner & p, double start, double handoff)
+  {
+    p.candidate_->prefix_start_time = start;
+    p.candidate_->handoff_time = handoff;
+  }
+  static auto poll(MincoPlanner & p) { return p.pollPlanResult(); }
   static double trajectoryStart(const MincoPlanner & p) { return p.last_traj_.start_WT; }
 
   static bool hasTrajectory(const MincoPlanner & p) { return p.has_last_traj_; }
@@ -395,6 +401,24 @@ TEST_F(PlanningBudgetTest, SafeTrajectoryReplansEverySecond)
   EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(false));
 }
 
+TEST_F(PlanningBudgetTest, RejectsSplicedCandidateAfterHandoffOrSafetyRevocation)
+{
+  setTime(1.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::followTrajectory(p);
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0);
+  MincoPlannerTestPeer::markSpliced(p, 0.8, 1.5);
+  setTime(1.5);
+  EXPECT_EQ(MincoPlannerTestPeer::poll(p), MincoPlanner::PlanOutcome::KEPT_PREVIOUS);
+  EXPECT_DOUBLE_EQ(MincoPlannerTestPeer::trajectoryStart(p), 1.0);
+
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0);
+  MincoPlannerTestPeer::markSpliced(p, 0.8, 2.0);
+  MincoPlannerTestPeer::markUnsafe(p);
+  EXPECT_EQ(MincoPlannerTestPeer::poll(p), MincoPlanner::PlanOutcome::INFEASIBLE);
+}
+
 TEST_F(PlanningBudgetTest, ComplexGlobalSearchProducesExecutableReference)
 {
   setTime(10.0);
@@ -476,7 +500,7 @@ TEST_F(PlanningBudgetTest, FinalGoalUsesZeroTerminalVelocity)
   EXPECT_LT(trajectory.getVel(duration).norm(), 1e-6);
 }
 
-TEST_F(PlanningBudgetTest, HotStartUsesElapsedTrajectoryTime)
+TEST_F(PlanningBudgetTest, HotStartPreservesPositionVelocityAndAccelerationAtHandoff)
 {
   setTime(10.0);
   nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
@@ -492,8 +516,52 @@ TEST_F(PlanningBudgetTest, HotStartUsesElapsedTrajectoryTime)
   const auto trajectory =
     MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, x);
   ASSERT_FALSE(trajectory.empty());
-  EXPECT_NEAR(trajectory.getVel(0.0).x(), 0.5 + 0.5 * (2.0 + 0.005), 1e-6);
-  EXPECT_NEAR(trajectory.getAcc(0.0).x(), 0.5, 1e-6);
+  ASSERT_GE(trajectory.getPieceNum(), 2);
+  const double handoff = trajectory.getDurations()(0);
+  const double old_time = 2.0 + 0.5 + 0.1;
+  EXPECT_NEAR(trajectory.getPos(handoff).x(), 1.0 + 0.5 * old_time + 0.25 * old_time * old_time, 1e-6);
+  EXPECT_NEAR(trajectory.getVel(handoff).x(), 0.5 + 0.5 * old_time, 1e-6);
+  EXPECT_NEAR(trajectory.getAcc(handoff).x(), 0.5, 1e-6);
+  constexpr double epsilon = 1e-6;
+  EXPECT_LT((trajectory.getPos(handoff + epsilon) - trajectory.getPos(handoff - epsilon)).norm(), 1e-4);
+  EXPECT_LT((trajectory.getVel(handoff + epsilon) - trajectory.getVel(handoff - epsilon)).norm(), 1e-4);
+  EXPECT_LT((trajectory.getAcc(handoff + epsilon) - trajectory.getAcc(handoff - epsilon)).norm(), 1e-4);
+}
+
+TEST_F(PlanningBudgetTest, HotStartSplicesWhenPreviousTrajectoryHasShortRemainingTime)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::readyCandidate(p, false, 2.4, 0.5, 0.5, 1.0);
+  ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  setTime(12.0);
+  const double x = 1.0 + 0.5 * 1.75 + 0.25 * 1.75 * 1.75;
+  const auto trajectory =
+    MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, x);
+  ASSERT_GE(trajectory.getPieceNum(), 2);
+  const double handoff = trajectory.getDurations()(0);
+  constexpr double old_time = 2.35;
+  EXPECT_NEAR(trajectory.getVel(handoff).x(), 0.5 + 0.5 * old_time, 1e-6);
+  EXPECT_NEAR(trajectory.getAcc(handoff).x(), 0.5, 1e-6);
+}
+
+TEST_F(PlanningBudgetTest, DistantRobotDoesNotSpliceOldTrajectory)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0, 0.5, 0.0, 1.0);
+  ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  setTime(12.0);
+  const auto trajectory =
+    MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, 4.0);
+  ASSERT_FALSE(trajectory.empty());
+  EXPECT_NEAR(trajectory.getPos(0.0).x(), 4.0, 1e-6);
 }
 
 TEST_F(PlanningBudgetTest, TrackingDeviationWaitsForPeriodicReplan)

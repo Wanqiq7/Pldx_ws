@@ -139,11 +139,6 @@ private:
     Eigen::Matrix3d & start_state,
     const std::vector<Eigen::Vector3d> & sparse_path);
 
-  void prepareHotStart(const geometry_msgs::msg::Pose & start_pose,
-    double t_dur,
-    Eigen::Matrix3d & start_state,
-    const traj_opt::Trajectory & previous);
-
   void PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path,
     const Eigen::Matrix3d & start_state,
     bool stop_at_local_end,
@@ -162,7 +157,8 @@ private:
     traj_opt::Trajectory & out_yaw_traj,
     PlanningState state,
     const geometry_msgs::msg::Pose & current_pose,
-    double goal_yaw);
+    double goal_yaw,
+    double hot_start_time = -1.0);
 
   rcl_interfaces::msg::SetParametersResult onSetParameters(
     const std::vector<rclcpp::Parameter> & parameters);
@@ -225,6 +221,8 @@ private:
     traj_opt::Trajectory position;
     traj_opt::Trajectory yaw;
     ros_interfaces::msg::MpcPositionCommand command;
+    double prefix_start_time{-1.0};
+    double handoff_time{-1.0};
   };
   std::optional<Candidate> candidate_;  // protected by planning_mutex_
   std::chrono::steady_clock::time_point computed_at_;
