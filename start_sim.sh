@@ -52,10 +52,10 @@ if [[ "$has_params" == false ]]; then
     base_params="$(ros2 pkg prefix --share navi2)/params/sentry1.yaml"
     sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
     mkdir -p "$(dirname "${sim_params}")"
-    # Physical parameters of the simulated omni chassis (sentry_omni model mass;
-    # max_force sets the 2.4 m/s^2 limit of this simulation model).
+    # Physical mass and force limits for the simulated omni chassis.
     sed -E -e "s/^(        mass:) [0-9.]+\$/\1 38.15/" \
-        -e "s/^(        max_force:) [0-9.]+\$/\1 91.56/" "${base_params}" > "${sim_params}"
+        -e "s/^(        max_force:) [0-9.]+\$/\1 100.0/" \
+        -e "s/^(        max_torque:) [0-9.]+\$/\1 100.0/" "${base_params}" > "${sim_params}"
     if ! grep -qE "^        mass: 38.15\$" "${sim_params}"; then
         echo "FollowPath.dynamic.mass not found in ${base_params}" >&2
         exit 1
