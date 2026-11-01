@@ -77,8 +77,8 @@ controller_server:
       plugin: "nav2_controller::StoppedGoalChecker"
       # XY 平面到点容差，单位 m；在定位坐标中检查。
       xy_goal_tolerance: 0.1
-      # Yaw 角度误差容差，单位 rad，设置为 2π 表示允许任意角度到达时也判定为已到达。
-      yaw_goal_tolerance: 6.28
+      # Yaw 角度误差容差，单位 rad。
+      yaw_goal_tolerance: 0.1
       trans_stopped_velocity: 0.1
       rot_stopped_velocity: 0.1
 
