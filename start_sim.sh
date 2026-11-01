@@ -4,12 +4,14 @@
 #   ./start_sim.sh robot_model:=real
 #   ./start_sim.sh world:=rmuc_2024 headless:=true rviz:=false
 #   SIM_WHEEL_ODOM=1 SIM_SLOPE_COMP=1 ./start_sim.sh
-# It writes a copy of sentry1.yaml to log/sim_params/sentry1_sim.yaml with the mass of
-# the simulated chassis, so the shared real-robot configuration stays unchanged. An
-# explicit params_file:= argument takes precedence and is passed through unchanged.
+# It writes a model-specific copy of sentry1.yaml under log/sim_params. The omni
+# model uses its simulation limits; real uses the shared force/torque limits and
+# its CAD mass/inertia from the launch profile. An explicit params_file:= takes
+# precedence for the force/torque limits.
 # SIM_WHEEL_ODOM=1 also runs scripts/sim_wheel_odometry.py (noisy ground-truth body
 # velocity on /sentry/chassis_velocity) and enables dynamic.wheel_odometry in the copy.
 # SIM_SLOPE_COMP=1 enables dynamic.slope_gravity and dynamic.disturbance_observer.
+# Foxglove Bridge listens on port 8765 and stops when this script exits.
 set -eo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,10 +40,12 @@ source "${NAV_INSTALL_DIR}/setup.bash"
 cd "${WORKSPACE_DIR}"
 has_world=false
 has_params=false
+robot_model=omni
 for arg in "$@"; do
     case "$arg" in
         world:=*) has_world=true ;;
         params_file:=*) has_params=true ;;
+        robot_model:=*) robot_model="${arg#robot_model:=}" ;;
     esac
 done
 if [[ "$has_world" == false ]]; then
@@ -50,15 +54,25 @@ fi
 
 if [[ "$has_params" == false ]]; then
     base_params="$(ros2 pkg prefix --share navi2)/params/sentry1.yaml"
-    sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
+    if [[ "${robot_model}" == real ]]; then
+        sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_real_sim.yaml"
+    else
+        sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
+    fi
     mkdir -p "$(dirname "${sim_params}")"
-    # Physical mass and force limits for the simulated omni chassis.
-    sed -E -e "s/^(        mass:) [0-9.]+\$/\1 38.15/" \
-        -e "s/^(        max_force:) [0-9.]+\$/\1 100.0/" \
-        -e "s/^(        max_torque:) [0-9.]+\$/\1 100.0/" "${base_params}" > "${sim_params}"
-    if ! grep -qE "^        mass: 38.15\$" "${sim_params}"; then
-        echo "FollowPath.dynamic.mass not found in ${base_params}" >&2
-        exit 1
+    if [[ "${robot_model}" == real ]]; then
+        # The launch applies the real model's CAD mass and inertia; keep the
+        # navigation force and torque limits from the shared baseline.
+        cp "${base_params}" "${sim_params}"
+    else
+        # Physical mass and force limits for the simulated omni chassis.
+        sed -E -e "s/^(        mass:) [0-9.]+\$/\1 38.15/" \
+            -e "s/^(        max_force:) [0-9.]+\$/\1 100.0/" \
+            -e "s/^(        max_torque:) [0-9.]+\$/\1 100.0/" "${base_params}" > "${sim_params}"
+        if ! grep -qE "^        mass: 38.15\$" "${sim_params}"; then
+            echo "FollowPath.dynamic.mass not found in ${base_params}" >&2
+            exit 1
+        fi
     fi
     if [[ "${SIM_WHEEL_ODOM:-0}" == 1 ]]; then
         sed -i -E "s/^(        wheel_odometry:) (true|false)\$/\1 true/" "${sim_params}"
@@ -82,11 +96,34 @@ if [[ "$has_params" == false ]]; then
     set -- "$@" "params_file:=${sim_params}"
 fi
 
-if [[ "${SIM_WHEEL_ODOM:-0}" != 1 ]]; then
-    exec ros2 launch sentry_simulation simulation.launch.py "$@"
+if ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+    echo "foxglove_bridge is not installed or not available in the sourced ROS environment." >&2
+    exit 1
 fi
-# Emulated wheel odometry from ground truth; stopped together with the launch.
-python3 "${WORKSPACE_DIR}/scripts/sim_wheel_odometry.py" --ros-args -p use_sim_time:=true &
-wheel_pid=$!
-trap 'kill "${wheel_pid}" 2>/dev/null || true' EXIT
+
+bridge_pid=""
+wheel_pid=""
+cleanup() {
+    for pid in "${wheel_pid}" "${bridge_pid}"; do
+        if [[ -n "${pid}" ]]; then
+            kill -TERM "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+    done
+}
+trap cleanup EXIT
+
+if ss -ltn 'sport = :8765' | grep -q LISTEN; then
+    echo "Port 8765 is already in use; using the existing Foxglove connection if available."
+else
+    ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 &
+    bridge_pid=$!
+    echo "Starting Foxglove Bridge on ws://localhost:8765"
+fi
+
+if [[ "${SIM_WHEEL_ODOM:-0}" == 1 ]]; then
+    # Emulated wheel odometry from ground truth; stopped together with the launch.
+    python3 "${WORKSPACE_DIR}/scripts/sim_wheel_odometry.py" --ros-args -p use_sim_time:=true &
+    wheel_pid=$!
+fi
 ros2 launch sentry_simulation simulation.launch.py "$@"
