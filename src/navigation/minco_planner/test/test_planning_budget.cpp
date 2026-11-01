@@ -5,10 +5,12 @@
 #include <functional>
 #include <future>
 #include <gtest/gtest.h>
+#include <initializer_list>
 #include <limits>
 #include <numeric>
 #include <rcl/time.h>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -373,6 +375,165 @@ protected:
   nav2_util::LifecycleNode::SharedPtr node = std::make_shared<nav2_util::LifecycleNode>("budget_test");
 };
 
+std::vector<geometry_msgs::msg::PoseStamped> makePath(
+  std::initializer_list<std::pair<double, double>> points)
+{
+  std::vector<geometry_msgs::msg::PoseStamped> path;
+  for (const auto & [x, y] : points) {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.pose.position.x = x;
+    pose.pose.position.y = y;
+    path.push_back(pose);
+  }
+  return path;
+}
+
+TEST_F(PlanningBudgetTest, HandoffSeedStartsAtHandoffAndSkipsPassedWaypoints)
+{
+  LocalPathProcessor processor;
+  processor.configure(6.0, 3.0, 2.0, 0.3, rclcpp::get_logger("handoff_test"));
+  PlannerModeParams params;
+  params.priormap_clip_seed_by_rog_boundary = false;
+  PlannerModeContext mode;
+  mode.configure(params, nullptr, nullptr, nullptr, rclcpp::get_logger("handoff_test"));
+  const auto path = makePath({{0, 0}, {1, 0}, {2, 0}, {3, 0}, {4, 0}, {5, 0}, {6, 0}});
+  geometry_msgs::msg::PoseStamped robot;
+  robot.pose.position.x = 0.5;
+
+  const auto seed = processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(3.5, 0, 0), mode);
+  ASSERT_TRUE(seed.valid);
+  ASSERT_GE(seed.dense_path.size(), 2U);
+  EXPECT_NEAR(seed.dense_path.front().x(), 3.5, 1e-9);
+  EXPECT_NEAR(seed.sparse_waypoints.front().x(), 3.5, 1e-9);
+  for (const auto & point : seed.dense_path) {
+    EXPECT_GE(point.x(), 3.5 - 1e-9);
+  }
+  for (const auto & point : seed.sparse_waypoints) {
+    EXPECT_GE(point.x(), 3.5 - 1e-9);
+  }
+}
+
+TEST_F(PlanningBudgetTest, HandoffSeedPreservesTheForwardRouteAroundATurn)
+{
+  LocalPathProcessor processor;
+  processor.configure(6.0, 3.0, 2.0, 0.3, rclcpp::get_logger("handoff_test"));
+  PlannerModeParams params;
+  params.priormap_clip_seed_by_rog_boundary = false;
+  PlannerModeContext mode;
+  mode.configure(params, nullptr, nullptr, nullptr, rclcpp::get_logger("handoff_test"));
+  // The valid route eventually decreases x, so global-coordinate
+  // monotonicity would incorrectly reject this ordinary turn.
+  const auto path = makePath({{0, 0}, {2, 0}, {2, 2}, {0, 2}});
+  geometry_msgs::msg::PoseStamped robot;
+  robot.pose.position.x = 1.0;
+  const auto seed = processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(2, 1, 0), mode);
+  ASSERT_TRUE(seed.valid);
+  ASSERT_GE(seed.dense_path.size(), 3U);
+  EXPECT_NEAR(seed.dense_path.front().x(), 2.0, 1e-9);
+  EXPECT_NEAR(seed.dense_path.front().y(), 1.0, 1e-9);
+  EXPECT_NEAR(seed.dense_path[1].x(), 2.0, 1e-9);
+  EXPECT_NEAR(seed.dense_path[1].y(), 2.0, 1e-9);
+  EXPECT_NEAR(seed.dense_path.back().x(), 0.0, 1e-9);
+  EXPECT_NEAR(seed.dense_path.back().y(), 2.0, 1e-9);
+}
+
+TEST_F(PlanningBudgetTest, HandoffBeyondSearchHorizonDoesNotReverseToItsBoundary)
+{
+  LocalPathProcessor processor;
+  processor.configure(6.0, 3.0, 2.0, 0.3, rclcpp::get_logger("handoff_test"));
+  PlannerModeParams params;
+  params.priormap_clip_seed_by_rog_boundary = false;
+  PlannerModeContext mode;
+  mode.configure(params, nullptr, nullptr, nullptr, rclcpp::get_logger("handoff_test"));
+  const auto path = makePath({{0, 0}, {2, 0}, {4, 0}, {6, 0}, {8, 0}, {10, 0}});
+  geometry_msgs::msg::PoseStamped robot;
+
+  const auto seed = processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(6.5, 0, 0), mode);
+  // Rejection is safe. A valid seed must not return to the x=6 boundary.
+  if (seed.valid) {
+    for (const auto & point : seed.dense_path) {
+      EXPECT_GE(point.x(), 6.5 - 1e-9);
+    }
+    for (const auto & point : seed.sparse_waypoints) {
+      EXPECT_GE(point.x(), 6.5 - 1e-9);
+    }
+  }
+}
+
+TEST_F(PlanningBudgetTest, HandoffSeedRejectsAmbiguousNearbyReturnLeg)
+{
+  LocalPathProcessor processor;
+  processor.configure(6.0, 3.0, 2.0, 0.3, rclcpp::get_logger("handoff_test"));
+  PlannerModeParams params;
+  params.priormap_clip_seed_by_rog_boundary = false;
+  PlannerModeContext mode;
+  mode.configure(params, nullptr, nullptr, nullptr, rclcpp::get_logger("handoff_test"));
+  const auto path = makePath({{0, 0}, {3, 0}, {3, 0.08}, {0, 0.08}});
+  geometry_msgs::msg::PoseStamped robot;
+  robot.pose.position.x = 1.0;
+  robot.pose.position.y = 0.04;
+
+  EXPECT_FALSE(processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(1.5, 0, 0), mode).valid);
+}
+
+TEST_F(PlanningBudgetTest, HandoffSeedRejectsDistantAnchorsAndHandlesRepeatedPoints)
+{
+  LocalPathProcessor processor;
+  processor.configure(6.0, 3.0, 2.0, 0.3, rclcpp::get_logger("handoff_test"));
+  PlannerModeParams params;
+  params.priormap_clip_seed_by_rog_boundary = false;
+  PlannerModeContext mode;
+  mode.configure(params, nullptr, nullptr, nullptr, rclcpp::get_logger("handoff_test"));
+  const auto path = makePath({{0, 0}, {0, 0}, {2, 0}, {2, 0}, {2, 2}});
+  geometry_msgs::msg::PoseStamped robot;
+  robot.pose.position.x = 0.5;
+
+  const auto valid = processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(1.5, 0.2, 0), mode);
+  ASSERT_TRUE(valid.valid);
+  EXPECT_NEAR(valid.dense_path.front().x(), 1.5, 1e-9);
+  EXPECT_NEAR(valid.dense_path.front().y(), 0.2, 1e-9);
+  EXPECT_FALSE(processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(1.5, 3.5, 0), mode).valid);
+  robot.pose.position.y = -2.0;
+  EXPECT_FALSE(processor.buildSeedFromHandoff(path, robot, Eigen::Vector3d(1.5, 0.2, 0), mode).valid);
+
+  // Replacing the global route must not reuse progress on the previous route.
+  const auto replacement = makePath({{0, 0}, {0, 2}, {0, 4}});
+  robot.pose.position.x = 0.0;
+  robot.pose.position.y = 0.5;
+  const auto replaced =
+    processor.buildSeedFromHandoff(replacement, robot, Eigen::Vector3d(0, 1.5, 0), mode);
+  ASSERT_TRUE(replaced.valid);
+  EXPECT_NEAR(replaced.dense_path.front().y(), 1.5, 1e-9);
+  EXPECT_NEAR(replaced.dense_path.back().y(), 4.0, 1e-9);
+}
+
+TEST_F(PlanningBudgetTest, HandoffSeedRejectsBlockedConnectionToRoute)
+{
+  nav2_costmap_2d::Costmap2D costmap(100, 100, 0.1, -1.0, -1.0);
+  auto query = std::make_shared<Nav2CostmapQuery>(&costmap);
+  PlannerModeParams params;
+  params.planner_mode = "EXPLORATION";
+  params.rog_frame = "map";
+  params.exploration_boundary_margin = 0.0;
+  PlannerModeContext mode;
+  mode.configure(params, query, nullptr, nullptr, rclcpp::get_logger("handoff_test"));
+  LocalPathProcessor processor;
+  processor.configure(6.0, 3.0, 2.0, 0.3, rclcpp::get_logger("handoff_test"));
+  const auto path = makePath({{0, 0}, {2, 0}, {4, 0}});
+  geometry_msgs::msg::PoseStamped robot;
+  robot.pose.position.x = 0.5;
+  const Eigen::Vector3d handoff(1.0, 0.5, 0.0);
+
+  ASSERT_TRUE(processor.buildSeedFromHandoff(path, robot, handoff, mode).valid);
+  unsigned int mx = 0;
+  unsigned int my = 0;
+  ASSERT_TRUE(costmap.worldToMap(1.0, 0.25, mx, my));
+  for (unsigned int y = my - 1; y <= my + 1; ++y) {
+    costmap.setCost(mx, y, nav2_costmap_2d::LETHAL_OBSTACLE);
+  }
+  EXPECT_FALSE(processor.buildSeedFromHandoff(path, robot, handoff, mode).valid);
+}
+
 TEST_F(PlanningBudgetTest, SafeTrajectoryReplansEverySecond)
 {
   setTime(0.1);
@@ -526,6 +687,37 @@ TEST_F(PlanningBudgetTest, HotStartPreservesPositionVelocityAndAccelerationAtHan
   EXPECT_LT((trajectory.getPos(handoff + epsilon) - trajectory.getPos(handoff - epsilon)).norm(), 1e-4);
   EXPECT_LT((trajectory.getVel(handoff + epsilon) - trajectory.getVel(handoff - epsilon)).norm(), 1e-4);
   EXPECT_LT((trajectory.getAcc(handoff + epsilon) - trajectory.getAcc(handoff - epsilon)).norm(), 1e-4);
+}
+
+TEST_F(PlanningBudgetTest, HotStartDoesNotReturnToWaypointsBehindTheHandoff)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0, 0.5, 0.5, 1.0);
+  ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  setTime(12.0);
+
+  // The robot trails its time-indexed reference; the 0.6 s planning handoff
+  // moves the optimization start past several waypoints in the original seed.
+  constexpr double progress = 1.75;
+  const double robot_x = 1.0 + 0.5 * progress + 0.25 * progress * progress;
+  const auto trajectory = MincoPlannerTestPeer::optimizeStraightSegment(
+    p, std::make_shared<ClearanceQuery>(&costmap), 6.0, robot_x);
+  ASSERT_GE(trajectory.getPieceNum(), 2);
+  const double handoff = trajectory.getDurations()(0);
+  const double handoff_x = trajectory.getPos(handoff).x();
+  double furthest_x = handoff_x;
+  double largest_backtrack = 0.0;
+  for (double t = handoff; t <= trajectory.getTotalDuration(); t += 0.025) {
+    const double x = trajectory.getPos(t).x();
+    furthest_x = std::max(furthest_x, x);
+    largest_backtrack = std::max(largest_backtrack, furthest_x - x);
+  }
+  EXPECT_LT(largest_backtrack, 0.1) << "trajectory turns back after the handoff at x=" << handoff_x;
+  EXPECT_NEAR(trajectory.getPos(trajectory.getTotalDuration()).x(), 6.0, 1e-6);
 }
 
 TEST_F(PlanningBudgetTest, HotStartSplicesWhenPreviousTrajectoryHasShortRemainingTime)

@@ -1412,7 +1412,7 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     return finish(PlanOutcome::INFEASIBLE, "COLLISION");
   }
   std::vector<Eigen::Vector3d> sparse_path = seed.sparse_waypoints;
-  const bool local_end_is_goal = seed.local_end_is_goal;
+  bool local_end_is_goal = seed.local_end_is_goal;
 
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
@@ -1482,9 +1482,6 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
 
   // 5. Prepare start state.
   Eigen::Matrix3d start_state;
-  vec_Vec3f shifted_waypoints;
-  VecDf shifted_durations;
-  bool has_shifted_seed = false;
   traj_opt::Trajectory position_prefix, yaw_prefix;
   double prefix_start_time = -1.0;
   double handoff_time = -1.0;
@@ -1495,7 +1492,6 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     const double remaining =
       std::min(last_traj_snapshot.getTotalDuration(), last_yaw_snapshot.getTotalDuration()) - elapsed;
     const double t_dur = elapsed + std::min(planning_budget_sec_ + 0.1, remaining - 0.05);
-    const double total = last_traj_snapshot.getTotalDuration();
     // Include the robot's projection and a short history so the controller can
     // continue following the previous trajectory while optimization runs.
     const double prefix_t = std::max(0.0, nearest_t - 0.15);
@@ -1509,17 +1505,19 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     start_state.col(0) = last_traj_snapshot.getPos(t_dur);
     start_state.col(1) = last_traj_snapshot.getVel(t_dur);
     start_state.col(2) = last_traj_snapshot.getAcc(t_dur);
-    sparse_path.front() = start_state.col(0);
-
-    // Extract remaining trajectory segment as shifted warm-start seed.
-    if (has_last_traj_snapshot) {
-      traj_opt::Trajectory remain;
-      if (std::isfinite(t_dur) && t_dur > 0.0 && total > t_dur + 1e-3 &&
-          last_traj_snapshot.getPartialTrajectoryByTime(t_dur, total, remain)) {
-        shifted_waypoints = remain.getWaypoints();
-        shifted_durations = remain.getDurations();
-        has_shifted_seed = (!shifted_waypoints.empty() && shifted_durations.size() > 0);
+    const auto handoff_seed = local_path_processor_->buildSeedFromHandoff(
+      global_path_snapshot, current_pose, start_state.col(0), *mode_context_);
+    if (!handoff_seed.valid) {
+      if (isTrajSafe() && !isTrajectoryTimeExpired(nowSeconds()) && checkCollision()) {
+        return finish(PlanOutcome::KEPT_PREVIOUS, "NONE");
       }
+      return finish(PlanOutcome::INFEASIBLE, "COLLISION");
+    }
+    sparse_path = handoff_seed.sparse_waypoints;
+    sparse_path.front() = start_state.col(0);
+    local_end_is_goal = handoff_seed.local_end_is_goal;
+    if (visualizer_) {
+      visualizer_->updateLocalEndPoint(handoff_seed.dense_path.back(), local_end_is_goal);
     }
   } else {
     prepareColdStart(current_pose.pose, start_state, sparse_path);
@@ -1599,16 +1597,7 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
   if (N > 0) {
     vec_Vec3f init_ps;
     VecDf init_ts(N);
-    PTAllocation(sparse_path,
-      start_state,
-      local_end_is_goal,
-      state,
-      has_shifted_seed,
-      shifted_waypoints,
-      shifted_durations,
-      init_ps,
-      init_ts,
-      local_vmaxs);
+    PTAllocation(sparse_path, start_state, local_end_is_goal, init_ps, init_ts, local_vmaxs);
 
     minco_optimizer_->setInitPsAndTs(init_ps, init_ts);
   }
@@ -1785,10 +1774,6 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
 void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path,
   const Eigen::Matrix3d & start_state,
   bool goal_reached,
-  PlanningState state,
-  bool has_shifted_seed,
-  const vec_Vec3f & shifted_waypoints,
-  const VecDf & shifted_durations,
   vec_Vec3f & init_ps,
   VecDf & init_ts,
   VecDf & local_vmaxs) const
@@ -1813,17 +1798,7 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
 
   init_ps.clear();
   init_ps.reserve(static_cast<size_t>(std::max(0, N - 1)));
-  int copyPs = 0;
-  if (state == PlanningState::HOT_START && has_shifted_seed) {
-    const int oldWp = static_cast<int>(shifted_waypoints.size());
-    const int oldPs = std::max(0, oldWp - 2);
-    copyPs = std::min(std::max(0, N - 1), oldPs);
-  }
-  for (int j = 0; j < copyPs; ++j) {
-    PlanningDeadline::check();
-    init_ps.emplace_back(shifted_waypoints[static_cast<size_t>(j + 1)]);
-  }
-  for (int j = copyPs; j < (N - 1); ++j) {
+  for (int j = 0; j < (N - 1); ++j) {
     PlanningDeadline::check();
     init_ps.emplace_back(sparse_path[static_cast<size_t>(j + 1)]);
   }
@@ -1889,17 +1864,6 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
     const double v_next = utils::ComputeNextSpeed(v_curr, L, remain, amax, local_vmax);
     init_ts(i) = utils::ComputeSegmentTime(L, v_curr, v_next, local_vmax, amax, kMinSegTime);
     v_curr = v_next;
-  }
-
-  if (state == PlanningState::HOT_START && has_shifted_seed) {
-    const int oldN = std::min(N, static_cast<int>(shifted_durations.size()));
-    for (int i = 0; i < oldN; ++i) {
-      PlanningDeadline::check();
-      const double t_seed = shifted_durations(i);
-      if (std::isfinite(t_seed) && t_seed > 0.02) {
-        init_ts(i) = std::max(init_ts(i), t_seed);
-      }
-    }
   }
 }
 
