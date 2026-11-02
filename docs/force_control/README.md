@@ -6,18 +6,22 @@ The actuation path is MINCO `/opt_path` -> force-input MPC -> `/chassis_cmd_mpc`
 and power limits. The ROS command contains only Header and Wrench. USB carries
 exactly three little-endian float32 values in the order Fx, Fy, Mz (12 bytes).
 
-MPC publishes its first optimized input at 100 Hz. Force already includes its
-position/velocity feedback and configured disturbance compensation. Nav2's required
+MPC publishes the first input at the configured controller frequency, after any
+output limits. It includes position/velocity feedback; disturbance compensation
+is not included in the report model. Nav2's required
 `computeVelocityCommands()` returns zero and has no actuator subscriber here.
 
-For navigation-source commands, MC02 uses the external planar force directly.
-Chassis translation PID, wheel speed PID, resistance and slope additions do not
-modify it. In NAVIGATION mode, Mz is also
-executed directly. ROTOR and FOLLOW own their local yaw target and yaw PID;
-their translation still uses MPC force. Operator velocity targets and local yaw
-targets enter the firmware velocity PIDs directly in the current cycle.
+The available MC02 `Omni.hpp` treats the navigation wrench as feedforward:
+`DynamicInverseSolution()` adds chassis velocity PID and slope compensation to
+Fx/Fy and adds yaw-rate PID to Mz; `CalculateMotorCurrent()` then adds wheel
+speed PID and wheel resistance torque. The host sets navigation velocity targets
+to zero, so these local loops can oppose the requested MPC force. This firmware
+is therefore not an implementation of pure MPC force actuation. ROTOR and FOLLOW
+also supply their own yaw targets. The actual deployed firmware version must be
+checked separately; changing these control loops requires hardware validation.
 The omni simulator receives `/sim/cmd_force` and bypasses its velocity servo for
-navigation. Folded-passage alignment retains a local yaw torque loop using
+navigation, so its force response does not reproduce those MC02 feedback loops.
+Folded-passage alignment retains a local yaw torque loop using
 planned heading and measured yaw rate; `passage_yaw_kp`, `passage_yaw_kd` and
 `passage_max_torque` configure it. Manual passage controls remain operator inputs.
 
@@ -30,8 +34,9 @@ The firmware's additional force cap is 79.20 N; its yaw cap is 2.32 N*m.
 
 Cancel, BLOCK, goal completion and controller failure publish zero force. The
 bridge also clears stale/invalid commands and stale heading. HostDataLink and the
-chassis CAN receiver retain their watchdogs. Zero force removes propulsion: it is
-not an active velocity brake. Emergency disable still enters firmware RELAX.
+chassis CAN receiver retain their watchdogs. Zero wrench removes the MPC
+contribution; the available firmware may still apply PID and compensation terms.
+Emergency disable still enters firmware RELAX.
 
 Build ros_interfaces, minco_controller, ros2_libxr and navi2 together, then build and
 flash both sentry_gimbal and sentry_chassis firmware. The ROS schema, USB payload
@@ -61,6 +66,6 @@ NAV_INSTALL_DIR="$PWD/install-force" ./start.bash
 The launcher inherits the base workspace environment and sources the force overlay. Do not mix generated ChassisCommand types from
 different installs in a process.
 
-In PLDX_Template_mc02, run `python3 tools/tests/chassis_force_regression.py`,
-the HostDataLink protocol tests, the DualBoard control/feedforward codec tests,
-and both firmware build scripts sequentially (they share a generated entry header).
+In the firmware workspace, validate the HostDataLink protocol and DualBoard
+feedforward codecs and build both board configurations sequentially; verify that
+the firmware installed on both boards matches the validated source and protocol.

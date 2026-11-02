@@ -106,7 +106,9 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   const auto declare = [&](const std::string & key, const rclcpp::ParameterValue & value) {
     nav2_util::declare_parameter_if_not_declared(node, name_ + "." + key, value);
   };
-  declare("dynamic.secondary_reference", rclcpp::ParameterValue(false));
+  declare(
+    "dynamic.report_q", rclcpp::ParameterValue(std::vector<double>{800.0, 800.0, 20.0, 100.0, 100.0, 5.0}));
+  declare("dynamic.report_r", rclcpp::ParameterValue(std::vector<double>{0.001, 0.001, 0.5}));
   declare("dynamic.dt", rclcpp::ParameterValue(defaults.dt));
   declare("dynamic.lookahead_time", rclcpp::ParameterValue(defaults.dt * defaults.horizon));
   declare("dynamic.mass", rclcpp::ParameterValue(defaults.mass));
@@ -114,30 +116,8 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   declare("dynamic.friction_coeff", rclcpp::ParameterValue(defaults.friction_coeff));
   declare("dynamic.max_force", rclcpp::ParameterValue(defaults.max_force));
   declare("dynamic.max_torque", rclcpp::ParameterValue(defaults.max_torque));
-  declare("dynamic.q_pos_along", rclcpp::ParameterValue(defaults.q_pos_along));
-  declare("dynamic.q_pos_cross", rclcpp::ParameterValue(defaults.q_pos_cross));
-  declare("dynamic.q_vel_along", rclcpp::ParameterValue(defaults.q_vel_along));
-  declare("dynamic.q_vel_cross", rclcpp::ParameterValue(defaults.q_vel_cross));
-  declare("dynamic.q_yaw", rclcpp::ParameterValue(defaults.q_yaw));
-  declare("dynamic.q_omega", rclcpp::ParameterValue(defaults.q_omega));
-  declare("dynamic.r_acc", rclcpp::ParameterValue(defaults.r_acc));
-  declare("dynamic.r_jerk", rclcpp::ParameterValue(defaults.r_jerk));
-  declare("dynamic.r_alpha", rclcpp::ParameterValue(defaults.r_alpha));
-  declare("dynamic.r_dalpha", rclcpp::ParameterValue(defaults.r_dalpha));
-  const DisturbanceObserverConfig observer_defaults;
-  declare("dynamic.slope_gravity", rclcpp::ParameterValue(false));
-  declare("dynamic.gravity_body_roll_offset", rclcpp::ParameterValue(0.0));
-  declare("dynamic.disturbance_observer", rclcpp::ParameterValue(false));
-  declare("dynamic.observer_bandwidth", rclcpp::ParameterValue(observer_defaults.bandwidth));
-  declare("dynamic.observer_max_estimate", rclcpp::ParameterValue(observer_defaults.max_estimate));
-  const WheelOdometryConfig wheel_defaults;
-  declare("dynamic.wheel_odometry", rclcpp::ParameterValue(false));
-  declare("dynamic.wheel_odometry_topic", rclcpp::ParameterValue(std::string("/sentry/chassis_velocity")));
-  declare("dynamic.wheel_odometry_max_gap", rclcpp::ParameterValue(wheel_defaults.max_gap));
-  declare("dynamic.wheel_odometry_timeout", rclcpp::ParameterValue(wheel_defaults.timeout));
   auto & c = dynamic_config_;
   double lookahead_time = defaults.dt * defaults.horizon;
-  node->get_parameter(name_ + ".dynamic.secondary_reference", secondary_reference_);
   node->get_parameter(name_ + ".dynamic.dt", c.dt);
   node->get_parameter(name_ + ".dynamic.lookahead_time", lookahead_time);
   node->get_parameter(name_ + ".dynamic.mass", c.mass);
@@ -145,16 +125,6 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
   node->get_parameter(name_ + ".dynamic.friction_coeff", c.friction_coeff);
   node->get_parameter(name_ + ".dynamic.max_force", c.max_force);
   node->get_parameter(name_ + ".dynamic.max_torque", c.max_torque);
-  node->get_parameter(name_ + ".dynamic.q_pos_along", c.q_pos_along);
-  node->get_parameter(name_ + ".dynamic.q_pos_cross", c.q_pos_cross);
-  node->get_parameter(name_ + ".dynamic.q_vel_along", c.q_vel_along);
-  node->get_parameter(name_ + ".dynamic.q_vel_cross", c.q_vel_cross);
-  node->get_parameter(name_ + ".dynamic.q_yaw", c.q_yaw);
-  node->get_parameter(name_ + ".dynamic.q_omega", c.q_omega);
-  node->get_parameter(name_ + ".dynamic.r_acc", c.r_acc);
-  node->get_parameter(name_ + ".dynamic.r_jerk", c.r_jerk);
-  node->get_parameter(name_ + ".dynamic.r_alpha", c.r_alpha);
-  node->get_parameter(name_ + ".dynamic.r_dalpha", c.r_dalpha);
   const bool positive = c.dt > 0.0 && lookahead_time > 0.0 && c.mass > 0.0 && c.inertia_z > 0.0 &&
                         c.friction_coeff > 0.0 && c.max_force > 0.0 && c.max_torque > 0.0;
   const bool finite = std::isfinite(c.dt) && std::isfinite(lookahead_time) && std::isfinite(c.mass) &&
@@ -164,71 +134,26 @@ void MincoMpcController::configureDynamicModel(const rclcpp_lifecycle::Lifecycle
     throw std::invalid_argument("Dynamic MPC physical parameters must be finite and positive");
   }
   c.horizon = static_cast<int>(std::ceil(lookahead_time / c.dt));
-  dynamic_solver_ = std::make_unique<DynamicMpcSolver>(c);
-
-  DisturbanceObserverConfig observer;
-  node->get_parameter(name_ + ".dynamic.slope_gravity", slope_gravity_);
-  node->get_parameter(name_ + ".dynamic.gravity_body_roll_offset", gravity_body_roll_offset_);
-  node->get_parameter(name_ + ".dynamic.disturbance_observer", disturbance_observer_enabled_);
-  node->get_parameter(name_ + ".dynamic.observer_bandwidth", observer.bandwidth);
-  node->get_parameter(name_ + ".dynamic.observer_max_estimate", observer.max_estimate);
-  if (disturbance_observer_enabled_ &&
-      (!std::isfinite(observer.bandwidth) || observer.bandwidth <= 0.0 ||
-        !std::isfinite(observer.max_estimate) || observer.max_estimate < 0.0)) {
-    throw std::invalid_argument("Disturbance observer needs a positive bandwidth");
+  std::vector<double> q, r;
+  node->get_parameter(name_ + ".dynamic.report_q", q);
+  node->get_parameter(name_ + ".dynamic.report_r", r);
+  if (q.size() != report_config_.q.size() || r.size() != report_config_.r.size()) {
+    throw std::invalid_argument("Report MPC requires 6 state and 3 input weights");
   }
-  if (!std::isfinite(gravity_body_roll_offset_)) {
-    throw std::invalid_argument("dynamic.gravity_body_roll_offset must be finite");
-  }
-  disturbance_observer_.setConfig(observer);
-
-  WheelOdometryConfig wheel;
-  std::string wheel_topic;
-  node->get_parameter(name_ + ".dynamic.wheel_odometry", wheel_odometry_enabled_);
-  node->get_parameter(name_ + ".dynamic.wheel_odometry_topic", wheel_topic);
-  node->get_parameter(name_ + ".dynamic.wheel_odometry_max_gap", wheel.max_gap);
-  node->get_parameter(name_ + ".dynamic.wheel_odometry_timeout", wheel.timeout);
-  if (wheel_odometry_enabled_) {
-    if (!std::isfinite(wheel.max_gap) || wheel.max_gap <= 0.0 || !std::isfinite(wheel.timeout) ||
-        wheel.timeout <= 0.0 || wheel_topic.empty()) {
-      throw std::invalid_argument("Wheel odometry needs a topic and positive max_gap/timeout");
-    }
-    {
-      std::lock_guard<std::mutex> lk(data_mtx_);
-      wheel_odometry_.setConfig(wheel);
-    }
-    // High-rate samples: keep a deep queue so executor jitter does not drop them.
-    wheel_odom_sub_ = node->create_subscription<geometry_msgs::msg::TwistStamped>(wheel_topic,
-      rclcpp::SensorDataQoS().keep_last(100),
-      std::bind(&MincoMpcController::onWheelOdometry, this, std::placeholders::_1));
-  } else {
-    wheel_odom_sub_.reset();
-  }
+  std::copy(q.begin(), q.end(), report_config_.q.begin());
+  std::copy(r.begin(), r.end(), report_config_.r.begin());
+  report_config_.motion = c;
+  report_solver_ = std::make_unique<ReportMpcSolver>(report_config_);
 
   RCLCPP_INFO(logger_,
-    "%s: wheel odometry %s (topic=%s, max_gap=%.3f, timeout=%.3f)",
-    name_.c_str(),
-    wheel_odometry_enabled_ ? "enabled" : "disabled",
-    wheel_topic.c_str(),
-    wheel.max_gap,
-    wheel.timeout);
-  RCLCPP_INFO(logger_,
-    "%s: force-control MPC (dt=%.3f, horizon=%d, mass=%.2f, Iz=%.3f, "
-    "a_max=%.3f, alpha_max=%.3f, secondary_reference=%s, slope_gravity=%s, body_roll_offset=%.4f, "
-    "disturbance_observer=%s, observer_bandwidth=%.2f, d_max=%.3f)",
+    "%s: report MPC (dt=%.3f, horizon=%d, mass=%.2f, Iz=%.3f, max_force=%.3f, max_torque=%.3f)",
     name_.c_str(),
     c.dt,
     c.horizon,
     c.mass,
     c.inertia_z,
-    dynamic_solver_->translationalAccelerationLimit(),
-    dynamic_solver_->angularAccelerationLimit(),
-    secondary_reference_ ? "true" : "false",
-    slope_gravity_ ? "true" : "false",
-    gravity_body_roll_offset_,
-    disturbance_observer_enabled_ ? "true" : "false",
-    observer.bandwidth,
-    dynamic_solver_->maxDisturbance());
+    c.max_force,
+    c.max_torque);
 }
 
 void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
@@ -279,8 +204,6 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   node->get_parameter(name + ".map_frame", map_frame_);
   node->get_parameter(name + ".lidar_offset_x", lidar_offset_x_);
   node->get_parameter(name + ".lidar_offset_y", lidar_offset_y_);
-  // Only logged: the slope term uses dynamic.gravity_body_roll_offset so the simulation's
-  // level body frame is not tilted by the real robot's mounting value.
   double lidar_roll_offset = 0.0;
   node->get_parameter(name + ".lidar_roll_offset", lidar_roll_offset);
 
@@ -389,8 +312,7 @@ void MincoMpcController::cleanup()
   mpc_predict_path_pub_.reset();
   mpc_real_path_pub_.reset();
   chassis_cmd_pub_.reset();
-  wheel_odom_sub_.reset();
-  dynamic_solver_.reset();
+  report_solver_.reset();
 
   std::lock_guard<std::mutex> lk(data_mtx_);
   latest_opt_path_.reset();
@@ -431,7 +353,9 @@ void MincoMpcController::reset()
 void MincoMpcController::publishZeroCommand()
 {
   pending_wrench_.setZero();
-  last_published_acceleration_.setZero();
+  if (report_solver_) {
+    report_solver_->resetLastAcceleration();
+  }
   if (chassis_cmd_pub_) {
     ros_interfaces::msg::ChassisCommand chassis;
     if (auto node = node_.lock()) {
@@ -465,8 +389,12 @@ void MincoMpcController::setSpeedLimit(const double & speed_limit, const bool & 
   if (!std::isfinite(speed_limit) || speed_limit < 0.0) {
     throw std::invalid_argument("Speed limit must be finite and nonnegative");
   }
-  speed_limit_ = speed_limit;
-  speed_limit_percentage_ = percentage;
+  std::lock_guard<std::mutex> lk(data_mtx_);
+  if (speed_limit_ != speed_limit || speed_limit_percentage_ != percentage) {
+    speed_limit_ = speed_limit;
+    speed_limit_percentage_ = percentage;
+    ++reference_version_;
+  }
 }
 
 void MincoMpcController::onOptPath(const ros_interfaces::msg::MpcPositionCommand::SharedPtr msg)
@@ -818,9 +746,6 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   // Stop the force channel explicitly before the BT recovers or aborts.
   if (planning_failed) {
     std::lock_guard<std::mutex> data_lock(data_mtx_);
-    if (dynamic_solver_) {
-      dynamic_solver_->resetLastAcceleration();
-    }
     publishZeroCommand();
     throw nav2_core::NoValidControl("MincoPlanner gave up on the current goal");
   }
@@ -842,10 +767,12 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         success = false;
       }
       // A suppressed command was never applied, so it must not seed the next solve.
-      if (!success && dynamic_solver_) {
-        dynamic_solver_->resetLastAcceleration();
+      if (!success && report_solver_) {
+        report_solver_->resetLastAcceleration();
       }
       pending_wrench_ = success ? wrench : Eigen::Vector3d::Zero();
+      if (report_solver_)
+        report_solver_->setAppliedWrench(pending_wrench_);
       if (chassis_cmd_pub_) {
         ros_interfaces::msg::ChassisCommand chassis;
         chassis.header.stamp = finish_now;
@@ -855,7 +782,6 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         chassis.wrench.torque.z = pending_wrench_.z();
         chassis_cmd_pub_->publish(chassis);
       }
-      last_published_acceleration_ = pending_wrench_.head<2>() / dynamic_config_.mass;
     }
     if (perf) {
       perf->success = success;
@@ -879,7 +805,6 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   // 1) 构造当前状态：位置与航向来自 robot_base_frame（base_link_fake），
   // 世界系速度由 LIO 机体系速度按 body yaw 旋出。
   State curr;
-  Eigen::Vector2d raw_velocity = Eigen::Vector2d::Zero();
   curr.x = pose.pose.position.x;
   curr.y = pose.pose.position.y;
   curr.yaw = normalizeYaw(tf2::getYaw(pose.pose.orientation));
@@ -892,7 +817,6 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     double omega_global = 0.0;
     compensateLeverArm(vx, vy, omega, yaw_lio, curr.vx, curr.vy, omega_global);
     curr.omega = omega_global;
-    raw_velocity = Eigen::Vector2d(curr.vx, curr.vy);
 
     const double noise_threshold = 0.03;
     if (std::abs(curr.vx) < noise_threshold) {
@@ -942,9 +866,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
         has_tracked_ref_ = false;
         latest_opt_path_.reset();
         ++reference_version_;
-      }
-      if (dynamic_solver_) {
-        dynamic_solver_->resetLastAcceleration();
+        if (report_solver_) {
+          report_solver_->resetLastAcceleration();
+        }
       }
       cmd.twist.linear.x = 0.0;
       cmd.twist.linear.y = 0.0;
@@ -954,7 +878,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   }
 
   std::vector<State> pred_states;
-  const char * failure = solveDynamic(curr, raw_velocity, latest_odom, now, wrench, pred_states, perf);
+  const char * failure = solveDynamic(curr, wrench, pred_states, perf);
   publishVisualization(pred_states, curr);
   if (failure) {
     cmd.twist = geometry_msgs::msg::Twist{};
@@ -963,138 +887,50 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   return finish(cmd, true, "NONE");
 }
 
-Eigen::Vector2d MincoMpcController::estimateDisturbance(
-  const Eigen::Vector2d & raw_velocity, const nav_msgs::msg::Odometry::SharedPtr & odom)
-{
-  Eigen::Vector2d d = Eigen::Vector2d::Zero();
-  if (!odom) {
-    return d;
-  }
-  if (slope_gravity_) {
-    const auto & o = odom->pose.pose.orientation;
-    d += slopeGravity(Eigen::Quaterniond(o.w, o.x, o.y, o.z), gravity_body_roll_offset_);
-  }
-  if (disturbance_observer_enabled_) {
-    // One observer step per odometry sample. The chassis has been executing the last
-    // published command since the previous sample; the gravity term is part of the
-    // known model, so only the remainder is estimated.
-    const rclcpp::Time stamp(odom->header.stamp, observer_odom_stamp_.get_clock_type());
-    if (stamp != observer_odom_stamp_) {
-      observer_odom_stamp_ = stamp;
-      Eigen::Vector2d applied;
-      {
-        std::lock_guard<std::mutex> lock(data_mtx_);
-        applied = last_published_acceleration_;
-      }
-      disturbance_observer_.update(stamp.seconds(), raw_velocity, applied + d);
-    }
-    d += disturbance_observer_.estimate();
-  }
-  return d;
-}
-
-void MincoMpcController::onWheelOdometry(const geometry_msgs::msg::TwistStamped::SharedPtr msg)
-{
-  if (!msg) {
-    return;
-  }
-  const double stamp = rclcpp::Time(msg->header.stamp, RCL_ROS_TIME).seconds();
-  std::lock_guard<std::mutex> lk(data_mtx_);
-  wheel_odometry_.push(
-    stamp, Eigen::Vector3d(msg->twist.linear.x, msg->twist.linear.y, msg->twist.angular.z));
-}
-
-bool MincoMpcController::propagateWithWheelOdometry(
-  const nav_msgs::msg::Odometry::SharedPtr & odom, const rclcpp::Time & now, State & curr)
-{
-  if (!odom) {
-    return false;
-  }
-  // The pose (robot_base_frame via TF) and the LIO odom share the LIO stamp. Integrate the
-  // body-frame wheel velocity from there to now. The heading for the rotation is the LIO
-  // yaw: base_link_fake cancels yaw, so the pose yaw is not the chassis heading on the robot.
-  const double t0 = rclcpp::Time(odom->header.stamp, RCL_ROS_TIME).seconds();
-  const double t1 = now.seconds();
-  const double yaw_lio = tf2::getYaw(odom->pose.pose.orientation);
-  Eigen::Vector2d p1;
-  double yaw1 = yaw_lio;
-  Eigen::Vector3d v_body;
-  bool ok = false;
-  {
-    std::lock_guard<std::mutex> lk(data_mtx_);
-    ok = wheel_odometry_.propagate(t0, t1, Eigen::Vector2d(curr.x, curr.y), yaw_lio, p1, yaw1, v_body);
-  }
-  if (!ok) {
-    return false;
-  }
-  const double c = std::cos(yaw1);
-  const double s = std::sin(yaw1);
-  curr.x = p1.x();
-  curr.y = p1.y();
-  curr.yaw = normalizeYaw(curr.yaw + (yaw1 - yaw_lio));
-  curr.vx = c * v_body.x() - s * v_body.y();
-  curr.vy = s * v_body.x() + c * v_body.y();
-  curr.omega = v_body.z();
-  return true;
-}
-
 const char * MincoMpcController::solveDynamic(const State & measured,
-  const Eigen::Vector2d & raw_velocity,
-  const nav_msgs::msg::Odometry::SharedPtr & odom,
-  const rclcpp::Time & now,
   Eigen::Vector3d & out_wrench,
   std::vector<State> & pred_states,
   std::optional<MpcPerfSample> & perf)
 {
-  if (!dynamic_solver_) {
+  if (!report_solver_) {
     return "SOLVER_UNAVAILABLE";
   }
   // Constrain the prediction itself; scaling a force would also weaken braking.
   auto limited = dynamic_config_;
-  if (speed_limit_ > 0.0) {
-    const double scale = speed_limit_percentage_ ? std::clamp(speed_limit_ / 100.0, 0.0, 1.0) : 1.0;
+  double speed_limit;
+  bool speed_limit_percentage;
+  {
+    std::lock_guard<std::mutex> lk(data_mtx_);
+    speed_limit = speed_limit_;
+    speed_limit_percentage = speed_limit_percentage_;
+  }
+  if (speed_limit > 0.0) {
+    const double scale = speed_limit_percentage ? std::clamp(speed_limit / 100.0, 0.0, 1.0) : 1.0;
     const double axis_limit =
-      speed_limit_percentage_ ? std::numeric_limits<double>::infinity() : speed_limit_ / std::sqrt(2.0);
+      speed_limit_percentage ? std::numeric_limits<double>::infinity() : speed_limit / std::sqrt(2.0);
     limited.vx_min = std::max(scale * limited.vx_min, -axis_limit);
     limited.vx_max = std::min(scale * limited.vx_max, axis_limit);
     limited.vy_min = std::max(scale * limited.vy_min, -axis_limit);
     limited.vy_max = std::min(scale * limited.vy_max, axis_limit);
   }
-  const auto & previous = dynamic_solver_->config();
+  const auto & previous = report_solver_->config().motion;
   if (limited.vx_min != previous.vx_min || limited.vx_max != previous.vx_max ||
       limited.vy_min != previous.vy_min || limited.vy_max != previous.vy_max) {
-    dynamic_solver_->setConfig(limited);
+    report_config_.motion = limited;
+    report_solver_->setConfig(report_config_);
   }
-  const auto & config = dynamic_solver_->config();
-  const double d_max = dynamic_solver_->maxDisturbance();
-  const Eigen::Vector2d disturbance =
-    estimateDisturbance(raw_velocity, odom).cwiseMax(-d_max).cwiseMin(d_max);
-  if (perf) {
-    perf->dist_x = disturbance.x();
-    perf->dist_y = disturbance.y();
-  }
+  const auto & config = report_solver_->config().motion;
 
   // control_delay_compensation is the lead from the odom stamp to when the command acts.
-  // Wheel odometry measures the part up to now; only the remainder is predicted.
   State curr = measured;
-  double delay = control_delay_compensation_;
-  if (wheel_odometry_enabled_) {
-    if (propagateWithWheelOdometry(odom, now, curr)) {
-      delay -= (now - rclcpp::Time(odom->header.stamp, now.get_clock_type())).seconds();
-      delay = std::max(0.0, delay);
-    } else {
-      ++wheel_odometry_fallbacks_;
-      RCLCPP_WARN_THROTTLE(logger_,
-        *node_.lock()->get_clock(),
-        5000,
-        "Wheel odometry unavailable or stale; using LIO-only state (%lu fallbacks)",
-        static_cast<unsigned long>(wheel_odometry_fallbacks_));
-    }
-  }
-  // Propagate with the last applied input plus the drift instead of constant velocity.
+  const double delay = control_delay_compensation_;
+  // Propagate with the last applied input.
   if (delay > 1e-3) {
-    Eigen::Vector3d a = dynamic_solver_->getLastAcceleration();
-    a.head<2>() += disturbance;
+    Eigen::Vector3d a;
+    {
+      std::lock_guard<std::mutex> lk(data_mtx_);
+      a = report_solver_->getLastAcceleration();
+    }
     curr.x += curr.vx * delay + 0.5 * a.x() * delay * delay;
     curr.y += curr.vy * delay + 0.5 * a.y() * delay * delay;
     curr.yaw = normalizeYaw(curr.yaw + curr.omega * delay + 0.5 * a.z() * delay * delay);
@@ -1112,6 +948,9 @@ const char * MincoMpcController::solveDynamic(const State & measured,
   std::vector<ReferencePoint> ref(static_cast<size_t>(n + 1));
   for (int k = 0; k <= n; ++k) {
     ref[k] = sampleReference(traj, traj.start_time + k * config.dt);
+    if (ref[k].vel.norm() > 0.05) {
+      ref[k].yaw = std::atan2(ref[k].vel.y(), ref[k].vel.x());
+    }
   }
   unwrapReferenceYaw(curr.yaw, ref);
   if (perf) {
@@ -1123,8 +962,9 @@ const char * MincoMpcController::solveDynamic(const State & measured,
   const auto solve_start =
     perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   DynamicControl u;
-  bool success = dynamic_solver_->solve(curr, ref, u, &pred_states, !secondary_reference_, disturbance);
-  if (success && secondary_reference_) {
+  // The last applied input is updated only when finish() publishes it.
+  bool success = report_solver_->solve(curr, ref, u, &pred_states, false);
+  if (success) {
     // Shrink each reference step by cos(angle(v_pred, v_ref)): when the first plan heads
     // away from the reference, along-track progress is traded for cross-track accuracy.
     constexpr double kMinSpeed = 0.05;
@@ -1133,23 +973,25 @@ const char * MincoMpcController::solveDynamic(const State & measured,
     shrunk[0] = sampleReference(traj, t);
     for (int k = 1; k <= n; ++k) {
       const Eigen::Vector2d v_pred(pred_states[k].vx, pred_states[k].vy);
-      const Eigen::Vector2d & v_ref = ref[k].vel;
+      const Eigen::Vector2d & v_ref = ref[k - 1].vel;
       double alpha = 1.0;
       if (v_pred.norm() > kMinSpeed && v_ref.norm() > kMinSpeed) {
         alpha = std::max(0.0, v_pred.dot(v_ref) / (v_pred.norm() * v_ref.norm()));
       }
       t += alpha * config.dt;
-      shrunk[k] = sampleReference(traj, t);
+      shrunk[k - 1] = sampleReference(traj, t);
+    }
+    shrunk[n] = shrunk[n - 1];
+    for (auto & point : shrunk) {
+      if (point.vel.norm() > 0.05)
+        point.yaw = std::atan2(point.vel.y(), point.vel.x());
     }
     unwrapReferenceYaw(curr.yaw, shrunk);
     DynamicControl second;
     std::vector<State> second_pred;
-    if (dynamic_solver_->solve(curr, shrunk, second, &second_pred, true, disturbance)) {
+    if (report_solver_->solve(curr, shrunk, second, &second_pred, false)) {
       u = second;
       pred_states = std::move(second_pred);
-    } else {
-      // Keep the valid first pass and record it as the applied input.
-      success = dynamic_solver_->solve(curr, ref, u, &pred_states, true, disturbance);
     }
   }
   if (perf) {
@@ -1167,6 +1009,11 @@ const char * MincoMpcController::solveDynamic(const State & measured,
 
   // Apply the first optimized input of the receding horizon directly.
   out_wrench = u.wrench;
+  // The drive envelope and friction limit apply to total planar force.
+  const double force_limit = std::min(config.max_force, config.friction_coeff * config.mass * 9.81);
+  const double norm = out_wrench.head<2>().norm();
+  if (norm > force_limit)
+    out_wrench.head<2>() *= force_limit / norm;
   return nullptr;
 }
 

@@ -105,9 +105,8 @@ Point-LIO /aft_mapped_to_init + TF
 
 **状态：仿真延迟已测；对跟踪振荡的独立贡献待验证。**
 
-控制状态的位置来自 Nav2 pose，速度和真实 yaw 来自 LIO；[solveDynamic](../../src/navigation/minco_controller/src/minco_mpc_controller.cpp) 在默认配置下使用固定 `control_delay_compensation=0.05 s`。此前 Release 仿真里程计延迟采样约 0.07–0.15 s，轮速融合默认关闭。时间差、执行器延迟及杆臂补偿都可能影响预测，不应把它们与轨迹切换混为同一个已证实根因。
+控制状态的位置来自 Nav2 pose，速度和真实 yaw 来自 LIO；[solveDynamic](../../src/navigation/minco_controller/src/minco_mpc_controller.cpp) 在默认配置下使用固定 `control_delay_compensation=0.05 s`。此前 Release 仿真里程计延迟采样约 0.07–0.15 s。时间差、执行器延迟及杆臂补偿都可能影响预测，不应把它们与轨迹切换混为同一个已证实根因。
 
-仿真可用 `SIM_WHEEL_ODOM=1` 开启模拟轮速；该数据由仿真真值加噪生成，不代表实车反馈已验证。实车反馈需核对轴、方向、时间戳、质量以及断流回退。
 
 ### 6. 上限与模型标定
 

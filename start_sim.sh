@@ -3,14 +3,10 @@
 #   ./start_sim.sh
 #   ./start_sim.sh robot_model:=real
 #   ./start_sim.sh world:=rmuc_2024 headless:=true rviz:=false
-#   SIM_WHEEL_ODOM=1 SIM_SLOPE_COMP=1 ./start_sim.sh
 # It writes a model-specific copy of sentry1.yaml under log/sim_params. The omni
 # model uses its simulation limits; real uses the shared force/torque limits and
 # its CAD mass/inertia from the launch profile. An explicit params_file:= takes
 # precedence for the force/torque limits.
-# SIM_WHEEL_ODOM=1 also runs scripts/sim_wheel_odometry.py (noisy ground-truth body
-# velocity on /sentry/chassis_velocity) and enables dynamic.wheel_odometry in the copy.
-# SIM_SLOPE_COMP=1 enables dynamic.slope_gravity and dynamic.disturbance_observer.
 # Foxglove Bridge listens on port 8765 and stops when this script exits.
 set -eo pipefail
 
@@ -74,25 +70,6 @@ if [[ "$has_params" == false ]]; then
             exit 1
         fi
     fi
-    if [[ "${SIM_WHEEL_ODOM:-0}" == 1 ]]; then
-        sed -i -E "s/^(        wheel_odometry:) (true|false)\$/\1 true/" "${sim_params}"
-        if ! grep -qE "^        wheel_odometry: true\$" "${sim_params}"; then
-            echo "FollowPath.dynamic.wheel_odometry not found in ${base_params}" >&2
-            exit 1
-        fi
-    fi
-    if [[ "${SIM_SLOPE_COMP:-0}" == 1 ]]; then
-        for key in slope_gravity disturbance_observer; do
-            sed -i -E "s/^(        ${key}:) (true|false)\$/\1 true/" "${sim_params}"
-            if ! grep -qE "^        ${key}: true\$" "${sim_params}"; then
-                echo "FollowPath.dynamic.${key} not found in ${base_params}" >&2
-                exit 1
-            fi
-        done
-    fi
-    echo "Force-control MPC: wheel odometry: ${SIM_WHEEL_ODOM:-0}," \
-        "slope compensation: ${SIM_SLOPE_COMP:-0}, drive wrench output" \
-        "(params: ${sim_params})"
     set -- "$@" "params_file:=${sim_params}"
 fi
 
@@ -102,9 +79,8 @@ if ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
 fi
 
 bridge_pid=""
-wheel_pid=""
 cleanup() {
-    for pid in "${wheel_pid}" "${bridge_pid}"; do
+    for pid in "${bridge_pid}"; do
         if [[ -n "${pid}" ]]; then
             kill -TERM "${pid}" 2>/dev/null || true
             wait "${pid}" 2>/dev/null || true
@@ -121,9 +97,4 @@ else
     echo "Starting Foxglove Bridge on ws://localhost:8765"
 fi
 
-if [[ "${SIM_WHEEL_ODOM:-0}" == 1 ]]; then
-    # Emulated wheel odometry from ground truth; stopped together with the launch.
-    python3 "${WORKSPACE_DIR}/scripts/sim_wheel_odometry.py" --ros-args -p use_sim_time:=true &
-    wheel_pid=$!
-fi
 ros2 launch sentry_simulation simulation.launch.py "$@"

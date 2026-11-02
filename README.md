@@ -60,7 +60,7 @@
 - **GICP 重定位**：离线加载地图 PCD，在线累积点云后做粗/精两阶段 GICP，确认后持续发布 `map → camera_init` TF。
 - **ROGMap + Signed ESDF**：滑动三维概率占据、动态遗忘、地形语义投影，以及障碍外正距离 / 障碍内负距离的连续梯度场。
 - **MINCO 双模式规划**：`PRIORMAP` 利用 Nav2 先验地图全局引导；`EXPLORATION` 直接在 ROGMap 有效边界内搜索。
-- **力控 MPC**：状态 `[x, y, yaw, vx, vy, omega]`，输入质量归一化驱动力 `[Fx/m, Fy/m, Mz/Iz]`，qpOASES 求解，输出首步世界系驱动力（`/chassis_cmd_mpc`）；支持坡道扰动补偿与轮速融合。
+- **力控 MPC**：状态 `[x, y, yaw, vx, vy, omega]`，输入 `[Fx, Fy, Mz]`，由 acados 求解并输出首步世界系驱动力（`/chassis_cmd_mpc`）。
 - **比赛行为树**：BehaviorTree.CPP XML 定义战术、导航、姿态、资源、云台和恢复策略。
 - **裁判 / 底盘通信**：`ros2_libxr` 经 USB CDC 直连 MC02 下位机，转发 `/chassis_cmd_mpc` 与 `/sentry/behaivor_send`，并发布 `/sentry/*` 裁判与状态话题；不再依赖外部视觉工程的 ROS 启动链路。
 

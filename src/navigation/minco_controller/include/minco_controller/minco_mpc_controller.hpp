@@ -25,10 +25,8 @@
 #include "ros_interfaces/msg/mpc_position_command.hpp"
 
 #include "log.hpp"
-#include "minco_controller/disturbance.hpp"
-#include "minco_controller/dynamic_mpc_solver.hpp"
 #include "minco_controller/performance/mpc_performance_monitor.hpp"
-#include "minco_controller/wheel_odometry.hpp"
+#include "minco_controller/report_mpc_solver.hpp"
 
 namespace minco_controller {
 
@@ -83,23 +81,11 @@ private:
   ReferencePoint sampleReference(const ReferenceTrajectory & traj, double time) const;
   static void unwrapReferenceYaw(double curr_yaw, std::vector<ReferencePoint> & ref);
 
-  void onWheelOdometry(const geometry_msgs::msg::TwistStamped::SharedPtr msg);
-  // Replaces the delayed odom state by wheel-integrated state at `now`; false keeps it unchanged.
-  bool propagateWithWheelOdometry(
-    const nav_msgs::msg::Odometry::SharedPtr & odom, const rclcpp::Time & now, State & curr);
-
   // Force-control MPC: fills the drive wrench and prediction, or returns a failure reason.
-  // raw_velocity is the global-frame odom velocity before the small-speed dead band.
   const char * solveDynamic(const State & measured,
-    const Eigen::Vector2d & raw_velocity,
-    const nav_msgs::msg::Odometry::SharedPtr & odom,
-    const rclcpp::Time & now,
     Eigen::Vector3d & out_wrench,
     std::vector<State> & pred_states,
     std::optional<MpcPerfSample> & perf);
-  // Gravity along the ground plus the observer estimate, in the global frame.
-  Eigen::Vector2d estimateDisturbance(
-    const Eigen::Vector2d & raw_velocity, const nav_msgs::msg::Odometry::SharedPtr & odom);
 
   // Plan end pose in the robot pose frame for the goal check; false if TF is unavailable.
   bool goalInPoseFrame(const geometry_msgs::msg::PoseStamped & goal,
@@ -198,12 +184,11 @@ private:
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
   // Force-control MPC. The top-level vx/vy/omega bounds are read into dynamic_config_.
   DynamicMpcConfig dynamic_config_;
-  std::unique_ptr<DynamicMpcSolver> dynamic_solver_;
-  // Second pass shrinks reference time steps by cos(angle(v_pred, v_ref)) to favour cross-track accuracy.
-  bool secondary_reference_{false};
+  ReportMpcConfig report_config_;
+  std::unique_ptr<ReportMpcSolver> report_solver_;
 
   // === Configurations & Parameters ===
-  // Dynamic speed limit from Nav2 setSpeedLimit().
+  // Dynamic speed limit from Nav2 setSpeedLimit(), guarded by data_mtx_.
   double speed_limit_{0.0};
   bool speed_limit_percentage_{false};
 
@@ -216,21 +201,8 @@ private:
   MpcPerformanceMonitor mpc_perf_monitor_;
   long long last_mpc_perf_stamp_ns_{0};
 
-  // Slope disturbance for the dynamic model (compute thread only).
-  bool slope_gravity_{false};
-  double gravity_body_roll_offset_{0.0};
-  bool disturbance_observer_enabled_{false};
-  DisturbanceObserver disturbance_observer_;
-  rclcpp::Time observer_odom_stamp_{0, 0, RCL_ROS_TIME};
-  // Last published drive input, used by the force-input disturbance observer.
-  Eigen::Vector2d last_published_acceleration_{0.0, 0.0};
   Eigen::Vector3d pending_wrench_{0.0, 0.0, 0.0};
 
-  // Wheel odometry (body-frame chassis velocity) integrated from the delayed LIO pose to now.
-  bool wheel_odometry_enabled_{false};
-  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr wheel_odom_sub_;
-  WheelOdometry wheel_odometry_;  // guarded by data_mtx_
-  uint64_t wheel_odometry_fallbacks_{0};
 };
 
 }  // namespace minco_controller

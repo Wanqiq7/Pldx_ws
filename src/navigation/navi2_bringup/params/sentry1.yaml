@@ -99,48 +99,19 @@ controller_server:
       omega_max: 5.0
 
       # 力控 MPC：状态 [p, yaw, v, omega]，只下发首步优化驱动力 Fx/Fy/Mz。
-      # 加速度上限 min(mu·g, max_force/mass)；质量/惯量与 MC02 配置对应，仍需实测标定。
+      # 合力上限 min(mu·m·g, max_force)；质量/惯量与 MC02 配置对应，仍需实测标定。
       dynamic:
         dt: 0.02
         lookahead_time: 0.8
-        # 二次参考：按预测速度与参考速度夹角余弦缩短时间步，牺牲纵向进度换横向精度。
-        secondary_reference: false
+        # 报告模型权重；实车参数需结合电机、轮胎和场地重新标定。
+        report_q: [800.0, 800.0, 20.0, 100.0, 100.0, 5.0]
+        report_r: [0.001, 0.001, 0.5]
         # 平移推力上限 m*2 m/s²；偏航力矩上限 Iz*4 rad/s²。
         mass: 28.0
         inertia_z: 0.58
         friction_coeff: 0.6
         max_force: 56.0
         max_torque: 2.32
-        # 位置/速度权重按参考速度切向分解为沿轨迹与横向。
-        q_pos_along: 5.0
-        q_pos_cross: 40.0
-        q_vel_along: 1.0
-        q_vel_cross: 2.0
-        q_yaw: 10.0
-        q_omega: 0.5
-        # 输入相对参考加速度（力前馈 m·a_ref）的偏差权重与相邻输入差分权重。
-        r_acc: 0.05
-        r_jerk: 0.002
-        r_alpha: 0.02
-        r_dalpha: 0.001
-        # 坡道扰动 d 进入模型 v'=F/m+d，优化驱动力包含抵消扰动的分量。
-        slope_gravity: false
-        # body 相对底盘的固定安装横滚（rad）。仿真 body 水平取 0；实车需按安装标定，
-        # 不要直接沿用 lidar_roll_offset（错的值会在平地产生恒定横向扰动）。
-        gravity_body_roll_offset: 0.0
-        # 基于已下发驱动加速度和速度测量的扰动观测器，默认关闭。
-        disturbance_observer: false
-        observer_bandwidth: 4.0
-        observer_max_estimate: 1.0
-        # 轮速融合（报告 5.5.5.4.1）：订阅底盘系速度 [vx, vy, wz]（TwistStamped），从 LIO 时间戳
-        # 积分到当前时刻替代该段的固定延迟外推；数据缺失、中断或陈旧时退回 LIO。
-        # 实车由 ros2_libxr 发布（MC02 chassis_feedback，需烧录含 0x32B 轮速帧的固件）；
-        # 启用前用 scripts/check_chassis_velocity_frame.py 核对轴向与 wz 符号。
-        # 仿真用 SIM_WHEEL_ODOM=1 ./start_sim.sh。
-        wheel_odometry: false
-        wheel_odometry_topic: /sentry/chassis_velocity
-        wheel_odometry_max_gap: 0.05
-        wheel_odometry_timeout: 0.05
       # 激光雷达外参参数，用于将传感器坐标系与机器人基坐标系对齐。
       lidar_offset_x: 0.0
       lidar_offset_y: -0.20
