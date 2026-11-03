@@ -1,5 +1,9 @@
 # MPC chassis drive wrench
 
+> Historical design: the active controller has been restored to the qpOASES
+> velocity-input MPC. This document describes the former force-control path
+> and its corresponding firmware, not the current ROS navigation output.
+
 The actuation path is MINCO `/opt_path` -> force-input MPC -> `/chassis_cmd_mpc`
 -> ros2_libxr world-to-chassis rotation -> USB `nav_data` -> HostDataLink
 `chassis_ff` -> DualBoard CAN 0x32C -> Omni wheel force allocation -> motor torque

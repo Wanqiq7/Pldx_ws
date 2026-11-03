@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from gz.msgs10.contact_pb2 import Contact
-from geometry_msgs.msg import Twist, Wrench
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from ros_interfaces.msg import MpcPositionCommand, PositionCommand
 from sentry_simulation.cmd_vel_adapter import SentrySimCmdAdapter
@@ -21,7 +21,7 @@ from check_sim_tunnel_navigation import assess
 
 class TunnelAcceptanceTest(unittest.TestCase):
     def test_folded_adapter_rotates_reference_and_preserves_lateral_correction(self):
-        commands, forces = [], []
+        commands = []
         rotation = SimpleNamespace(x=0, y=0, z=math.sin(-math.pi / 8), w=math.cos(-math.pi / 8))
         node = SimpleNamespace(
             _passage_reference=None, _input_frame="camera_init",
@@ -29,7 +29,7 @@ class TunnelAcceptanceTest(unittest.TestCase):
                 transform=SimpleNamespace(rotation=rotation))),
             _body_yaw=lambda: 0.0, _gimbal_ready=lambda: True, _gimbal_topic="/status",
             _gimbal_state={"target": "folded", "front_yaw_in_chassis": -math.pi / 4},
-            _publish_command=commands.append, _force_publisher=SimpleNamespace(publish=forces.append),
+            _publish_command=commands.append, _passage_fresh=lambda: False,
             _now_seconds=lambda: 1.0,
         )
         reference = MpcPositionCommand(command_flag=MpcPositionCommand.NORMAL_COMMAND)
@@ -41,13 +41,13 @@ class TunnelAcceptanceTest(unittest.TestCase):
         self.assertAlmostEqual(node._reference_heading(), -math.pi / 4)
         twist = Twist()
         twist.linear.x, twist.linear.y = 0.08, -0.05
-        SentrySimCmdAdapter._forward(node, twist, Wrench())
+        SentrySimCmdAdapter._command_callback(node, twist)
         self.assertAlmostEqual(commands[-1].linear.x, 0.08)
         self.assertAlmostEqual(commands[-1].linear.y, -0.05)
         self.assertAlmostEqual(commands[-1].angular.z, 0.0)
         reference.command_flag = MpcPositionCommand.BLOCK_COMMAND
         SentrySimCmdAdapter._reference_callback(node, reference)
-        SentrySimCmdAdapter._forward(node, twist, Wrench())
+        SentrySimCmdAdapter._command_callback(node, twist)
         self.assertEqual(commands[-1], Twist())
 
     def test_restore_requires_stationary_platform_and_all_wheels_supported(self):

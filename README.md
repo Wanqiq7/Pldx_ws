@@ -10,7 +10,7 @@
 [![RoboMaster](https://img.shields.io/badge/RoboMaster-2026-CB2E2E?style=for-the-badge)](https://www.robomaster.com/)
 [![C++17](https://img.shields.io/badge/C++-17-00599C?style=for-the-badge&logo=cplusplus)](https://isocpp.org/)
 [![MINCO](https://img.shields.io/badge/Planner-MINCO-E67E22?style=for-the-badge)](src/navigation/minco_planner)
-[![MPC](https://img.shields.io/badge/Controller-Force_MPC-8E44AD?style=for-the-badge)](src/navigation/minco_controller)
+[![MPC](https://img.shields.io/badge/Controller-Velocity_MPC-8E44AD?style=for-the-badge)](src/navigation/minco_controller)
 
 </div>
 
@@ -19,12 +19,12 @@
 本项目面向 RoboMaster 复杂地形、动态对抗和高速全向运动场景，在 ROS 2 Jazzy 上构建从激光雷达输入到比赛决策的完整自主导航闭环：
 
 ```text
-双 Livox MID-360 → Point-LIO → GICP 重定位 → ROGMap → 全局搜索 / MINCO → 力控 MPC → 底盘
+双 Livox MID-360 → Point-LIO → GICP 重定位 → ROGMap → 全局搜索 / MINCO → 速度 MPC → 底盘
                                           ↑                              ↑
                                    Nav2 + 先验地图                 行为树 + 裁判系统
 ```
 
-系统以 Point-LIO 高频里程计和稠密去畸变点云为感知基础，通过 GICP 完成 `map → camera_init` 重定位，由 ROGMap 维护滑动三维概率占据地图、地形语义投影和 Signed ESDF。规划端提供 `PRIORMAP` 与 `EXPLORATION` 双模式，将离散路径连续化为满足运动约束的 MINCO 轨迹；控制端使用力控（动力学）MPC 跟踪轨迹。比赛策略由 BehaviorTree.CPP 管理，通信节点连接裁判系统和底盘。
+系统以 Point-LIO 高频里程计和稠密去畸变点云为感知基础，通过 GICP 完成 `map → camera_init` 重定位，由 ROGMap 维护滑动三维概率占据地图、地形语义投影和 Signed ESDF。规划端提供 `PRIORMAP` 与 `EXPLORATION` 双模式，将离散路径连续化为满足运动约束的 MINCO 轨迹；控制端使用速度（运动学）MPC 跟踪轨迹。比赛策略由 BehaviorTree.CPP 管理，通信节点连接裁判系统和底盘。
 
 
 | 项目     | 当前配置                                      |
@@ -36,7 +36,7 @@
 | 底盘     | 全向底盘；控制器输出世界坐标系速度            |
 | ROGMap   | `0.05 m` 分辨率，`10 × 10 × 1.5 m` 滑动窗口 |
 | 规划     | `PRIORMAP`，20 Hz MINCO 优化                  |
-| 控制     | 100 Hz Nav2 controller server，力控 MPC 时域 0.8 s（N = 40） |
+| 控制     | 100 Hz Nav2 controller server，速度 MPC 时域 0.5 s（N = 10） |
 
 ## 📑 目录
 
@@ -60,9 +60,9 @@
 - **GICP 重定位**：离线加载地图 PCD，在线累积点云后做粗/精两阶段 GICP，确认后持续发布 `map → camera_init` TF。
 - **ROGMap + Signed ESDF**：滑动三维概率占据、动态遗忘、地形语义投影，以及障碍外正距离 / 障碍内负距离的连续梯度场。
 - **MINCO 双模式规划**：`PRIORMAP` 利用 Nav2 先验地图全局引导；`EXPLORATION` 直接在 ROGMap 有效边界内搜索。
-- **力控 MPC**：状态 `[x, y, yaw, vx, vy, omega]`，输入 `[Fx, Fy, Mz]`，由 acados 求解并输出首步世界系驱动力（`/chassis_cmd_mpc`）。
+- **速度 MPC**：状态 `[x, y, yaw]`，输入 `[vx, vy, omega]`，由 qpOASES 求解并输出世界系速度（`/cmd_vel_mpc`）。
 - **比赛行为树**：BehaviorTree.CPP XML 定义战术、导航、姿态、资源、云台和恢复策略。
-- **裁判 / 底盘通信**：`ros2_libxr` 经 USB CDC 直连 MC02 下位机，转发 `/chassis_cmd_mpc` 与 `/sentry/behaivor_send`，并发布 `/sentry/*` 裁判与状态话题；不再依赖外部视觉工程的 ROS 启动链路。
+- **裁判 / 底盘通信**：`ros2_libxr` 经 USB CDC 直连 MC02 下位机，转发 `/cmd_vel_mpc` 与 `/sentry/behaivor_send`，并发布 `/sentry/*` 裁判与状态话题；不再依赖外部视觉工程的 ROS 启动链路。
 
 ## 🧩 功能模块
 
@@ -74,7 +74,7 @@
 | `icp_relocalization`               | 地图 PCD 与在线点云 GICP 重定位          | small_gicp、多初值、一致性确认                  |
 | `rog_map`                          | 三维概率占据、地形投影、Signed ESDF      | dirty-column、进程内`MapQueryInterface`         |
 | `minco_planner`                    | Nav2 全局规划插件：搜索 + MINCO 轨迹优化 | A\*/SMAC、MINCO、FSM、ESDF 恢复                 |
-| `minco_controller`                 | Nav2 控制器插件：力控 MPC 跟踪           | qpOASES、延迟/杆臂补偿、力前馈                  |
+| `minco_controller`                 | Nav2 控制器插件：速度 MPC 跟踪           | qpOASES、延迟/杆臂补偿、加速度约束                  |
 | `navi2`                            | Nav2 bringup、先验地图、参数与 RViz      | Navigation2、STVL                               |
 | `bt_manager`                       | 比赛决策中枢                             | BehaviorTree.CPP v4、共享 blackboard            |
 | `ros2_libxr`                       | MC02 USB CDC 通信桥                      | SharedTopic、150 ms 零速保活                    |
@@ -224,7 +224,9 @@ ros2 launch ros2_libxr ros2_libxr_launch.py   # 连接底盘时
 ros2 launch bt_manager bt_manager.launch.py
 ```
 
-MPC 控制器输出 `/chassis_cmd_mpc`，由 `ros2_libxr` 经 USB CDC 转发到底盘；指令中断 150 ms 后桥接节点发送零力保活。
+MPC 控制器输出世界系速度 `/cmd_vel_mpc`，`ros2_libxr` 使用新鲜里程计旋转到车体系，经 USB CDC 以 45 字节速度协议转发。速度或航向失效时桥接节点撤销 AI 底盘命令。MC02 云台和底盘板须更新到配套固件；旧版 12 字节力协议固件不兼容，使用前还需核对坐标约定和安装偏角。
+
+当前保留 0.1 rad 到点航向容差。在 RMUC 2025 仿真测试中，车辆到达目标附近后仍可能因规划器轨迹航向与目标航向不一致而使导航动作失败；详见 [控制器说明](src/navigation/minco_controller/README.md)。
 
 ### 一键实车启动
 
@@ -288,7 +290,7 @@ ros2 launch sentry_simulation simulation.launch.py
 | 话题                        | 类型                                    | 方向 | 说明                          |
 | --------------------------- | --------------------------------------- | ---- | ----------------------------- |
 | `/opt_path`                 | `ros_interfaces/msg/MpcPositionCommand` | 发布 | MINCO 优化轨迹（P/V/A/J/Yaw） |
-| `/chassis_cmd_mpc`          | `ros_interfaces/msg/ChassisCommand`     | 发布 | MPC 世界系驱动力 Fx/Fy/Mz         |
+| `/cmd_vel_mpc`              | `geometry_msgs/msg/Twist`                | 发布 | MPC 世界系速度 vx/vy/omega |
 | `/opt_path_vis`             | `nav_msgs/msg/Path`                     | 发布 | 优化轨迹可视化                |
 | `/astar_path_vis`           | `nav_msgs/msg/Path`                     | 发布 | 搜索路径可视化                |
 | `/minco_control_points_vis` | `visualization_msgs/msg/Marker`         | 发布 | MINCO 控制点                  |
@@ -337,7 +339,7 @@ ros2 launch sentry_simulation simulation.launch.py
 ros2 topic hz /aft_mapped_to_init
 ros2 topic hz /cloud_registered_full
 ros2 topic hz /opt_path
-ros2 topic hz /chassis_cmd_mpc
+ros2 topic hz /cmd_vel_mpc
 ```
 
 ## ⚙️ 配置文件
@@ -491,7 +493,7 @@ flowchart LR
     GS[先验地图 / ROGMap 搜索]
     MO[MINCO 连续轨迹优化]
     FSM[FSM + 安全检查 + 恢复]
-    MPC[力控 MPC]
+    MPC[速度 MPC]
     N2 --> GS
     DF --> GS
     GS --> MO --> FSM --> MPC
@@ -503,7 +505,7 @@ flowchart LR
     BT[BehaviorTree.CPP]
     MCU[底盘 MCU]
     BT --> N2
-    MPC -->|/chassis_cmd_mpc| MCU
+    MPC -->|/cmd_vel_mpc| MCU
   end
 
   PL -->|/aft_mapped_to_init| N2
@@ -521,7 +523,7 @@ flowchart LR
 | GICP                | TF`map → camera_init`    | Nav2 / 规划                           | 先验地图对齐          |
 | ROGMap              | 进程内`MapQueryInterface` | MincoPlanner                          | 占据、投影、ESDF 查询 |
 | MincoPlanner        | `/opt_path`               | MincoMpcController                    | 优化轨迹前馈          |
-| MincoMpcController  | `/chassis_cmd_mpc`            | 底盘 / 后端控制链路                   | 世界系驱动力          |
+| MincoMpcController  | `/cmd_vel_mpc`            | 底盘 / 后端控制链路                   | 世界系速度            |
 | bt_manager          | Nav2 action / blackboard  | Nav2、通信                            | 比赛策略              |
 
 ## 🏗 软件架构
@@ -595,7 +597,7 @@ navi_minco_bit_jazzy/
 │   │   └── bt_manager/                 # 行为树、比赛策略、blackboard
 │   ├── navigation/
 │   │   ├── fake_vel_transform/         # 底盘 / 假车头 / 云台 TF
-│   │   ├── minco_controller/           # Nav2 force-control MPC controller plugin
+│   │   ├── minco_controller/           # Nav2 velocity MPC controller plugin
 │   │   ├── minco_planner/              # 搜索、MINCO、FSM、安全恢复
 │   │   ├── navi2_bringup/              # 包名 navi2：Nav2 launch、地图、参数、RViz
 │   │   └── ros2_libxr/                 # MC02 USB CDC 通信桥

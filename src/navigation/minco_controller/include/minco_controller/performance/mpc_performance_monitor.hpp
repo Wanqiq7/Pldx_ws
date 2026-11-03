@@ -35,15 +35,12 @@ struct MpcPerfSample
   double solve_time_ms{std::numeric_limits<double>::quiet_NaN()};
   double cycle_time_ms{std::numeric_limits<double>::quiet_NaN()};
   double controller_hz{std::numeric_limits<double>::quiet_NaN()};
-  double cmd_fx{0.0};
-  double cmd_fy{0.0};
-  double cmd_mz{0.0};
+  double cmd_vx{0.0};
+  double cmd_vy{0.0};
+  double cmd_wz{0.0};
   double ref_vx{std::numeric_limits<double>::quiet_NaN()};
   double ref_vy{std::numeric_limits<double>::quiet_NaN()};
   double ref_wz{std::numeric_limits<double>::quiet_NaN()};
-  // Translational disturbance used by the dynamic model (map frame, m/s²).
-  double dist_x{std::numeric_limits<double>::quiet_NaN()};
-  double dist_y{std::numeric_limits<double>::quiet_NaN()};
 };
 
 struct OdomSubWindowStats

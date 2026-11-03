@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,12 +20,11 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "tf2_ros/buffer.h"
 
-#include "ros_interfaces/msg/chassis_command.hpp"
 #include "ros_interfaces/msg/mpc_position_command.hpp"
 
 #include "log.hpp"
+#include "minco_controller/mpc_solver.hpp"
 #include "minco_controller/performance/mpc_performance_monitor.hpp"
-#include "minco_controller/report_mpc_solver.hpp"
 
 namespace minco_controller {
 
@@ -51,6 +49,8 @@ public:
     const geometry_msgs::msg::Twist & velocity,
     nav2_core::GoalChecker * goal_checker) override;
 
+  void applyGravityCompensation(const nav_msgs::msg::Odometry::SharedPtr & odom, double & vx, double & vy);
+
   void setPlan(const nav_msgs::msg::Path & path) override;
 
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
@@ -60,6 +60,9 @@ public:
 private:
   friend class MincoMpcControllerTestPeer;
   bool inputsFreshLocked() const;
+  bool goalInPoseFrame(const geometry_msgs::msg::PoseStamped & goal,
+    const std::string & pose_frame,
+    geometry_msgs::msg::PoseStamped & out) const;
   // === Callbacks ===
   void onOptPath(const ros_interfaces::msg::MpcPositionCommand::SharedPtr msg);
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
@@ -67,30 +70,10 @@ private:
 
   // === Utility & Helper Functions ===
   void configureMpcPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
-  void configureDynamicModel(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
 
   // --- Reference and Path Processing ---
-  // Transformed /opt_path samples and the trajectory time projected from the current position.
-  struct ReferenceTrajectory
-  {
-    std::vector<ros_interfaces::msg::PositionCommand> cmds;
-    double planner_dt{0.05};
-    double start_time{0.0};
-  };
-  bool prepareReference(const State & curr, ReferenceTrajectory & out) const;
-  ReferencePoint sampleReference(const ReferenceTrajectory & traj, double time) const;
-  static void unwrapReferenceYaw(double curr_yaw, std::vector<ReferencePoint> & ref);
-
-  // Force-control MPC: fills the drive wrench and prediction, or returns a failure reason.
-  const char * solveDynamic(const State & measured,
-    Eigen::Vector3d & out_wrench,
-    std::vector<State> & pred_states,
-    std::optional<MpcPerfSample> & perf);
-
-  // Plan end pose in the robot pose frame for the goal check; false if TF is unavailable.
-  bool goalInPoseFrame(const geometry_msgs::msg::PoseStamped & goal,
-    const std::string & pose_frame,
-    geometry_msgs::msg::PoseStamped & out) const;
+  // Find the nearest point on cached trajectory and build horizon reference sequence.
+  bool buildReferenceFromOptPath(const State & curr, std::vector<ReferencePoint> & out_ref) const;
 
   bool transformPathToOdom(const ros_interfaces::msg::MpcPositionCommand::SharedPtr & opt,
     std::vector<ros_interfaces::msg::PositionCommand> & out_cmds) const;
@@ -134,11 +117,12 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_predict_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_real_path_pub_;
-  // Planned drive wrench in the controller global frame.
-  rclcpp::Publisher<ros_interfaces::msg::ChassisCommand>::SharedPtr chassis_cmd_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_mpc_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr execution_pub_;
   bool execution_enabled_{false};
+  bool planning_failed_{false};
   uint64_t reference_version_{0};
+  Eigen::Vector3d applied_control_{Eigen::Vector3d::Zero()};
   std::chrono::steady_clock::time_point reference_received_at_;
   std::chrono::steady_clock::time_point odom_received_at_;
   double reference_timeout_sec_{2.0};
@@ -167,8 +151,6 @@ private:
   mutable std::mutex data_mtx_;
   ros_interfaces::msg::MpcPositionCommand::SharedPtr latest_opt_path_;
   nav_msgs::msg::Odometry::SharedPtr latest_odom_;
-  // Set by a PLANNING_FAILED_COMMAND of the current execution; fails FollowPath.
-  bool planning_failed_{false};
 
   // --- Reference Tracking State ---
   // Track reference index over time when trajectory is not updated to avoid jumping back to start.
@@ -182,27 +164,35 @@ private:
   mutable std::mutex plan_mtx_;
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
-  // Force-control MPC. The top-level vx/vy/omega bounds are read into dynamic_config_.
-  DynamicMpcConfig dynamic_config_;
-  ReportMpcConfig report_config_;
-  std::unique_ptr<ReportMpcSolver> report_solver_;
+  MPCConfig mpc_config_;
+  std::unique_ptr<MpcSolver> solver_;
 
   // === Configurations & Parameters ===
-  // Dynamic speed limit from Nav2 setSpeedLimit(), guarded by data_mtx_.
+  // Dynamic speed limit from Nav2 setSpeedLimit().
   double speed_limit_{0.0};
   bool speed_limit_percentage_{false};
 
   // Other controller parameters.
-  // Sample period of /opt_path (MincoPlanner publishes at 20 Hz).
-  static constexpr double kPlannerDt = 0.05;
+  double fixed_wz_{0.0};
+  double deadzone_speed_threshold_{0.02};
   double control_delay_compensation_{0.25};
   double lidar_offset_x_{0.0};
   double lidar_offset_y_{0.0};
+  double lidar_roll_offset_ = 0.0;
+  bool use_small_gyro_mode_{true};
   MpcPerformanceMonitor mpc_perf_monitor_;
   long long last_mpc_perf_stamp_ns_{0};
 
-  Eigen::Vector3d pending_wrench_{0.0, 0.0, 0.0};
+  // Low-pass filter for MPC output to prevent stick-slip oscillation on slopes.
+  mutable Eigen::Vector3d prev_u_global_{0.0, 0.0, 0.0};
+  double vel_smooth_alpha_{0.3};
 
+  // P0: Integral action for unmodeled disturbances (gravity on slopes, slip).
+  // Leaky integrators of along-track and cross-track position errors.
+  mutable Eigen::Vector2d integral_err_{0.0, 0.0};
+  double k_i_along_{1.5};  // integral gain: along-track (boost on slopes)
+  double k_i_cross_{3.0};  // integral gain: cross-track (precision on curves)
+  double integral_decay_{0.98};
 };
 
 }  // namespace minco_controller

@@ -4,9 +4,8 @@
 #   ./start_sim.sh robot_model:=real
 #   ./start_sim.sh world:=rmuc_2024 headless:=true rviz:=false
 # It writes a model-specific copy of sentry1.yaml under log/sim_params. The omni
-# model uses its simulation limits; real uses the shared force/torque limits and
-# its CAD mass/inertia from the launch profile. An explicit params_file:= takes
-# precedence for the force/torque limits.
+# model uses the same MPC velocity limits; the real model gets its CAD geometry
+# from the launch profile. An explicit params_file:= takes precedence.
 # Foxglove Bridge listens on port 8765 and stops when this script exits.
 set -eo pipefail
 
@@ -56,20 +55,7 @@ if [[ "$has_params" == false ]]; then
         sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
     fi
     mkdir -p "$(dirname "${sim_params}")"
-    if [[ "${robot_model}" == real ]]; then
-        # The launch applies the real model's CAD mass and inertia; keep the
-        # navigation force and torque limits from the shared baseline.
-        cp "${base_params}" "${sim_params}"
-    else
-        # Physical mass and force limits for the simulated omni chassis.
-        sed -E -e "s/^(        mass:) [0-9.]+\$/\1 38.15/" \
-            -e "s/^(        max_force:) [0-9.]+\$/\1 100.0/" \
-            -e "s/^(        max_torque:) [0-9.]+\$/\1 100.0/" "${base_params}" > "${sim_params}"
-        if ! grep -qE "^        mass: 38.15\$" "${sim_params}"; then
-            echo "FollowPath.dynamic.mass not found in ${base_params}" >&2
-            exit 1
-        fi
-    fi
+    cp "${base_params}" "${sim_params}"
     set -- "$@" "params_file:=${sim_params}"
 fi
 

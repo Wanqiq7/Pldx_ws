@@ -3,7 +3,7 @@
 <package format="3">
   <name>minco_controller</name>
   <version>0.0.1</version>
-  <description>Nav2 controller plugin using an acados force-input MPC</description>
+  <description>Nav2 Controller plugin: Minco MPC controller based on qpOASES</description>
   <maintainer email="you@example.com">TODO</maintainer>
   <license>Apache-2.0</license>
 

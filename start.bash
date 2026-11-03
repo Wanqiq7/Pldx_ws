@@ -141,7 +141,7 @@ ROSBAG_TOPICS=(
   /astar_path_vis
   /recover_goal
   /mpc_predict_path
-  /chassis_cmd_mpc
+  /cmd_vel_mpc
   /sentry/behaivor_send
   /sentry/area_markers
   /cloud_registered_full

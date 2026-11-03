@@ -87,31 +87,39 @@ controller_server:
       # 独立失效保护（秒）：同时检查消息时间戳与稳态接收时间。
       reference_timeout_sec: 2.0
       odom_timeout_sec: 0.3
-      # odom 时间戳到命令生效的时延，期间按上一次下发的加速度外推。
+      # MPC 采样周期和前视时间，决定模型预测控制的时间分辨率。
+      dt: 0.05
+      lookahead_time: 0.5
+      # 是否启用小陀螺模式；该模式会压低旋转带宽并适合特定机器人。
+      use_small_gyro_mode: false
+      # 当速度低于该阈值时，认为车辆处于死区，减少抖动信号。
+      deadzone_speed_threshold: 0.1
+      # 轨迹控制延迟补偿，避免执行时滞导致跟踪偏差。
       control_delay_compensation: 0.05
 
-      # 速度上下限（map 系），作为力控 MPC 的速度状态约束。
+      # 代价权重 Q 和 R：Q 表示状态误差权重，R 表示控制量误差权重。
+      # Q 越大表示对状态误差敏感，R 越大表示对控制量变化敏感。
+      Q: [3.0, 3.0, 2.0]
+      R: [1.5, 1.5, 1.0]
+
+      # 速度上下限约束，仅对各轴速度进行限制。
       vx_min: -3.0
       vx_max: 3.0
       vy_min: -3.0
       vy_max: 3.0
+      fixed_wz: 4.18 # rad/s，开启 use_small_gyro_mode 时使用的固定角速度
       omega_min: -5.0
       omega_max: 5.0
 
-      # 力控 MPC：状态 [p, yaw, v, omega]，只下发首步优化驱动力 Fx/Fy/Mz。
-      # 合力上限 min(mu·m·g, max_force)；质量/惯量与 MC02 配置对应，仍需实测标定。
-      dynamic:
-        dt: 0.02
-        lookahead_time: 0.8
-        # 报告模型权重；实车参数需结合电机、轮胎和场地重新标定。
-        report_q: [800.0, 800.0, 20.0, 100.0, 100.0, 5.0]
-        report_r: [0.001, 0.001, 0.5]
-        # 平移推力上限 m*2 m/s²；偏航力矩上限 Iz*4 rad/s²。
-        mass: 28.0
-        inertia_z: 0.58
-        friction_coeff: 0.6
-        max_force: 56.0
-        max_torque: 2.32
+      # 可选加速度约束，进一步限制平移和转向加速度。
+      use_acc_constraints: true
+      ax_min: -2.0
+      ax_max: 2.0
+      ay_min: -2.0
+      ay_max: 2.0
+      alpha_min: -5.0
+      alpha_max: 5.0
+
       # 激光雷达外参参数，用于将传感器坐标系与机器人基坐标系对齐。
       lidar_offset_x: 0.0
       lidar_offset_y: -0.20
