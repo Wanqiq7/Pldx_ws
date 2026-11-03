@@ -224,7 +224,7 @@ ros2 launch ros2_libxr ros2_libxr_launch.py   # 连接底盘时
 ros2 launch bt_manager bt_manager.launch.py
 ```
 
-MPC 控制器输出世界系速度 `/cmd_vel_mpc`，`ros2_libxr` 使用新鲜里程计旋转到车体系，经 USB CDC 以 45 字节速度协议转发。速度或航向失效时桥接节点撤销 AI 底盘命令。MC02 云台和底盘板须更新到配套固件；旧版 12 字节力协议固件不兼容，使用前还需核对坐标约定和安装偏角。
+MPC 控制器输出世界系速度 `/cmd_vel_mpc`，`ros2_libxr` 使用新鲜里程计旋转到车体系，经 USB CDC 以 13 字节速度协议转发。速度或航向失效时桥接节点撤销 AI 底盘命令。MC02 云台和底盘板须更新到配套固件，使用前还需核对坐标约定和安装偏角。
 
 当前保留 0.1 rad 到点航向容差。在 RMUC 2025 仿真测试中，车辆到达目标附近后仍可能因规划器轨迹航向与目标航向不一致而使导航动作失败；详见 [控制器说明](src/navigation/minco_controller/README.md)。
 
