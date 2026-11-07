@@ -33,6 +33,14 @@ fi
 source "${NAV_INSTALL_DIR}/setup.bash"
 
 cd "${WORKSPACE_DIR}"
+for required_package in navi2 sentry_simulation; do
+    if ! ros2 pkg prefix "${required_package}" >/dev/null 2>&1; then
+        echo "Required ROS package '${required_package}' is missing from ${NAV_INSTALL_DIR}." >&2
+        echo "Build the workspace with ./build.bash, then source ${NAV_INSTALL_DIR}/setup.bash." >&2
+        exit 1
+    fi
+done
+
 has_world=false
 has_params=false
 robot_model=omni

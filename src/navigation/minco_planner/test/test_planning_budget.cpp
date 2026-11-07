@@ -136,11 +136,6 @@ public:
            MincoPlanner::PlanningState::COLD_START;
   }
   static void markUnsafe(MincoPlanner & p) { p.is_traj_safe_.store(false); }
-  static void markSpliced(MincoPlanner & p, double start, double handoff)
-  {
-    p.candidate_->prefix_start_time = start;
-    p.candidate_->handoff_time = handoff;
-  }
   static auto poll(MincoPlanner & p) { return p.pollPlanResult(); }
   static double trajectoryStart(const MincoPlanner & p) { return p.last_traj_.start_WT; }
 
@@ -288,6 +283,27 @@ public:
     }
     return p.candidate_->position;
   }
+
+  static traj_opt::Trajectory optimizeYawFromCachedState(MincoPlanner & p,
+    const nav2_util::LifecycleNode::SharedPtr & node,
+    const traj_opt::Trajectory & position,
+    const traj_opt::Trajectory & previous_yaw)
+  {
+    p.node_ = node;
+    p.yaw_opt_ = std::make_unique<traj_opt::YawTrajOpt>(3.14);
+    p.last_traj_ = position;
+    p.last_traj_.start_WT = 10.0;
+    p.last_yaw_traj_ = previous_yaw;
+    p.last_yaw_traj_.start_WT = 10.0;
+    p.has_last_traj_ = p.has_last_yaw_traj_ = true;
+    Eigen::Matrix3d start_state = Eigen::Matrix3d::Zero();
+    traj_opt::Trajectory yaw;
+    geometry_msgs::msg::Pose current_pose;
+    EXPECT_TRUE(p.optimizeYaw(
+      start_state, position, yaw, MincoPlanner::PlanningState::HOT_START, current_pose, 0.0));
+    return yaw;
+  }
+
 };
 
 namespace {
@@ -562,24 +578,6 @@ TEST_F(PlanningBudgetTest, SafeTrajectoryReplansEverySecond)
   EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(false));
 }
 
-TEST_F(PlanningBudgetTest, RejectsSplicedCandidateAfterHandoffOrSafetyRevocation)
-{
-  setTime(1.0);
-  MincoPlanner p;
-  MincoPlannerTestPeer::initialize(p, node, false);
-  MincoPlannerTestPeer::followTrajectory(p);
-  MincoPlannerTestPeer::readyCandidate(p, false, 5.0);
-  MincoPlannerTestPeer::markSpliced(p, 0.8, 1.5);
-  setTime(1.5);
-  EXPECT_EQ(MincoPlannerTestPeer::poll(p), MincoPlanner::PlanOutcome::KEPT_PREVIOUS);
-  EXPECT_DOUBLE_EQ(MincoPlannerTestPeer::trajectoryStart(p), 1.0);
-
-  MincoPlannerTestPeer::readyCandidate(p, false, 5.0);
-  MincoPlannerTestPeer::markSpliced(p, 0.8, 2.0);
-  MincoPlannerTestPeer::markUnsafe(p);
-  EXPECT_EQ(MincoPlannerTestPeer::poll(p), MincoPlanner::PlanOutcome::INFEASIBLE);
-}
-
 TEST_F(PlanningBudgetTest, ComplexGlobalSearchProducesExecutableReference)
 {
   setTime(10.0);
@@ -661,7 +659,7 @@ TEST_F(PlanningBudgetTest, FinalGoalUsesZeroTerminalVelocity)
   EXPECT_LT(trajectory.getVel(duration).norm(), 1e-6);
 }
 
-TEST_F(PlanningBudgetTest, HotStartPreservesPositionVelocityAndAccelerationAtHandoff)
+TEST_F(PlanningBudgetTest, HotStartReplansFromCurrentPoseWithOldDynamics)
 {
   setTime(10.0);
   nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
@@ -677,19 +675,37 @@ TEST_F(PlanningBudgetTest, HotStartPreservesPositionVelocityAndAccelerationAtHan
   const auto trajectory =
     MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, x);
   ASSERT_FALSE(trajectory.empty());
-  ASSERT_GE(trajectory.getPieceNum(), 2);
-  const double handoff = trajectory.getDurations()(0);
-  const double old_time = 2.0 + 0.5 + 0.1;
-  EXPECT_NEAR(trajectory.getPos(handoff).x(), 1.0 + 0.5 * old_time + 0.25 * old_time * old_time, 1e-6);
-  EXPECT_NEAR(trajectory.getVel(handoff).x(), 0.5 + 0.5 * old_time, 1e-6);
-  EXPECT_NEAR(trajectory.getAcc(handoff).x(), 0.5, 1e-6);
-  constexpr double epsilon = 1e-6;
-  EXPECT_LT((trajectory.getPos(handoff + epsilon) - trajectory.getPos(handoff - epsilon)).norm(), 1e-4);
-  EXPECT_LT((trajectory.getVel(handoff + epsilon) - trajectory.getVel(handoff - epsilon)).norm(), 1e-4);
-  EXPECT_LT((trajectory.getAcc(handoff + epsilon) - trajectory.getAcc(handoff - epsilon)).norm(), 1e-4);
+  const double old_time = 2.0 + 0.005;
+  EXPECT_NEAR(trajectory.getPos(0.0).x(), x, 1e-6);
+  EXPECT_NEAR(trajectory.getVel(0.0).x(), 0.5 + 0.5 * old_time, 1e-6);
+  EXPECT_NEAR(trajectory.getAcc(0.0).x(), 0.5, 1e-6);
 }
 
-TEST_F(PlanningBudgetTest, HotStartDoesNotReturnToWaypointsBehindTheHandoff)
+TEST_F(PlanningBudgetTest, HotStartYawTrajectoryInheritsOldYawPositionRateAndAcceleration)
+{
+  setTime(12.0);
+  MincoPlanner p;
+  Eigen::MatrixXd position_coefficients = Eigen::MatrixXd::Zero(3, 6);
+  position_coefficients(0, 4) = 1.0;
+  traj_opt::Trajectory position;
+  position.emplace_back(3.0, position_coefficients);
+
+  Eigen::MatrixXd yaw_coefficients = Eigen::MatrixXd::Zero(3, 6);
+  yaw_coefficients(0, 5) = 0.4;
+  yaw_coefficients(0, 4) = 0.2;
+  yaw_coefficients(0, 3) = 0.05;
+  traj_opt::Trajectory previous_yaw;
+  previous_yaw.emplace_back(8.0, yaw_coefficients);
+
+  const auto yaw = MincoPlannerTestPeer::optimizeYawFromCachedState(p, node, position, previous_yaw);
+  ASSERT_FALSE(yaw.empty());
+  constexpr double sample_time = 2.0;
+  EXPECT_NEAR(yaw.getPos(0.0)(0), previous_yaw.getPos(sample_time)(0), 1e-8);
+  EXPECT_NEAR(yaw.getVel(0.0)(0), previous_yaw.getVel(sample_time)(0), 1e-8);
+  EXPECT_NEAR(yaw.getAcc(0.0)(0), previous_yaw.getAcc(sample_time)(0), 1e-8);
+}
+
+TEST_F(PlanningBudgetTest, HotStartRegeneratesRemainingRouteFromCurrentPose)
 {
   setTime(10.0);
   nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
@@ -700,27 +716,26 @@ TEST_F(PlanningBudgetTest, HotStartDoesNotReturnToWaypointsBehindTheHandoff)
     std::optional(MincoPlanner::PlanOutcome::COMMITTED));
   setTime(12.0);
 
-  // The robot trails its time-indexed reference; the 0.6 s planning handoff
-  // moves the optimization start past several waypoints in the original seed.
+  // The robot trails its time-indexed reference but the new trajectory starts
+  // at its current pose and uses the remaining global-path seed.
   constexpr double progress = 1.75;
   const double robot_x = 1.0 + 0.5 * progress + 0.25 * progress * progress;
   const auto trajectory = MincoPlannerTestPeer::optimizeStraightSegment(
     p, std::make_shared<ClearanceQuery>(&costmap), 6.0, robot_x);
-  ASSERT_GE(trajectory.getPieceNum(), 2);
-  const double handoff = trajectory.getDurations()(0);
-  const double handoff_x = trajectory.getPos(handoff).x();
-  double furthest_x = handoff_x;
+  ASSERT_FALSE(trajectory.empty());
+  EXPECT_NEAR(trajectory.getPos(0.0).x(), robot_x, 1e-6);
+  double furthest_x = trajectory.getPos(0.0).x();
   double largest_backtrack = 0.0;
-  for (double t = handoff; t <= trajectory.getTotalDuration(); t += 0.025) {
+  for (double t = 0.0; t <= trajectory.getTotalDuration(); t += 0.025) {
     const double x = trajectory.getPos(t).x();
     furthest_x = std::max(furthest_x, x);
     largest_backtrack = std::max(largest_backtrack, furthest_x - x);
   }
-  EXPECT_LT(largest_backtrack, 0.1) << "trajectory turns back after the handoff at x=" << handoff_x;
+  EXPECT_LT(largest_backtrack, 0.1) << "trajectory turns back from x=" << robot_x;
   EXPECT_NEAR(trajectory.getPos(trajectory.getTotalDuration()).x(), 6.0, 1e-6);
 }
 
-TEST_F(PlanningBudgetTest, HotStartSplicesWhenPreviousTrajectoryHasShortRemainingTime)
+TEST_F(PlanningBudgetTest, HotStartNearPreviousEndStillStartsAtCurrentPose)
 {
   setTime(10.0);
   nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
@@ -733,11 +748,11 @@ TEST_F(PlanningBudgetTest, HotStartSplicesWhenPreviousTrajectoryHasShortRemainin
   const double x = 1.0 + 0.5 * 1.75 + 0.25 * 1.75 * 1.75;
   const auto trajectory =
     MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, x);
-  ASSERT_GE(trajectory.getPieceNum(), 2);
-  const double handoff = trajectory.getDurations()(0);
-  constexpr double old_time = 2.35;
-  EXPECT_NEAR(trajectory.getVel(handoff).x(), 0.5 + 0.5 * old_time, 1e-6);
-  EXPECT_NEAR(trajectory.getAcc(handoff).x(), 0.5, 1e-6);
+  ASSERT_FALSE(trajectory.empty());
+  constexpr double old_time = 2.0 + 0.005;
+  EXPECT_NEAR(trajectory.getPos(0.0).x(), x, 1e-6);
+  EXPECT_NEAR(trajectory.getVel(0.0).x(), 0.5 + 0.5 * old_time, 1e-6);
+  EXPECT_NEAR(trajectory.getAcc(0.0).x(), 0.5, 1e-6);
 }
 
 TEST_F(PlanningBudgetTest, DistantRobotDoesNotSpliceOldTrajectory)

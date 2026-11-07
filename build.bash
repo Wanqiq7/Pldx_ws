@@ -97,6 +97,9 @@ if [[ -n "${COLCON_SERIAL_PACKAGES:-}" ]]; then
 fi
 
 if [[ "$BUILD_PROFILE" == full ]]; then
+  if ((${#serial_packages[@]} == 0)); then
+    serial_packages=(ros2_libxr)
+  fi
   echo "[build] full profile: serial critical packages"
 else
   serial_packages=()
@@ -107,7 +110,7 @@ for pkg in "${serial_packages[@]}"; do
 		"${colcon_path_args[@]}" \
 		--symlink-install \
 		--parallel-workers 1 \
-		--packages-select "${pkg}" \
+		--packages-up-to "${pkg}" \
 		--cmake-args "${cmake_args[@]}" \
 		--event-handlers console_direct+ status+
 done

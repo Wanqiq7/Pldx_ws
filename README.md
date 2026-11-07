@@ -174,13 +174,13 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"
 source install-link/setup.bash
 ```
 
-`build.bash` 输出到 `build-link/` 与 `install-link/`（不是 `build/`、`install/`），并行数取 CPU 核数与 `MEM_LIMIT_GB / MEM_PER_WORKER_GB`（默认 14 / 1）中的较小值：
+`build.bash` 输出到 `build-link/` 与 `install-link/`（不是 `build/`、`install/`），并行数取 CPU 核数与 `MEM_LIMIT_GB / MEM_PER_WORKER_GB`（默认 14 / 1）中的较小值。`full` 模式默认先串行构建高内存的 `ros2_libxr`（并包含其依赖），再并行构建其余包：
 
 ```bash
 MEM_LIMIT_GB=24 MEM_PER_WORKER_GB=2 ./build.bash   # 调整内存预算
 COLCON_PACKAGES="minco_planner" ./build.bash      # 只构建指定包及其依赖
 BUILD_PROFILE=fast ./build.bash                   # 只构建 src/ 下有改动（含暂存、未跟踪）的包及其依赖
-COLCON_SERIAL_PACKAGES="<pkg> ..." ./build.bash   # 先逐个串行构建指定的高内存包（仅 full 模式，默认为空）
+COLCON_SERIAL_PACKAGES="<pkg> ..." ./build.bash   # 覆盖 full 模式的串行包列表
 ```
 
 当前工程不再依赖外部视觉工程的 ROS 接口、USB CDC 共享链路或启动顺序；行为树与 ROS 通信只依赖当前工作区内的消息定义和本地节点。
