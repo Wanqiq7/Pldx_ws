@@ -644,6 +644,22 @@ bool MincoMpcController::buildReferenceFromOptPath(
   const uint32_t current_traj_id = (!opt->cmds.empty()) ? opt->cmds.front().trajectory_id : 0u;
 
   double current_idx_float = nearest_idx_float;
+  // A position-only nearest point cannot advance a stationary yaw trajectory.
+  // Keep spatial tracking for translation; advance pure rotations by elapsed
+  // controller time, scoped to the same reference ID and freshness checks.
+  const auto & first = cmds.front().position;
+  const bool stationary = std::all_of(cmds.begin(), cmds.end(), [&](const auto & cmd) {
+    return std::hypot(cmd.position.x - first.x, cmd.position.y - first.y) < 1e-3;
+  });
+  if (opt->terminal_pose) {
+    current_idx_float = 0.0;
+  }
+  if ((stationary || opt->terminal_pose) && has_tracked_ref && tracked_opt_traj_id == current_traj_id) {
+    const double elapsed = (now - tracked_ref_time).seconds();
+    if (elapsed >= 0.0) {
+      current_idx_float = std::max(current_idx_float, tracked_ref_idx + elapsed / planner_dt);
+    }
+  }
   current_idx_float = std::min(current_idx_float, static_cast<double>(n_cmds - 1));
 
   {
@@ -789,6 +805,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   std::chrono::steady_clock::time_point odom_received;
   bool inputs_fresh;
   bool planning_failed;
+  bool terminal_pose;
   double speed_limit;
   bool speed_limit_percentage;
   Eigen::Vector3d applied_control;
@@ -799,6 +816,7 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
     odom_received = odom_received_at_;
     inputs_fresh = inputsFreshLocked();
     planning_failed = planning_failed_;
+    terminal_pose = latest_opt_path_ && latest_opt_path_->terminal_pose;
     speed_limit = speed_limit_;
     speed_limit_percentage = speed_limit_percentage_;
     applied_control = applied_control_;
@@ -1032,6 +1050,20 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   // 小陀螺模式：当启用时，始终输出固定的旋转速度，而不使用 MPC 输出的角速度。
   if (!use_small_gyro_mode_) {
     wz = std::min(mpc_config_.omega_max, std::max(mpc_config_.omega_min, u_global.omega));
+  }
+
+  if (terminal_pose && !use_small_gyro_mode_) {
+    // Heading feedback must settle without the high-rate path-tracking turns
+    // that are appropriate in transit. Keep the configured limits as bounds.
+    wz = std::clamp(wz, std::max(-1.0, mpc_config_.omega_min), std::min(1.0, mpc_config_.omega_max));
+    if (mpc_config_.use_acc_constraints) {
+      // Enter the terminal speed envelope gradually when transit left us
+      // spinning faster. A post-solve hard clamp must not bypass QP slew limits.
+      wz = std::clamp(wz,
+        applied_control.z() + mpc_config_.alpha_min * mpc_config_.dt,
+        applied_control.z() + mpc_config_.alpha_max * mpc_config_.dt);
+      wz = std::clamp(wz, mpc_config_.omega_min, mpc_config_.omega_max);
+    }
   }
 
   double output_delay = 0.025;

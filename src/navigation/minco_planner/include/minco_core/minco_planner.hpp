@@ -112,6 +112,9 @@ private:
   friend class MincoPlannerTestPeer;
   bool PlanGlobalPath(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal);
+  PlanOutcome planTerminalPose(
+    const geometry_msgs::msg::PoseStamped & current_pose, const geometry_msgs::msg::PoseStamped & goal);
+
   PlanOutcome ReplanLocal(const geometry_msgs::msg::PoseStamped & current_pose);
   // Takes a finished result; nullopt when nothing is ready or the result was stale.
   std::optional<PlanOutcome> pollPlanResult();

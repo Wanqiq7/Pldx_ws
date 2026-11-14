@@ -49,7 +49,7 @@ TEST(GoalDeduplication, KeepsLatestDistinctPendingGoal)
   EXPECT_FALSE(planner.consumePendingGoal(consumed));
 }
 
-TEST(GoalDeduplication, UsesPositionForGoalEquivalence)
+TEST(GoalDeduplication, UsesPoseForGoalEquivalence)
 {
   MincoPlanner planner;
   auto goal = makeGoal();
@@ -66,7 +66,8 @@ TEST(GoalDeduplication, UsesPositionForGoalEquivalence)
   const auto path = planner.createPlan(goal, goal, {});
   ASSERT_EQ(path.poses.size(), 2U);
   EXPECT_DOUBLE_EQ(path.poses.back().pose.orientation.z, 1.0);
-  EXPECT_FALSE(planner.consumePendingGoal(consumed));
+  ASSERT_TRUE(planner.consumePendingGoal(consumed));
+  EXPECT_DOUBLE_EQ(consumed.pose.orientation.z, 1.0);
 
   goal.pose.position.y += 0.001;
   planner.createPlan(goal, goal, {});

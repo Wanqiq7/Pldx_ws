@@ -10,6 +10,7 @@
 #include <numeric>
 #include <rcl/time.h>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -241,6 +242,18 @@ public:
     p.global_path_searcher_->setQuery(query);
   }
 
+  static void setMotion(MincoPlanner & p, double yaw, double speed = 0.0)
+  {
+    p.latest_odom_.pose.pose.orientation.z = std::sin(yaw / 2.0);
+    p.latest_odom_.pose.pose.orientation.w = std::cos(yaw / 2.0);
+    p.latest_odom_.twist.twist.linear.x = speed;
+  }
+  static void enableYawOptimization(MincoPlanner & p)
+  {
+    p.use_yaw_opt_ = true;
+    p.yaw_opt_ = std::make_unique<traj_opt::YawTrajOpt>(3.14);
+  }
+
   static bool waitForResult(MincoPlanner & p)
   {
     const auto deadline = std::chrono::steady_clock::now() + 1s;
@@ -299,11 +312,10 @@ public:
     Eigen::Matrix3d start_state = Eigen::Matrix3d::Zero();
     traj_opt::Trajectory yaw;
     geometry_msgs::msg::Pose current_pose;
-    EXPECT_TRUE(p.optimizeYaw(
-      start_state, position, yaw, MincoPlanner::PlanningState::HOT_START, current_pose, 0.0));
+    EXPECT_TRUE(
+      p.optimizeYaw(start_state, position, yaw, MincoPlanner::PlanningState::HOT_START, current_pose, 0.0));
     return yaw;
   }
-
 };
 
 namespace {
@@ -611,6 +623,175 @@ TEST_F(PlanningBudgetTest, ComplexGlobalSearchProducesExecutableReference)
   ASSERT_TRUE(MincoPlannerTestPeer::hasTrajectory(p));
   ASSERT_EQ(executor.spin_until_future_complete(result, 1s), rclcpp::FutureReturnCode::SUCCESS);
   EXPECT_GT(result.get().cmds.size(), 2U);
+}
+
+TEST_F(PlanningBudgetTest, SamePositionYawGoalProducesExecutableTerminalReference)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(200, 200, 0.1, 0.0, 0.0);
+  auto query = std::make_shared<ClearanceQuery>(&costmap);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::configureGlobalSearch(p, node, query);
+  std::optional<ros_interfaces::msg::MpcPositionCommand> delivered;
+  const auto subscription = node->create_subscription<ros_interfaces::msg::MpcPositionCommand>(
+    "test_reference", 1, [&](const ros_interfaces::msg::MpcPositionCommand::SharedPtr message) {
+      delivered = *message;
+    });
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node->get_node_base_interface());
+  geometry_msgs::msg::PoseStamped start, goal;
+  start.header.frame_id = goal.header.frame_id = "map";
+  start.pose.position.x = goal.pose.position.x = 2.0;
+  start.pose.position.y = goal.pose.position.y = 2.0;
+  start.pose.orientation.w = 1.0;
+  goal.pose.orientation.z = goal.pose.orientation.w = std::sqrt(0.5);
+  ASSERT_FALSE(p.planAsync(start, goal, true).has_value());
+  ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
+  ASSERT_EQ(p.planAsync(start, goal, true), std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (!delivered && std::chrono::steady_clock::now() < deadline) {
+    executor.spin_some();
+    std::this_thread::sleep_for(1ms);
+  }
+  ASSERT_TRUE(delivered);
+  ASSERT_GT(delivered->cmds.size(), 2U);
+  const auto & last = delivered->cmds.back();
+  EXPECT_NEAR(last.position.x, 2.0, 1e-6);
+  EXPECT_NEAR(last.position.y, 2.0, 1e-6);
+  EXPECT_NEAR(last.yaw, M_PI_2, 1e-6);
+  EXPECT_NEAR(last.velocity.x, 0.0, 1e-6);
+  EXPECT_NEAR(last.yaw_dot, 0.0, 1e-6);
+}
+
+class TerminalPoseTest
+: public PlanningBudgetTest
+, public ::testing::WithParamInterface<std::tuple<double, double, double>>
+{
+};
+
+TEST_P(TerminalPoseTest, PublishedReferenceHonorsGoalPose)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(200, 200, 0.1, 0.0, 0.0);
+  auto query = std::make_shared<ClearanceQuery>(&costmap);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::configureGlobalSearch(p, node, query);
+  MincoPlannerTestPeer::enableYawOptimization(p);
+  const auto [distance, initial_yaw, goal_yaw] = GetParam();
+  MincoPlannerTestPeer::setMotion(p, initial_yaw);
+  std::optional<ros_interfaces::msg::MpcPositionCommand> delivered;
+  const auto subscription = node->create_subscription<ros_interfaces::msg::MpcPositionCommand>(
+    "test_reference", 1, [&](const ros_interfaces::msg::MpcPositionCommand::SharedPtr message) {
+      delivered = *message;
+    });
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node->get_node_base_interface());
+  geometry_msgs::msg::PoseStamped start, goal;
+  start.header.frame_id = goal.header.frame_id = "map";
+  start.pose.position.x = start.pose.position.y = goal.pose.position.y = 2.0;
+  goal.pose.position.x = 2.0 + distance;
+  start.pose.orientation.z = std::sin(initial_yaw / 2.0);
+  start.pose.orientation.w = std::cos(initial_yaw / 2.0);
+  goal.pose.orientation.z = std::sin(goal_yaw / 2.0);
+  goal.pose.orientation.w = std::cos(goal_yaw / 2.0);
+  ASSERT_FALSE(p.planAsync(start, goal, true).has_value());
+  ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
+  ASSERT_EQ(p.planAsync(start, goal, true), std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (!delivered && std::chrono::steady_clock::now() < deadline) {
+    executor.spin_some();
+    std::this_thread::sleep_for(1ms);
+  }
+  ASSERT_TRUE(delivered);
+  ASSERT_GT(delivered->cmds.size(), 2U);
+  const auto & last = delivered->cmds.back();
+  EXPECT_NEAR(last.position.x, goal.pose.position.x, 0.06);
+  EXPECT_NEAR(last.position.y, goal.pose.position.y, 0.06);
+  // Before the terminal stage, preserve the route heading. Final alignment
+  // is a separate pose task after braking near the requested position.
+  const double reference_yaw = distance > 0.3 ? 0.0 : goal_yaw;
+  EXPECT_NEAR(std::atan2(std::sin(last.yaw - reference_yaw), std::cos(last.yaw - reference_yaw)),
+    0.0,
+    distance > 0.3 ? 0.05 : 1e-5);
+  EXPECT_EQ(delivered->terminal_pose, distance <= 0.3);
+  EXPECT_NEAR(last.velocity.x, 0.0, 1e-6);
+  EXPECT_NEAR(last.yaw_dot, 0.0, 1e-5);
+  if (distance == 0.0) {
+    EXPECT_TRUE(delivered->terminal_pose);
+    EXPECT_NEAR(last.yaw, 2.0 * M_PI - 3.0, 1e-6);
+    for (const auto & cmd : delivered->cmds) {
+      EXPECT_NEAR(cmd.position.x, 2.0, 1e-6);
+      EXPECT_NEAR(cmd.position.y, 2.0, 1e-6);
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Arrival,
+  TerminalPoseTest,
+  ::testing::Values(
+    std::make_tuple(0.0, 3.0, -3.0), std::make_tuple(0.2, 0.0, M_PI), std::make_tuple(2.0, 0.0, M_PI_2)));
+
+TEST_F(PlanningBudgetTest, BlockedTerminalPoseIsRejected)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(200, 200, 0.1, 0.0, 0.0);
+  costmap.setCost(20, 20, nav2_costmap_2d::LETHAL_OBSTACLE);
+  auto query = std::make_shared<ClearanceQuery>(&costmap);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::configureGlobalSearch(p, node, query);
+  MincoPlannerTestPeer::setMotion(p, 0.0);
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "map";
+  goal.pose.position.x = goal.pose.position.y = 2.05;
+  goal.pose.orientation.w = 1.0;
+  ASSERT_FALSE(p.planAsync(goal, goal, true).has_value());
+  ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
+  EXPECT_EQ(p.planAsync(goal, goal, true), std::optional(MincoPlanner::PlanOutcome::UNSAFE));
+  EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
+}
+
+TEST_F(PlanningBudgetTest, StaticObstacleRejectsTerminalPoseEvenWhenDynamicMapIsFree)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D static_map(200, 200, 0.1, 0.0, 0.0);
+  nav2_costmap_2d::Costmap2D dynamic_map(200, 200, 0.1, 0.0, 0.0);
+  static_map.setCost(22, 20, nav2_costmap_2d::LETHAL_OBSTACLE);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::configureGlobalSearch(p, node, std::make_shared<ClearanceQuery>(&static_map));
+  MincoPlannerTestPeer::installSafety(p, std::make_shared<ClearanceQuery>(&dynamic_map));
+  MincoPlannerTestPeer::setMotion(p, 0.0);
+  geometry_msgs::msg::PoseStamped start, goal;
+  start.header.frame_id = goal.header.frame_id = "map";
+  start.pose.position.x = start.pose.position.y = goal.pose.position.y = 2.05;
+  goal.pose.position.x = 2.25;
+  start.pose.orientation.w = goal.pose.orientation.w = 1.0;
+  ASSERT_FALSE(p.planAsync(start, goal, true).has_value());
+  ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
+  EXPECT_EQ(p.planAsync(start, goal, true), std::optional(MincoPlanner::PlanOutcome::UNSAFE));
+  EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
+}
+
+TEST_F(PlanningBudgetTest, CancelDiscardsReadyTerminalPose)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(200, 200, 0.1, 0.0, 0.0);
+  auto query = std::make_shared<ClearanceQuery>(&costmap);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node);
+  MincoPlannerTestPeer::configureGlobalSearch(p, node, query);
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "map";
+  goal.pose.position.x = goal.pose.position.y = 2.0;
+  goal.pose.orientation.w = 1.0;
+  ASSERT_FALSE(p.planAsync(goal, goal, true).has_value());
+  ASSERT_TRUE(MincoPlannerTestPeer::waitForResult(p));
+  p.cancelGoal();
+  EXPECT_FALSE(MincoPlannerTestPeer::poll(p).has_value());
+  EXPECT_FALSE(MincoPlannerTestPeer::hasTrajectory(p));
 }
 
 TEST_F(PlanningBudgetTest, ShortTrajectoryReplansWhenExpiredBeforePeriodicTrigger)

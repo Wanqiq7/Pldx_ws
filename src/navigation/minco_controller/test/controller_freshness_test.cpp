@@ -3,6 +3,7 @@
 #include "nav2_core/controller_exceptions.hpp"
 #include <functional>
 #include <gtest/gtest.h>
+#include <rcl/time.h>
 
 using namespace std::chrono_literals;
 
@@ -40,6 +41,44 @@ public:
       reference->cmds[i].trajectory_id = 1;
     }
     p.onOptPath(reference);
+  }
+  static void receiveStationaryRotation(MincoMpcController & p)
+  {
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    for (size_t i = 0; i < reference->cmds.size(); ++i) {
+      auto & cmd = reference->cmds[i];
+      cmd.position.x = 0.0;
+      cmd.velocity.x = 0.0;
+      cmd.yaw = static_cast<double>(i) * 0.05;
+      cmd.yaw_dot = 1.0;
+    }
+    p.use_small_gyro_mode_ = false;
+    p.onOptPath(reference);
+  }
+  static void receiveTerminalPose(MincoMpcController & p)
+  {
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    reference->terminal_pose = true;
+    for (auto & cmd : reference->cmds) {
+      cmd.position.x = 0.01;
+      cmd.velocity.x = 0.0;
+      cmd.yaw = 3.0;
+      cmd.yaw_dot = 0.0;
+    }
+    p.use_small_gyro_mode_ = false;
+    p.onOptPath(reference);
+  }
+  static void enterTerminalAtHighAngularSpeed(MincoMpcController & p)
+  {
+    p.mpc_config_.omega_min = -5.0;
+    p.mpc_config_.omega_max = 5.0;
+    p.mpc_config_.use_acc_constraints = true;
+    p.mpc_config_.alpha_min = -5.0;
+    p.mpc_config_.alpha_max = 5.0;
+    p.mpc_config_.dt = 0.05;
+    p.applied_control_.z() = 3.0;
+    p.solver_ = std::make_unique<MpcSolver>(p.mpc_config_);
+    receiveTerminalPose(p);
   }
   static void refreshReference(MincoMpcController & p)
   {
@@ -164,6 +203,47 @@ TEST_F(ControllerFreshnessTest, FreshInputProducesMotion)
   const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
   EXPECT_GT(cmd.twist.linear.x, 0.0);
   EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
+}
+
+TEST_F(ControllerFreshnessTest, StationaryRotationAdvancesWhilePositionIsUnchanged)
+{
+  node->set_parameter(rclcpp::Parameter("use_sim_time", true));
+  ASSERT_EQ(rcl_enable_ros_time_override(node->get_clock()->get_clock_handle()), RCL_RET_OK);
+  const auto set_time = [&](int64_t nanoseconds) {
+    ASSERT_EQ(rcl_set_ros_time_override(node->get_clock()->get_clock_handle(), nanoseconds), RCL_RET_OK);
+  };
+  set_time(10000000000LL);
+  MincoMpcControllerTestPeer::restart(controller);
+  MincoMpcControllerTestPeer::receiveStationaryRotation(controller);
+  const auto initial = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  set_time(10500000000LL);
+  MincoMpcControllerTestPeer::setOdomYaw(controller, 0.0);
+  const auto advanced = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(advanced.twist.angular.z, initial.twist.angular.z + 0.1);
+  EXPECT_NEAR(advanced.twist.linear.x, 0.0, 1e-6);
+  EXPECT_NEAR(advanced.twist.linear.y, 0.0, 1e-6);
+}
+
+TEST_F(ControllerFreshnessTest, TerminalPoseBoundsRotationAndStillHonorsBlockAndCancel)
+{
+  MincoMpcControllerTestPeer::receiveTerminalPose(controller);
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(cmd.twist.angular.z, 0.0);
+  EXPECT_LE(cmd.twist.angular.z, 1.0);
+  MincoMpcControllerTestPeer::block(controller);
+  expectStopped();
+  MincoMpcControllerTestPeer::receive(controller);
+  MincoMpcControllerTestPeer::receiveTerminalPose(controller);
+  ASSERT_TRUE(controller.cancel());
+  expectStopped();
+}
+
+TEST_F(ControllerFreshnessTest, TerminalRotationDeceleratesWithinConfiguredAcceleration)
+{
+  MincoMpcControllerTestPeer::enterTerminalAtHighAngularSpeed(controller);
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GE(cmd.twist.angular.z, 2.75 - 1e-6);
+  EXPECT_LE(cmd.twist.angular.z, 3.25 + 1e-6);
 }
 
 TEST_F(ControllerFreshnessTest, UsesOdomYawWhenNav2PoseHasZeroYaw)

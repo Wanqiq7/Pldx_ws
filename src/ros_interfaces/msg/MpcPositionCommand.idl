@@ -20,6 +20,8 @@ module ros_interfaces {
       uint32 mpc_horizon;
 
       uint8 command_flag;
+
+      boolean terminal_pose;
     };
   };
 };

@@ -774,7 +774,13 @@ void MincoPlanner::planningWorkerLoop()
       });
       try {
         PlanningDeadline::check();
-        if (request.global_search && !PlanGlobalPath(request.current_pose, request.goal)) {
+        const double goal_distance =
+          std::hypot(request.goal.pose.position.x - request.current_pose.pose.position.x,
+            request.goal.pose.position.y - request.current_pose.pose.position.y);
+        if (goal_distance <= traj_goal_tolerance_) {
+          stage = "terminal pose validation";
+          outcome = planTerminalPose(request.current_pose, request.goal);
+        } else if (request.global_search && !PlanGlobalPath(request.current_pose, request.goal)) {
           outcome = PlanOutcome::INFEASIBLE;
         } else {
           stage = "local optimization/validation";
@@ -1160,7 +1166,11 @@ nav_msgs::msg::Path MincoPlanner::createPlan(const geometry_msgs::msg::PoseStamp
       // Only absorb floating-point noise, not intentional goal adjustments.
       constexpr double epsilon = 1e-9;
       if (std::hypot(incoming.x - previous.x, incoming.y - previous.y, incoming.z - previous.z) <=
-          epsilon) {
+            epsilon &&
+          std::abs(std::atan2(std::sin(utils::quaternionToYaw(normalized_goal.pose.orientation) -
+                                       utils::quaternionToYaw(last_accepted_goal_->pose.orientation)),
+            std::cos(utils::quaternionToYaw(normalized_goal.pose.orientation) -
+                     utils::quaternionToYaw(last_accepted_goal_->pose.orientation)))) <= epsilon) {
         return path;
       }
     }
@@ -1202,6 +1212,13 @@ bool MincoPlanner::PlanGlobalPath(
 
   PlanningDeadline::check();
   std::lock_guard<std::mutex> path_lock(path_mutex_);
+  // Search may return a boundary substitute in exploration mode. Only carry
+  // the requested orientation onto a path that actually ends at that goal.
+  if (!planned_path.empty() &&
+      std::hypot(planned_path.back().pose.position.x - goal.pose.position.x,
+        planned_path.back().pose.position.y - goal.pose.position.y) <= traj_goal_tolerance_) {
+    planned_path.back().pose.orientation = goal.pose.orientation;
+  }
   latest_global_path_ = std::move(planned_path);
   return latest_global_path_.size() >= 2U;
 }
@@ -1316,6 +1333,79 @@ void MincoPlanner::submitPlanRequest(const geometry_msgs::msg::PoseStamped & cur
                                        std::chrono::duration<double>(planning_budget_sec_));
   pending_planning_request_ = PlanningRequest{current_pose, goal, global_search, version, deadline};
   planning_cv_.notify_one();
+}
+
+MincoPlanner::PlanOutcome MincoPlanner::planTerminalPose(
+  const geometry_msgs::msg::PoseStamped & current_pose, const geometry_msgs::msg::PoseStamped & goal)
+{
+  // No path tangent exists for a pure rotation. Build a bounded quintic from
+  // measured motion to the exact goal pose, with zero terminal velocity.
+  const Eigen::Vector3d start(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
+  const Eigen::Vector3d end(goal.pose.position.x, goal.pose.position.y, 0.0);
+  Eigen::Vector3d velocity = getCurrentSpeed();
+  velocity.z() = 0.0;
+  const double yaw = getCurrentYawFromOdom();
+  const double goal_yaw = utils::quaternionToYaw(goal.pose.orientation);
+  const double yaw_delta = std::atan2(std::sin(goal_yaw - yaw), std::cos(goal_yaw - yaw));
+  if (!start.allFinite() || !end.allFinite() || !velocity.allFinite() || !std::isfinite(yaw_delta) ||
+      !(minco_config.max_acc > 0.0)) {
+    return PlanOutcome::INFEASIBLE;
+  }
+  const double duration = std::max({2.0,
+    std::sqrt(6.0 * (end - start).norm() / minco_config.max_acc),
+    4.0 * velocity.norm() / minco_config.max_acc});
+  if (!std::isfinite(duration) || duration > 30.0) {
+    return PlanOutcome::INFEASIBLE;
+  }
+  const auto quintic =
+    [duration](const Eigen::Vector3d & p0, const Eigen::Vector3d & v0, const Eigen::Vector3d & p1) {
+      const double t = duration;
+      const Eigen::Vector3d d = p1 - p0;
+      Eigen::MatrixXd c = Eigen::MatrixXd::Zero(3, 6);
+      c.col(5) = p0;
+      c.col(4) = v0;
+      c.col(2) = 10.0 * d / std::pow(t, 3) - 6.0 * v0 / (t * t);
+      c.col(1) = -15.0 * d / std::pow(t, 4) + 8.0 * v0 / std::pow(t, 3);
+      c.col(0) = 6.0 * d / std::pow(t, 5) - 3.0 * v0 / std::pow(t, 4);
+      return c;
+    };
+  traj_opt::Trajectory position, heading;
+  position.emplace_back(duration, quintic(start, velocity, end));
+  // Final heading is a pose setpoint, not a tangent or a timed angular
+  // feedforward. The controller bounds the terminal angular feedback.
+  Eigen::MatrixXd yaw_coefficients = Eigen::MatrixXd::Zero(3, 6);
+  yaw_coefficients(0, 5) = yaw + yaw_delta;
+  heading.emplace_back(duration, yaw_coefficients);
+  if (!validateTrajectory(position, end) || !mode_context_ || !mode_context_->globalQuery()) {
+    return PlanOutcome::UNSAFE;
+  }
+  // PRIORMAP static costs and dynamic ROG clearance are independent. A short
+  // direct trajectory must satisfy both, just like the search/seed it replaces.
+  const auto global_query = mode_context_->globalQuery();
+  const double resolution = global_query->resolution();
+  if (!std::isfinite(resolution) || resolution <= 0.0) {
+    return PlanOutcome::UNSAFE;
+  }
+  // Bound spatial sampling too, so a fast braking segment cannot skip a
+  // narrow static obstacle between the dynamic checker's time samples.
+  const double sample_dt = std::min(0.05, resolution / (1.5 * minco_config.max_vel));
+  const int samples = static_cast<int>(std::ceil(duration / sample_dt));
+  for (int i = 0; i <= samples; ++i) {
+    PlanningDeadline::check();
+    const auto point = position.getPos(std::min(duration, i * sample_dt));
+    unsigned int mx = 0, my = 0;
+    if (!global_query->worldToMap(point.x(), point.y(), mx, my) || !global_query->isFree(mx, my)) {
+      return PlanOutcome::UNSAFE;
+    }
+  }
+  std_msgs::msg::Header header;
+  header.frame_id = output_frame_;
+  header.stamp = node_.lock()->now();
+  auto command = utils::sampleOptimizedTrajectory(
+    position, heading, 0, header, static_cast<int>(std::ceil(duration / 0.05)) + 1, 0.05);
+  command.terminal_pose = true;
+  candidate_ = Candidate{std::move(position), std::move(heading), std::move(command)};
+  return PlanOutcome::COMMITTED;
 }
 
 MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_pose)
@@ -1434,8 +1524,7 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     // current pose while inheriting the old trajectory's dynamic state.
     const double t_dur = nowSeconds() - last_traj_start_WT + 0.005;
     start_state.setZero();
-    start_state.col(0) = Eigen::Vector3d(
-      current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
+    start_state.col(0) = Eigen::Vector3d(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
     start_state.col(1) = last_traj_snapshot.getVel(t_dur);
     start_state.col(2) = last_traj_snapshot.getAcc(t_dur);
   } else {
@@ -1604,6 +1693,8 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     }
   }
 
+  // Transit retains route/slope heading. The requested final orientation is
+  // consumed separately by planTerminalPose after entering the arrival region.
   constexpr double slope_threshold = 0.1;
   if (std::abs(pitch) > slope_threshold && sparse_path.size() >= 2) {
     goal_yaw = std::atan2(end_state.col(1).y(), end_state.col(1).x());
@@ -1664,8 +1755,7 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     visualizer_->update(sparse_path, backup_traj, opt_traj, opt_duration, astar_path_msg);
   }
 
-  candidate_ = Candidate{
-    std::move(opt_traj), std::move(yaw_traj), std::move(command)};
+  candidate_ = Candidate{std::move(opt_traj), std::move(yaw_traj), std::move(command)};
   return finish(PlanOutcome::COMMITTED, "NONE");
 }
 
