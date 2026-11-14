@@ -14,6 +14,10 @@
   <depend>rclcpp</depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>rcutils</test_depend>
+  <test_depend>nav2_core</test_depend>
+  <test_depend>nav2_controller</test_depend>
+  <test_depend>pluginlib</test_depend>
+  <test_depend>rclcpp_lifecycle</test_depend>
 
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>launch</exec_depend>

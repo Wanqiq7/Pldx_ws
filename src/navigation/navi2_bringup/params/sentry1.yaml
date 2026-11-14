@@ -64,14 +64,12 @@ controller_server:
 
     # 进度检查器参数，用于判断机器人是否真正向目标前进。
     progress_checker:
-      plugin: "nav2_controller::PoseProgressChecker"
+      plugin: "nav2_controller::SimpleProgressChecker"
       # 规定的最小移动半径，如果没有超过该范围则认为未前进。
       required_movement_radius: 0.1
-      required_movement_angle: 0.1
-      # 在该时间内没有明显进展，则 FollowPath 失败并交给行为树恢复。
-      # 必须长于一次内部恢复（fail_threshold 次失败 + cooldown_sec + recovery_window_sec ≈ 5 s）。
-      # 确定性的规划失败由 MincoPlanner 的 FAILED 通知直接上报，这里只做兜底。
-      movement_time_allowance: 10.0
+      # 沿用原工程：隧道准备期间慢行，位置进度检查允许 1000 秒。
+      # 仅位置变化计为进展；确定性规划失败和输入失效仍由各自路径处理。
+      movement_time_allowance: 1000.0
     general_goal_checker:
       # 每次同时检查当前位置和停车速度，避免运动中短暂入圈便锁存成功。
       stateful: False
