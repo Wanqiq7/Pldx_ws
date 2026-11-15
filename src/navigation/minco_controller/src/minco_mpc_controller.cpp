@@ -233,6 +233,9 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   auto odom_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
     "/aft_mapped_to_init", odom_qos, std::bind(&MincoMpcController::onOdom, this, std::placeholders::_1));
+  behavior_sub_ = node->create_subscription<ros_interfaces::msg::Behavior>("/sentry/behaivor_send",
+    rclcpp::QoS(10),
+    std::bind(&MincoMpcController::onBehavior, this, std::placeholders::_1));
 
   mpc_predict_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_predict_path", 1);
   mpc_real_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("/mpc_real_path", 1);
@@ -317,6 +320,7 @@ void MincoMpcController::cleanup()
   mpc_perf_monitor_.close();
   opt_path_sub_.reset();
   odom_sub_.reset();
+  behavior_sub_.reset();
   mpc_predict_path_pub_.reset();
   mpc_real_path_pub_.reset();
   cmd_vel_mpc_pub_.reset();
@@ -325,6 +329,11 @@ void MincoMpcController::cleanup()
   std::lock_guard<std::mutex> lk(data_mtx_);
   latest_opt_path_.reset();
   latest_odom_.reset();
+  tunnel_prepare_active_ = false;
+  tunnel_ready_ = false;
+  tunnel_escape_active_ = false;
+  tunnel_escape_vx_ = 0.0;
+  tunnel_escape_vy_ = 0.0;
 }
 
 void MincoMpcController::activate()
@@ -363,6 +372,37 @@ void MincoMpcController::publishZeroCommand()
   applied_control_.setZero();
   if (cmd_vel_mpc_pub_) {
     cmd_vel_mpc_pub_->publish(geometry_msgs::msg::Twist{});
+  }
+}
+
+void MincoMpcController::onBehavior(const ros_interfaces::msg::Behavior::SharedPtr msg)
+{
+  std::lock_guard<std::mutex> lock(data_mtx_);
+  tunnel_prepare_active_ = msg->tunnel_prepare_active;
+  tunnel_ready_ = msg->tunnel_ready;
+  tunnel_escape_active_ = msg->tunnel_escape_active;
+  tunnel_escape_vx_ = msg->tunnel_escape_vx;
+  tunnel_escape_vy_ = msg->tunnel_escape_vy;
+}
+
+void MincoMpcController::applyTunnelCommandPolicy(geometry_msgs::msg::Twist & command) const
+{
+  if (!std::isfinite(command.linear.x) || !std::isfinite(command.linear.y) ||
+      !std::isfinite(command.angular.z)) {
+    command = geometry_msgs::msg::Twist{};
+    return;
+  }
+  if (tunnel_escape_active_) {
+    if (!std::isfinite(tunnel_escape_vx_) || !std::isfinite(tunnel_escape_vy_)) {
+      command = geometry_msgs::msg::Twist{};
+      return;
+    }
+    command.linear.x = tunnel_escape_vx_;
+    command.linear.y = tunnel_escape_vy_;
+  }
+  if (tunnel_prepare_active_ && !tunnel_ready_) {
+    command.linear.x *= 0.15;
+    command.linear.y *= 0.15;
   }
 }
 
@@ -842,6 +882,9 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
             odom_timeout_sec_) {
         out_cmd.twist = geometry_msgs::msg::Twist{};
         success = false;
+      }
+      if (success) {
+        applyTunnelCommandPolicy(out_cmd.twist);
       }
       applied_control_ =
         Eigen::Vector3d(out_cmd.twist.linear.x, out_cmd.twist.linear.y, out_cmd.twist.angular.z);

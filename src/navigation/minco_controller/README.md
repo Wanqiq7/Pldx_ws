@@ -34,7 +34,7 @@ flowchart LR
 
 ### 流程概述
 
-控制器以 `/opt_path` 中的 P/V/A/J 与 yaw 参考构造有限时域序列，同时从 latest-state odom 提取当前 SE(2) 状态。完成杆臂、固定 roll 和控制时延补偿后，将跟踪问题凝聚为只包含控制量的 QP；qpOASES 求解后应用速度死区、目标停车和 speed limit，最后通过 `/cmd_vel_mpc` 输出世界坐标系速度。
+控制器以 `/opt_path` 中的 P/V/A/J 与 yaw 参考构造有限时域序列，同时从 latest-state odom 提取当前 SE(2) 状态。完成杆臂、固定 roll 和控制时延补偿后，将跟踪问题凝聚为只包含控制量的 QP；qpOASES 求解后应用速度死区、目标停车和 speed limit，再应用过洞准备策略，最后通过 `/cmd_vel_mpc` 输出世界坐标系速度。
 
 ## 🧪 技术方向
 
@@ -68,10 +68,16 @@ v_base = v_lidar + ω × r
 |---|---|---|---|
 | 输入 | `/opt_path` | `ros_interfaces/msg/MpcPositionCommand` | MINCO 位置、速度、朝向参考 |
 | 输入 | `/aft_mapped_to_init` | `nav_msgs/msg/Odometry` | 当前位姿、速度与角速度 |
+| 输入 | `/sentry/behaivor_send` | `ros_interfaces/msg/Behavior` | 过洞准备、就绪和逃逸速度状态 |
 | 输出 | `/cmd_vel_mpc` | `geometry_msgs/msg/Twist` | 提供给 communication / 底盘链路的控制量 |
 | 输出 | `/mpc_predict_path` | `nav_msgs/msg/Path` | MPC 预测轨迹可视化 |
 
 Nav2 标准接口 `setPlan()`、`computeVelocityCommands()` 和 `setSpeedLimit()` 仍由插件实现；项目主链路的高阶轨迹信息来自 `/opt_path`。
+
+当 `tunnel_escape_active` 为真时，controller 用 Behavior 中的世界系逃逸
+XY 速度替换 MPC 的平移输出；当 `tunnel_prepare_active && !tunnel_ready`
+时，再将选定的 XY 分量乘以 `0.15`。`wz` 不变。通信桥只接收已经整形的
+`/cmd_vel_mpc`，不再读取这些状态来改写速度。
 
 轨迹或里程计超时、取消和 BLOCK 会清零速度；规划器明确报告失败时控制器向 Nav2 抛出失败。USB 桥将世界系速度旋转到车体系，MC02 云台和底盘板需更新到配套速度协议固件。
 

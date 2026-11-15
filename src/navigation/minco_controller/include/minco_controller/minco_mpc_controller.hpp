@@ -20,6 +20,7 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "tf2_ros/buffer.h"
 
+#include "ros_interfaces/msg/behavior.hpp"
 #include "ros_interfaces/msg/mpc_position_command.hpp"
 
 #include "log.hpp"
@@ -66,7 +67,9 @@ private:
   // === Callbacks ===
   void onOptPath(const ros_interfaces::msg::MpcPositionCommand::SharedPtr msg);
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void onBehavior(const ros_interfaces::msg::Behavior::SharedPtr msg);
   void publishZeroCommand();
+  void applyTunnelCommandPolicy(geometry_msgs::msg::Twist & command) const;
 
   // === Utility & Helper Functions ===
   void configureMpcPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
@@ -115,6 +118,7 @@ private:
   // === ROS 2 Interfaces (Publishers, Subscribers, Timers) ===
   rclcpp::Subscription<ros_interfaces::msg::MpcPositionCommand>::SharedPtr opt_path_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<ros_interfaces::msg::Behavior>::SharedPtr behavior_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_predict_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_real_path_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_mpc_pub_;
@@ -151,6 +155,14 @@ private:
   mutable std::mutex data_mtx_;
   ros_interfaces::msg::MpcPositionCommand::SharedPtr latest_opt_path_;
   nav_msgs::msg::Odometry::SharedPtr latest_odom_;
+
+  // Tunnel preparation is a decision input. Apply its command policy before
+  // publishing /cmd_vel_mpc so transport nodes only convert and transmit it.
+  bool tunnel_prepare_active_{false};
+  bool tunnel_ready_{false};
+  bool tunnel_escape_active_{false};
+  double tunnel_escape_vx_{0.0};
+  double tunnel_escape_vy_{0.0};
 
   // --- Reference Tracking State ---
   // Track reference index over time when trajectory is not updated to avoid jumping back to start.

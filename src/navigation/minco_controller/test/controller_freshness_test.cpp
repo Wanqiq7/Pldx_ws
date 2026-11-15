@@ -134,6 +134,28 @@ public:
   {
     p.latest_opt_path_->header.stamp = p.node_.lock()->now() + rclcpp::Duration::from_seconds(1.0);
   }
+  static void setTunnelState(MincoMpcController & p, bool prepare, bool ready, bool escape = false)
+  {
+    p.tunnel_prepare_active_ = prepare;
+    p.tunnel_ready_ = ready;
+    p.tunnel_escape_active_ = escape;
+    p.tunnel_escape_vx_ = -0.4;
+    p.tunnel_escape_vy_ = 0.2;
+  }
+  static void receiveBehavior(MincoMpcController & p, bool prepare, bool ready, bool escape = false)
+  {
+    auto message = std::make_shared<ros_interfaces::msg::Behavior>();
+    message->tunnel_prepare_active = prepare;
+    message->tunnel_ready = ready;
+    message->tunnel_escape_active = escape;
+    message->tunnel_escape_vx = -0.4F;
+    message->tunnel_escape_vy = 0.2F;
+    p.onBehavior(message);
+  }
+  static void applyTunnelPolicy(MincoMpcController & p, geometry_msgs::msg::Twist & command)
+  {
+    p.applyTunnelCommandPolicy(command);
+  }
   static bool hasReference(MincoMpcController & p)
   {
     std::vector<ReferencePoint> ref;
@@ -203,6 +225,73 @@ TEST_F(ControllerFreshnessTest, FreshInputProducesMotion)
   const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
   EXPECT_GT(cmd.twist.linear.x, 0.0);
   EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
+}
+
+TEST_F(ControllerFreshnessTest, TunnelPreparationScalesXYBeforeMpcOutput)
+{
+  geometry_msgs::msg::Twist command;
+  command.linear.x = 1.0;
+  command.linear.y = -0.4;
+  command.angular.z = 0.5;
+
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, false);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, 0.15);
+  EXPECT_DOUBLE_EQ(command.linear.y, -0.06);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.5);
+
+  command.linear.x = 1.0;
+  command.linear.y = -0.4;
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, true);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, 1.0);
+  EXPECT_DOUBLE_EQ(command.linear.y, -0.4);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.5);
+}
+
+TEST_F(ControllerFreshnessTest, BehaviorStateShapesComputedVelocityCommand)
+{
+  MincoMpcController normal_controller;
+  MincoMpcController tunnel_controller;
+  MincoMpcControllerTestPeer::initialize(normal_controller, node);
+  MincoMpcControllerTestPeer::initialize(tunnel_controller, node);
+  MincoMpcControllerTestPeer::receive(normal_controller);
+  MincoMpcControllerTestPeer::receive(tunnel_controller);
+  MincoMpcControllerTestPeer::receiveBehavior(tunnel_controller, true, false);
+
+  const auto normal = normal_controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  const auto tunnel = tunnel_controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_NEAR(tunnel.twist.linear.x, normal.twist.linear.x * 0.15, 1e-9);
+  EXPECT_NEAR(tunnel.twist.linear.y, normal.twist.linear.y * 0.15, 1e-9);
+  EXPECT_DOUBLE_EQ(tunnel.twist.angular.z, normal.twist.angular.z);
+}
+
+TEST_F(ControllerFreshnessTest, TunnelEscapeReplacesXYBeforePreparationScaling)
+{
+  geometry_msgs::msg::Twist command;
+  command.linear.x = 1.0;
+  command.linear.y = -0.4;
+  command.angular.z = 0.5;
+
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, false, true);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, -0.06);
+  EXPECT_DOUBLE_EQ(command.linear.y, 0.03);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.5);
+}
+
+TEST_F(ControllerFreshnessTest, InvalidMpcCommandIsClearedBeforeTunnelPolicy)
+{
+  geometry_msgs::msg::Twist command;
+  command.linear.x = std::numeric_limits<double>::quiet_NaN();
+  command.linear.y = 1.0;
+  command.angular.z = 0.5;
+
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, false);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(command.linear.y, 0.0);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.0);
 }
 
 TEST_F(ControllerFreshnessTest, StationaryRotationAdvancesWhilePositionIsUnchanged)
