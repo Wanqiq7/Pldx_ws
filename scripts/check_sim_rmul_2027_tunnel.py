@@ -83,6 +83,7 @@ class Rmul2027TunnelAcceptance(Node):
         self.gimbal = None
         self.mpc = None
         self.sim_cmd = None
+        self.sample_phase = "setup"
         self.samples = []
         self.action = ActionClient(self, NavigateToPose, "/navigate_to_pose")
         self.posture = self.create_publisher(String, "/sentry/gimbal/posture", 10)
@@ -160,6 +161,7 @@ class Rmul2027TunnelAcceptance(Node):
                 "gimbal": self.gimbal,
                 "cmd_vel_mpc": self.mpc,
                 "sim_cmd_vel": self.sim_cmd,
+                "phase": self.sample_phase,
             }
         )
 
@@ -227,6 +229,10 @@ class Rmul2027TunnelAcceptance(Node):
         start = self.truth[-1].pose.pose
         start_xy = [start.position.x, start.position.y]
         path_y = start.position.y
+        # Do not let the last navigation command satisfy the passage evidence.
+        self.mpc = None
+        self.sim_cmd = None
+        self.sample_phase = "passage"
         deadline = time.monotonic() + PASSAGE_TIMEOUT_S
         max_abs_roll = 0.0
         max_abs_pitch = 0.0
@@ -262,6 +268,7 @@ class Rmul2027TunnelAcceptance(Node):
         for _ in range(20):
             self.passage.publish(Twist())
             rclpy.spin_once(self, timeout_sec=0.03)
+        self.sample_phase = "post_passage"
         finish = self.truth[-1].pose.pose
         return {
             "start": start_xy,
@@ -293,14 +300,17 @@ class Rmul2027TunnelAcceptance(Node):
             raise RuntimeError("passage ended before the measured tunnel exit")
         self.publish_posture("normal")
         self.wait_gimbal("normal")
+        passage_samples = [
+            sample for sample in self.samples if sample["phase"] == "passage"
+        ]
         nonzero_mpc = sum(
             1
-            for sample in self.samples
+            for sample in passage_samples
             if sample["cmd_vel_mpc"] and max(abs(v) for v in sample["cmd_vel_mpc"]) > 1e-4
         )
         nonzero_sim = sum(
             1
-            for sample in self.samples
+            for sample in passage_samples
             if sample["sim_cmd_vel"] and max(abs(v) for v in sample["sim_cmd_vel"]) > 1e-4
         )
         if nonzero_sim == 0:
