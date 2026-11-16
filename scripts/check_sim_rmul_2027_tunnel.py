@@ -55,6 +55,17 @@ def yaw_from_pose(pose):
     )
 
 
+def roll_pitch_from_pose(pose):
+    q = pose.orientation
+    roll = math.atan2(
+        2.0 * (q.w * q.x + q.y * q.z),
+        1.0 - 2.0 * (q.x * q.x + q.y * q.y),
+    )
+    pitch_input = 2.0 * (q.w * q.y - q.z * q.x)
+    pitch = math.asin(max(-1.0, min(1.0, pitch_input)))
+    return roll, pitch
+
+
 def wrap(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
 
@@ -98,14 +109,26 @@ class Rmul2027TunnelAcceptance(Node):
         )
         report = envelope(model, reference, profile, sequenced_targets(model, reference))
         folded = next(item for item in report["endpoints"] if item["phase"] == "folded")
-        roof_underside = 0.25
+        measurements = json.loads(
+            (PACKAGE / "maps/rmul_2027_3v3/step_measurements.json").read_text()
+        )
+        roof_bounds = measurements["measurements"]["red_tunnel_roof_underside"]["bounds_m"]
+        roof_underside = roof_bounds[2]
         clearance = roof_underside - folded["maximum_xyz_m"][2]
+        folded_width = folded["maximum_xyz_m"][1] - folded["minimum_xyz_m"][1]
+        tunnel_span = json.loads(
+            (PACKAGE / "maps/rmul_2027_3v3/parameters.json").read_text()
+        )["manual_reference"]["specified"]["tunnel_clear_span"]
+        lateral_clearance = tunnel_span - folded_width
         return {
             "roof_underside_z_m": roof_underside,
             "folded_max_z_m": folded["maximum_xyz_m"][2],
             "folded_clearance_m": clearance,
+            "folded_width_m": folded_width,
+            "tunnel_clear_span_m": tunnel_span,
+            "lateral_clearance_m": lateral_clearance,
             "required_clearance_margin_m": 0.005,
-            "passed": clearance >= 0.005,
+            "passed": clearance >= 0.005 and lateral_clearance >= 0.005,
         }
 
     def gimbal_cb(self, message):
@@ -205,15 +228,32 @@ class Rmul2027TunnelAcceptance(Node):
         start_xy = [start.position.x, start.position.y]
         path_y = start.position.y
         deadline = time.monotonic() + PASSAGE_TIMEOUT_S
+        max_abs_roll = 0.0
+        max_abs_pitch = 0.0
+        min_z = float("inf")
+        max_z = -float("inf")
         while True:
             current = self.truth[-1].pose.pose
             x, y = current.position.x, current.position.y
+            roll, pitch = roll_pitch_from_pose(current)
+            max_abs_roll = max(max_abs_roll, abs(roll))
+            max_abs_pitch = max(max_abs_pitch, abs(pitch))
+            min_z = min(min_z, current.position.z)
+            max_z = max(max_z, current.position.z)
             if x >= TUNNEL_EXIT_X:
                 break
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"tunnel drive timeout at ({x:.3f}, {y:.3f})")
             if not 7.06 <= y <= 7.86 or abs(y - path_y) > 0.25:
                 raise RuntimeError(f"tunnel lateral deviation at ({x:.3f}, {y:.3f})")
+            if self.gimbal is None or self.gimbal.get("target") != "folded" or not self.gimbal.get("ready"):
+                raise RuntimeError("folded posture was lost during tunnel passage")
+            if self.gimbal.get("fault"):
+                raise RuntimeError(f"gimbal fault during tunnel passage: {self.gimbal['fault']}")
+            if not all(math.isfinite(value) for value in (x, y)):
+                raise RuntimeError("non-finite ground truth during tunnel passage")
+            if abs(roll) > 0.35 or abs(pitch) > 0.35:
+                raise RuntimeError("excessive roll/pitch during tunnel passage")
             command = Twist()
             command.linear.x = PASSAGE_SPEED
             command.linear.y = max(-0.02, min(0.02, -(y - path_y)))
@@ -229,6 +269,10 @@ class Rmul2027TunnelAcceptance(Node):
             "forward_m": finish.position.x - start.position.x,
             "lateral_error_m": finish.position.y - path_y,
             "path_y_m": path_y,
+            "max_abs_roll_rad": max_abs_roll,
+            "max_abs_pitch_rad": max_abs_pitch,
+            "min_z_m": min_z,
+            "max_z_m": max_z,
         }
 
     def run(self):
@@ -245,6 +289,8 @@ class Rmul2027TunnelAcceptance(Node):
         self.publish_posture("folded")
         self.wait_gimbal("folded")
         passage = self.passage_drive()
+        if passage["forward_m"] < TUNNEL_EXIT_X - passage["start"][0]:
+            raise RuntimeError("passage ended before the measured tunnel exit")
         self.publish_posture("normal")
         self.wait_gimbal("normal")
         nonzero_mpc = sum(
@@ -257,6 +303,8 @@ class Rmul2027TunnelAcceptance(Node):
             for sample in self.samples
             if sample["sim_cmd_vel"] and max(abs(v) for v in sample["sim_cmd_vel"]) > 1e-4
         )
+        if nonzero_sim == 0:
+            raise RuntimeError("no non-zero /sim/cmd_vel samples during passage")
         result = {
             "passed": True,
             "world": "rmul_2027_3v3",
@@ -269,6 +317,8 @@ class Rmul2027TunnelAcceptance(Node):
             "nonzero_cmd_vel_mpc_samples": nonzero_mpc,
             "nonzero_sim_cmd_vel_samples": nonzero_sim,
             "final_gimbal": self.gimbal,
+            "collision_evidence_available": False,
+            "acceptance_scope": "position_pose_and_command_chain; contact sensors unavailable",
         }
         (self.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         (self.output / "samples.json").write_text(json.dumps(self.samples) + "\n")

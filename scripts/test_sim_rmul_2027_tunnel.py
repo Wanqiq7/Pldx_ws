@@ -23,7 +23,15 @@ class Rmul2027TunnelContractTest(unittest.TestCase):
         report = Rmul2027TunnelAcceptance.clearance_check()
         self.assertTrue(math.isfinite(report["folded_max_z_m"]))
         self.assertTrue(math.isfinite(report["folded_clearance_m"]))
+        self.assertTrue(math.isfinite(report["lateral_clearance_m"]))
         self.assertGreater(report["required_clearance_margin_m"], 0.0)
+        self.assertGreaterEqual(
+            report["folded_clearance_m"], report["required_clearance_margin_m"]
+        )
+        self.assertGreaterEqual(
+            report["lateral_clearance_m"], report["required_clearance_margin_m"]
+        )
+        self.assertTrue(report["passed"])
 
 
 if __name__ == "__main__":
