@@ -590,6 +590,73 @@ TEST_F(PlanningBudgetTest, SafeTrajectoryReplansEverySecond)
   EXPECT_EQ(MincoPlannerTestPeer::requestedGlobalSearch(p), std::optional<bool>(false));
 }
 
+TEST_F(PlanningBudgetTest, RecoveryReferencesUseNodeClock)
+{
+  for (bool simulation_time : {false, true}) {
+    SCOPED_TRACE(simulation_time ? "simulation time" : "wall time");
+    if (simulation_time) {
+      setTime(251.0);
+    }
+    MincoPlanner planner;
+    MincoPlannerTestPeer::initialize(planner, node, false);
+    std::optional<ros_interfaces::msg::MpcPositionCommand> delivered;
+    const auto subscription = node->create_subscription<ros_interfaces::msg::MpcPositionCommand>(
+      "test_reference", 1, [&](const ros_interfaces::msg::MpcPositionCommand::SharedPtr message) {
+        delivered = *message;
+      });
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(node->get_node_base_interface());
+    const auto discovery_deadline = std::chrono::steady_clock::now() + 1s;
+    while (
+      subscription->get_publisher_count() == 0 && std::chrono::steady_clock::now() < discovery_deadline) {
+      std::this_thread::sleep_for(1ms);
+    }
+    ASSERT_GT(subscription->get_publisher_count(), 0U);
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = "map";
+    pose.pose.position.x = 2.5;
+    pose.pose.position.y = 1.8;
+    pose.pose.orientation.w = 1.0;
+    for (double seconds : {251.0, 252.0}) {
+      if (simulation_time) {
+        setTime(seconds);
+      }
+      for (bool emergency_stop : {false, true}) {
+        SCOPED_TRACE(emergency_stop ? "emergency stop" : "escape");
+        delivered.reset();
+        const auto before = node->now();
+        if (emergency_stop) {
+          planner.publishEmergencyStop(pose);
+        } else {
+          planner.publishEscapeCommand(pose, Eigen::Vector2d(0.1, 0.0));
+        }
+        const auto after = node->now();
+        const auto deadline = std::chrono::steady_clock::now() + 1s;
+        while (!delivered && std::chrono::steady_clock::now() < deadline) {
+          executor.spin_some();
+          std::this_thread::sleep_for(1ms);
+        }
+        ASSERT_TRUE(delivered);
+        ASSERT_FALSE(delivered->cmds.empty());
+        const rclcpp::Time published_at(delivered->header.stamp, before.get_clock_type());
+        EXPECT_GE(published_at, before);
+        EXPECT_LE(published_at, after);
+        EXPECT_EQ(delivered->header.frame_id, "map");
+        EXPECT_EQ(delivered->command_flag,
+          emergency_stop ? ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND
+                         : ros_interfaces::msg::MpcPositionCommand::NORMAL_COMMAND);
+        for (const auto & command : delivered->cmds) {
+          EXPECT_EQ(command.header.stamp, delivered->header.stamp);
+        }
+        if (!emergency_stop) {
+          EXPECT_NEAR(delivered->cmds.front().velocity.x, 0.1, 1e-9);
+          EXPECT_GT(delivered->cmds.back().position.x, pose.pose.position.x);
+        }
+      }
+    }
+  }
+}
+
 TEST_F(PlanningBudgetTest, ComplexGlobalSearchProducesExecutableReference)
 {
   setTime(10.0);

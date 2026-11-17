@@ -2171,7 +2171,7 @@ void MincoPlanner::publishEmergencyStop(const geometry_msgs::msg::PoseStamped & 
 {
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
-  header_msg.stamp = rclcpp::Clock().now();
+  header_msg.stamp = node_.lock()->now();
 
   Eigen::Matrix3d start_state;
   prepareColdStart(current_pose.pose, start_state, std::vector<Eigen::Vector3d>{});
@@ -2454,7 +2454,7 @@ void MincoPlanner::publishEscapeCommand(
 
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
-  header_msg.stamp = rclcpp::Clock().now();
+  header_msg.stamp = node_.lock()->now();
   const double current_yaw = getCurrentYawFromOdom();
   utils::publishEscapeCommand(
     current_pose, escape_vel, current_yaw, opt_path_pub_, opt_trajectory_id_, header_msg);

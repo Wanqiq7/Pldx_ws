@@ -22,7 +22,7 @@ public:
     p.execution_pub_ = node->create_publisher<std_msgs::msg::Bool>("test_execution", 1);
     p.global_plan_.poses.resize(1);
   }
-  static void receive(MincoMpcController & p)
+  static void receive(MincoMpcController & p, size_t steps = 40, double speed = 1.0)
   {
     auto node = p.node_.lock();
     auto odom = std::make_shared<nav_msgs::msg::Odometry>();
@@ -33,11 +33,11 @@ public:
     reference->header.frame_id = "map";
     reference->header.stamp = node->now();
     reference->command_flag = ros_interfaces::msg::MpcPositionCommand::NORMAL_COMMAND;
-    reference->cmds.resize(40);
+    reference->cmds.resize(steps);
     for (size_t i = 0; i < reference->cmds.size(); ++i) {
       reference->cmds[i].header = reference->header;
-      reference->cmds[i].position.x = i * 0.05;
-      reference->cmds[i].velocity.x = 1.0;
+      reference->cmds[i].position.x = i * 0.05 * speed;
+      reference->cmds[i].velocity.x = speed;
       reference->cmds[i].trajectory_id = 1;
     }
     p.onOptPath(reference);
@@ -225,6 +225,31 @@ TEST_F(ControllerFreshnessTest, FreshInputProducesMotion)
   const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
   EXPECT_GT(cmd.twist.linear.x, 0.0);
   EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
+}
+
+TEST_F(ControllerFreshnessTest, ShortRecoveryReferenceHonorsSimulationClockAndFreshnessGuards)
+{
+  node->set_parameter(rclcpp::Parameter("use_sim_time", true));
+  ASSERT_EQ(rcl_enable_ros_time_override(node->get_clock()->get_clock_handle()), RCL_RET_OK);
+  ASSERT_EQ(rcl_set_ros_time_override(node->get_clock()->get_clock_handle(), 251000000000LL), RCL_RET_OK);
+  MincoMpcControllerTestPeer::restart(controller);
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  const auto escape = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(escape.twist.linear.x, 0.0);
+
+  MincoMpcControllerTestPeer::futureStamp(controller);
+  expectStopped();
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  MincoMpcControllerTestPeer::expireReferenceStamp(controller);
+  expectStopped();
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  MincoMpcControllerTestPeer::expireOdomStamp(controller);
+  expectStopped();
+
+  ASSERT_EQ(rcl_set_ros_time_override(node->get_clock()->get_clock_handle(), 252000000000LL), RCL_RET_OK);
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  const auto refreshed = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(refreshed.twist.linear.x, 0.0);
 }
 
 TEST_F(ControllerFreshnessTest, TunnelPreparationScalesXYBeforeMpcOutput)
