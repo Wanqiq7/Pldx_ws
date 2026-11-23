@@ -41,18 +41,23 @@ for required_package in navi2 sentry_simulation; do
     fi
 done
 
-has_world=false
+world=""
 has_params=false
+has_folding_gimbal=false
 robot_model=omni
 for arg in "$@"; do
     case "$arg" in
-        world:=*) has_world=true ;;
+        world:=*) world="${arg#world:=}" ;;
         params_file:=*) has_params=true ;;
+        folding_gimbal:=*) has_folding_gimbal=true ;;
         robot_model:=*) robot_model="${arg#robot_model:=}" ;;
     esac
 done
-if [[ "$has_world" == false ]]; then
+if [[ -z "$world" ]]; then
     set -- world:=rmuc_2026 "$@"
+fi
+if [[ "$robot_model" == real && "$world" == rmuc_2025 && "$has_folding_gimbal" == false ]]; then
+    set -- "$@" folding_gimbal:=false
 fi
 
 if [[ "$has_params" == false ]]; then

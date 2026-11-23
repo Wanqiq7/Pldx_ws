@@ -17,6 +17,8 @@ from collections import deque
 
 import rclpy
 from geometry_msgs.msg import PoseStamped, Twist
+from lifecycle_msgs.msg import State
+from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
@@ -86,6 +88,7 @@ class Rmul2027TunnelAcceptance(Node):
         self.sample_phase = "setup"
         self.samples = []
         self.action = ActionClient(self, NavigateToPose, "/navigate_to_pose")
+        self.navigator_state = self.create_client(GetState, "/bt_navigator/get_state")
         self.posture = self.create_publisher(String, "/sentry/gimbal/posture", 10)
         self.passage = self.create_publisher(
             Twist, "/sentry/gimbal/passage_cmd_vel", 10
@@ -187,6 +190,16 @@ class Rmul2027TunnelAcceptance(Node):
             ):
                 return
         self.spin_until(self.action.server_is_ready, 60.0, "navigate_to_pose action")
+        self.spin_until(self.navigator_state.service_is_ready, 10.0, "navigator lifecycle service")
+        deadline = time.monotonic() + 60.0
+        while True:
+            state = self.navigator_state.call_async(GetState.Request())
+            self.spin_until(state.done, 5.0, "navigator lifecycle state")
+            if state.result().current_state.id == State.PRIMARY_STATE_ACTIVE:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("bt_navigator did not become active")
+            time.sleep(0.2)
         goal = NavigateToPose.Goal()
         goal.pose = PoseStamped()
         goal.pose.header.frame_id = "map"
