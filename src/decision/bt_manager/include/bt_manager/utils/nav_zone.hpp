@@ -242,6 +242,7 @@ typedef enum _NavGoal
 
 typedef enum _SentryStance
 {
+  UNKNOWN = 0,
   ATTACK = 1,
   DEFEND = 2,
   MOVE = 3,

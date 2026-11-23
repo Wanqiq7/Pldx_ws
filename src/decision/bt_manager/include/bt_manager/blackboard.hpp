@@ -137,7 +137,7 @@ public:
     blackboard_->set<bool>("current_stance_is_enhanced", false);  // 当前姿态是否处于强化状态
     blackboard_->set<bool>("current_stance_is_weakened", false);  // 当前姿态是否处于削弱状态
     blackboard_->set<EnergyRatio>("energy_ratio", EnergyRatio::ABOVE_100);  // 底盘当前剩余能量
-    blackboard_->set<SentryStance>("current_stance", SentryStance::MOVE);   // 当前姿态
+    blackboard_->set<SentryStance>("current_stance", SentryStance::UNKNOWN);  // 当前姿态
   }
 
   template <typename T> void set(const std::string & key, const T & value) { blackboard_->set(key, value); }
