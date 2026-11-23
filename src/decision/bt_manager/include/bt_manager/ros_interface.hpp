@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -48,6 +49,7 @@ private:
   std::unique_ptr<AreaVisualizer> area_visualizer_;
 
   rclcpp::TimerBase::SharedPtr timer_;
+  std::chrono::steady_clock::time_point last_stance_feedback_{};
   rclcpp::TimerBase::SharedPtr area_marker_timer_;
   mutable std::mutex mpc_msg_mutex_;
   ros_interfaces::msg::MpcPositionCommand::SharedPtr last_mpc_msg_;
@@ -69,6 +71,7 @@ private:
   void radarInfoCallback(const ros_interfaces::msg::RadarInfo::SharedPtr msg);
   void sentryOfflineCallback(const ros_interfaces::msg::SentryInfoOffline::SharedPtr msg);
   void sentryOnlineCallback(const ros_interfaces::msg::SentryInfoOnline::SharedPtr msg);
+  void invalidateSentryInfo();
 
 public:
   ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr);

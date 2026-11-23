@@ -91,6 +91,10 @@ ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
   area_visualizer_ = std::make_unique<AreaVisualizer>(*this);
 
   timer_ = this->create_wall_timer(std::chrono::milliseconds(100), [this]() {
+    if (last_stance_feedback_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - last_stance_feedback_ > std::chrono::seconds(3)) {
+      invalidateSentryInfo();
+    }
     const auto current_mode = blackboard_->get<NavMode>("current_mode");
     const auto desired_stance = blackboard_->get<Sentry_BT::SentryStance>("desired_stance");
     const auto desired_lifter_pos = blackboard_->get<Sentry_BT::LifterPos>("desired_lifter_pos");
@@ -350,31 +354,18 @@ void ros_interface::sentryOnlineCallback(const ros_interfaces::msg::SentryInfoOn
   blackboard_->set<float>("gimbal_yaw", static_cast<float>(msg->speed_monitor_angle));
   blackboard_->set<EnergyRatio>("energy_ratio", static_cast<EnergyRatio>(msg->energy_ratio));
 
-  // 解码sentry_info_2
-  uint16_t sentry_info_2 = msg->sentry_info_2;
-
-  // 提取bit 0：脱战状态
-  bool is_disengaged = (sentry_info_2 & 0x0001) != 0;
-  blackboard_->set<bool>("is_disengaged", is_disengaged);
-
-  // bit 1-11：队伍17mm允许发弹量的剩余可兑换数
-  uint16_t remaining_ammo_exchange = (sentry_info_2 >> 1) & 0x7FF;
-  blackboard_->set<int>("remaining_ammo_exchange", static_cast<int>(remaining_ammo_exchange));
-
-  // 提取bit 12-13：哨兵当前姿态
-  uint8_t current_stance = (sentry_info_2 >> 12) & 0x3;
-  // 提取bit 15：哨兵当前姿态是否处于强化状态
-  bool current_stance_is_enhanced = ((sentry_info_2 >> 15) & 0x1) != 0;
-  blackboard_->set<bool>("current_stance_is_enhanced", current_stance_is_enhanced);
-  if (current_stance_is_enhanced) {
-    current_stance += 3;  // 强化状态对应的姿态ID为4-6
+  const uint16_t sentry_info_2 = msg->sentry_info_2;
+  if (sentry_info_2 == 0U && msg->sentry_info_1 == 0U && msg->sentry_info_3 == 0U) {
+    invalidateSentryInfo();
+    return;
   }
-  blackboard_->set<Sentry_BT::SentryStance>(
-    "current_stance", static_cast<Sentry_BT::SentryStance>(current_stance));
-
-  // 提取bit 14：己方能量机关是否能够进入正在激活状态
-  bool can_activate_energy = ((sentry_info_2 >> 14) & 0x1) != 0;
-  blackboard_->set<bool>("can_activate_energy", can_activate_energy);
+  last_stance_feedback_ = std::chrono::steady_clock::now();
+  blackboard_->set<SentryStance>(
+    "current_stance", static_cast<SentryStance>((sentry_info_2 >> 12U) & 0x03U));
+  blackboard_->set<bool>("can_activate_energy", (sentry_info_2 & 0x4000U) != 0U);
+  blackboard_->set<bool>("current_stance_is_enhanced", (sentry_info_2 & 0x8000U) != 0U);
+  blackboard_->set<bool>("is_disengaged", (sentry_info_2 & 0x0001U) != 0U);
+  blackboard_->set<int>("remaining_ammo_exchange", (sentry_info_2 >> 1U) & 0x07FFU);
 
   // 解码sentry_info_1的兑换信息
   uint32_t sentry_info_1 = msg->sentry_info_1;
@@ -429,6 +420,25 @@ void ros_interface::sentryOnlineCallback(const ros_interfaces::msg::SentryInfoOn
   // bit 48-55：强化移动剩余强化时间（单位：秒）
   uint8_t enhanced_move_remaining_time = (sentry_info_3 >> 48) & 0xFF;
   blackboard_->set<int>("enhanced_move_remaining_time", static_cast<int>(enhanced_move_remaining_time));
+}
+
+void ros_interface::invalidateSentryInfo()
+{
+  last_stance_feedback_ = {};
+  blackboard_->set<SentryStance>("current_stance", SentryStance::UNKNOWN);
+  blackboard_->set<bool>("current_stance_is_enhanced", false);
+  blackboard_->set<bool>("is_disengaged", true);
+  blackboard_->set<bool>("can_activate_energy", false);
+  blackboard_->set<bool>("can_free_resurrect", false);
+  blackboard_->set<bool>("can_instant_resurrect", false);
+  blackboard_->set<int>("instant_resurrect_cost", 0);
+  blackboard_->set<int>("remaining_ammo_exchange", 0);
+  blackboard_->set<int>("normal_attack_remaining_time", 0);
+  blackboard_->set<int>("normal_defend_remaining_time", 0);
+  blackboard_->set<int>("normal_move_remaining_time", 0);
+  blackboard_->set<int>("enhanced_attack_remaining_time", 0);
+  blackboard_->set<int>("enhanced_defend_remaining_time", 0);
+  blackboard_->set<int>("enhanced_move_remaining_time", 0);
 }
 
 // 判断MPC轨迹是否穿过指定矩形区域
