@@ -28,6 +28,7 @@ class TunnelAcceptanceTest(unittest.TestCase):
             _tf_buffer=SimpleNamespace(lookup_transform=lambda *args: SimpleNamespace(
                 transform=SimpleNamespace(rotation=rotation))),
             _body_yaw=lambda: 0.0, _gimbal_ready=lambda: True, _gimbal_topic="/status",
+            _gimbal_command_allowed=lambda: True,
             _gimbal_state={"target": "folded", "front_yaw_in_chassis": -math.pi / 4},
             _publish_command=commands.append, _passage_fresh=lambda: False,
             _now_seconds=lambda: 1.0,
