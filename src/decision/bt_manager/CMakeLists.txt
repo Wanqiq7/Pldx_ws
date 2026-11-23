@@ -79,6 +79,12 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_tunnel_behavior
     rclcpp std_msgs geometry_msgs nav_msgs visualization_msgs ros_interfaces
     tf2 tf2_ros tf2_geometry_msgs behaviortree_cpp nav2_msgs ament_index_cpp nav2_behavior_tree)
+  ament_add_gtest(test_referee_stance test/test_referee_stance.cpp
+    src/ros_interface.cpp src/param_manager.cpp src/area_visualizer.cpp src/utils/tf_utils.cpp)
+  set_tests_properties(test_referee_stance PROPERTIES ENVIRONMENT "ROS_DOMAIN_ID=228")
+  ament_target_dependencies(test_referee_stance
+    rclcpp std_msgs geometry_msgs nav_msgs visualization_msgs ros_interfaces
+    tf2 tf2_ros tf2_geometry_msgs behaviortree_cpp nav2_msgs ament_index_cpp nav2_behavior_tree)
   ament_add_gtest(test_nav_action test/test_nav_action.cpp)
   target_link_libraries(test_nav_action behaviortree_cpp::behaviortree_cpp)
   ament_target_dependencies(test_nav_action
