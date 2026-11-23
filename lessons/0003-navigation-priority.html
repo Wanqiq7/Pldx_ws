@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>巡逻什么时候会被打断 · 导航入门</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+  <script src="../assets/feedback.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <div class="meta">第三课 · 约 7 分钟</div>
+    <h1>巡逻什么时候会被打断？</h1>
+    <p>给定连续几轮 tick 的状态，判断本轮执行哪个分支，以及正在导航的巡逻序列何时会重置。</p>
+    <nav aria-label="课程导航"><a href="0002-odometry-to-blackboard.html">上一课</a> · <a href="../reference/decision-map.html#nav-priority">优先级速查</a></nav>
+  </header>
+
+  <section>
+    <h2>在两层各追一个节点</h2>
+    <p>在 <code>nav_tree.xml</code> 找到外层的 <code>NavPriorityRoot</code>。它是 <code>ReactiveFallback</code>，每轮从顶部检查子分支。分支返回 <code>FAILURE</code> 时继续往下，遇到 <code>RUNNING</code> 或 <code>SUCCESS</code> 时结束本轮筛选。高优先级分支一旦接管，仍在运行的低优先级分支会收到 <code>halt()</code>。<a href="https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/src/controls/reactive_fallback.cpp">BehaviorTree.CPP 实现</a></p>
+    <p>沿 <code>NavPriorityRoot</code> 找到靠近末尾的直接子分支 <code>Priority5TrackPatrol</code>，再往里找第一条普通 <code>Sequence</code>。如果它连续被选中，运行中的 <code>NavigateToPoseAction</code> 会继续得到 tick。如果序列被 <code>halt()</code>，内部索引会重置。之后再次进入该序列，从时间检查开始。<a href="../src/decision/bt_manager/tree/nav_tree.xml">导航树 XML</a> · <a href="https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/src/controls/sequence_node.cpp">Sequence 实现</a></p>
+    <p>第一课里 <code>nav_goal</code> 保存巡逻目标。第二课里 <code>current_pose</code> 保存当前位置。下面假设上方有一个只看当前位置的示意分支。我们给定它每轮的状态，专心推演父节点的选择。</p>
+  </section>
+
+  <section>
+    <h2>手动推演三轮</h2>
+    <table>
+      <thead><tr><th scope="col">轮次</th><th scope="col">上方分支</th><th scope="col">巡逻序列</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">1</th><td><code>FAILURE</code></td><td>时间检查通过，选点后启动导航。导航返回 <code>RUNNING</code>。</td></tr>
+        <tr><th scope="row">2</th><td><code>RUNNING</code></td><td>上方分支接管，巡逻被 <code>halt()</code>，序列进度重置。</td></tr>
+        <tr><th scope="row">3</th><td><code>FAILURE</code></td><td>假设轮到同一条巡逻序列，它从时间检查开始。</td></tr>
+      </tbody>
+    </table>
+    <p>巡逻导航节点的 <code>halt()</code> 会调用 Nav2 客户端基类。基类判断目标需取消时，会向 action server 发送取消请求。读日志时，可以分别确认树何时调用 <code>halt()</code>，以及 action 何时返回取消结果。<a href="../src/decision/bt_manager/include/bt_manager/action/nav_action.hpp">本仓库的 halt()</a> · <a href="https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_behavior_tree/include/nav2_behavior_tree/bt_action_node.hpp">Nav2 Jazzy 客户端基类</a></p>
+  </section>
+
+  <section>
+    <h2>合上表格，预测下一步</h2>
+    <fieldset class="question">
+      <legend>1. 巡逻正在导航。下一轮，上方各分支都返回 FAILURE。巡逻接着做什么？</legend>
+      <div class="options">
+        <button type="button" aria-pressed="false" data-feedback="这一轮仍然轮到同一条巡逻序列。普通 Sequence 保留运行中子节点的进度。">重做时间检查</button>
+        <button type="button" aria-pressed="false" data-feedback="对。巡逻序列持续被选中，所以它继续 tick 运行中的导航动作。">继续执行导航</button>
+        <button type="button" aria-pressed="false" data-feedback="等待要在导航动作成功后才开始。题目给出的导航状态是 RUNNING。">进入到点等待</button>
+      </div>
+      <output aria-live="polite"></output>
+    </fieldset>
+    <fieldset class="question">
+      <legend>2. 巡逻已被上方分支中止。等同一条巡逻序列重新被选中，它从哪一步开始？</legend>
+      <div class="options">
+        <button type="button" aria-pressed="false" data-feedback="对。halt() 重置了普通 Sequence 的索引，时间检查是这条序列的第一步。">重做时间检查</button>
+        <button type="button" aria-pressed="false" data-feedback="继续导航需要这条序列一直保留运行进度。这里 halt() 已经重置了进度。">继续执行导航</button>
+        <button type="button" aria-pressed="false" data-feedback="重新进入序列时从第一步开始。新的导航动作成功后才执行等待。">进入到点等待</button>
+      </div>
+      <output aria-live="polite"></output>
+    </fieldset>
+    <details>
+      <summary>核对答案</summary>
+      <p>第一题继续执行导航。第二题重做时间检查。回到 XML，用缩进指出负责重新检查优先级的外层节点，以及保留巡逻执行进度的内层节点。</p>
+    </details>
+    <p>如果你在实际 XML 里找到两处同名的 <code>Priority5TrackPatrol</code>，可以把它们各自的父节点发给我，我们一起按层级定位。</p>
+  </section>
+  <footer><a href="0002-odometry-to-blackboard.html">上一课</a> · <a href="../reference/decision-map.html#nav-priority">优先级速查</a></footer>
+</main>
+</body>
+</html>
