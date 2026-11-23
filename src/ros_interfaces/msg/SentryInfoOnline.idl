@@ -51,7 +51,7 @@ module ros_interfaces {
       uint64 sentry_info_3;
 
       @verbatim (language="comment", text=
-        "底盘能量比例")
+        "能量百分比；255 表示协议不提供，不可按 0% 或 255% 使用")
       uint8 energy_ratio;
     };
   };

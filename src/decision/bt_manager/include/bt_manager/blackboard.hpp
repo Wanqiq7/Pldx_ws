@@ -90,10 +90,14 @@ public:
     blackboard_->set("coin_remaining", 0);          // 我方金币剩余数量
     blackboard_->set("small_energy_status", 0);     // 小能量机关状态
     blackboard_->set("big_energy_status", 0);       // 大能量机关状态
-    blackboard_->set("fort_occupation_status", 0);  // 堡垒占领状态
+    blackboard_->set("fort_occupation_status", 4);  // 堡垒占领状态
     blackboard_->set("game_status", 0);             // 比赛状态
     blackboard_->set("enemy_outpost_health", 0);    // 敌方前哨站血量
     blackboard_->set("enemy_base_health", 0);       // 敌方基地血量
+
+    blackboard_->set<uint64_t>("event_code", 0U);  // 2027 两个原始场地状态字
+    blackboard_->set("ally_control_degree", 0);
+    blackboard_->set("enemy_control_degree", 0);
 
     // --- Radar Info ---
     blackboard_->set("enemy_coin_left", 0);                           // 敌方金币剩余数量
@@ -136,7 +140,7 @@ public:
     blackboard_->set<int>("enhanced_move_remaining_time", 15);     // 强化移动剩余可用时间(秒),每局上限15s
     blackboard_->set<bool>("current_stance_is_enhanced", false);  // 当前姿态是否处于强化状态
     blackboard_->set<bool>("current_stance_is_weakened", false);  // 当前姿态是否处于削弱状态
-    blackboard_->set<EnergyRatio>("energy_ratio", EnergyRatio::ABOVE_100);  // 底盘当前剩余能量
+    blackboard_->set<EnergyRatio>("energy_ratio", EnergyRatio::ENERGY_UNKNOWN);  // 裁判协议未提供能量比例
     blackboard_->set<SentryStance>("current_stance", SentryStance::UNKNOWN);  // 当前姿态
   }
 

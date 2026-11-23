@@ -778,7 +778,7 @@ BT::NodeStatus CheckManualStanceOverride::tick()
 
   // 能量不足时无法进入强化姿态。
   const auto energy_ratio = blackboard->get<EnergyRatio>("energy_ratio");
-  if (energy_ratio == EnergyRatio::BELOW_1) {
+  if (energy_ratio == EnergyRatio::ENERGY_UNKNOWN || energy_ratio == EnergyRatio::BELOW_1) {
     detail::logTransition(
       detail::TreeKind::STANCE, "CheckManualStanceOverride", false, "energy insufficient", branch);
     return BT::NodeStatus::FAILURE;
@@ -877,7 +877,7 @@ BT::NodeStatus CheckShouldEnhanceStance::tick()
 
   // 3. 检查能量
   const auto energy_ratio = blackboard->get<EnergyRatio>("energy_ratio");
-  if (energy_ratio == EnergyRatio::BELOW_1) {
+  if (energy_ratio == EnergyRatio::ENERGY_UNKNOWN || energy_ratio == EnergyRatio::BELOW_1) {
     detail::logTransition(
       detail::TreeKind::STANCE, "CheckShouldEnhanceStance", false,
       "target=" + target + ", energy_insufficient", branch);

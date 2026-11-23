@@ -1,3 +1,4 @@
+#include "bt_manager/action/change_stance_action.hpp"
 #include "bt_manager/action/recovery_actions.hpp"
 #include "bt_manager/condition/change_stance_condition.hpp"
 #include "bt_manager/ros_interface.hpp"
@@ -130,6 +131,112 @@ TEST(TunnelBehavior, FeedbackAndTunnelActionsReachPublishedBehavior)
   }
   rclcpp::shutdown();
 }
+TEST(Referee2027, UnknownEnergyDoesNotImplyEmptyOrFull)
+{
+  rclcpp::init(0, nullptr);
+  {
+    auto board = std::make_shared<Sentry_BT::Blackboard>();
+    EXPECT_EQ(board->get<Sentry_BT::EnergyRatio>("energy_ratio"), Sentry_BT::ENERGY_UNKNOWN);
+    board->set<std::shared_ptr<Sentry_BT::TransformUtils>>("transform_utils", nullptr);
+    auto interface = std::make_shared<Sentry_BT::ros_interface>(board);
+    interface->set_parameter(rclcpp::Parameter("publish_area_markers", false));
+    auto input = std::make_shared<rclcpp::Node>("referee_energy_input");
+    auto online = input->create_publisher<ros_interfaces::msg::SentryInfoOnline>("/sentry/online_info", 1);
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(interface);
+    executor.add_node(input);
+    const auto publish = [&](uint8_t energy, Sentry_BT::EnergyRatio expected) {
+      ros_interfaces::msg::SentryInfoOnline message;
+      message.energy_ratio = energy;
+      message.sentry_info_2 = 0x2000U;
+      const auto deadline = std::chrono::steady_clock::now() + 2s;
+      do {
+        online->publish(message);
+        executor.spin_some();
+        if (board->get<Sentry_BT::EnergyRatio>("energy_ratio") == expected)
+          return true;
+        std::this_thread::sleep_for(2ms);
+      } while (std::chrono::steady_clock::now() < deadline);
+      return false;
+    };
+    ASSERT_TRUE(publish(30U, Sentry_BT::ABOVE_30));
+    ASSERT_TRUE(publish(255U, Sentry_BT::ENERGY_UNKNOWN));
+    BT::BehaviorTreeFactory factory;
+    factory.registerNodeType<Sentry_BT::ChangeStance>("ChangeStance");
+    auto tree = factory.createTreeFromText("<root BTCPP_format=\"4\"><BehaviorTree ID=\"Energy\">"
+                                           "<ChangeStance stance=\"ATTACK\"/></BehaviorTree></root>",
+      board->getBTBlackboard());
+    tree.tickExactlyOnce();
+    EXPECT_EQ(board->get<Sentry_BT::SentryStance>("desired_stance"), Sentry_BT::ATTACK);
+    ASSERT_TRUE(publish(0U, Sentry_BT::BELOW_1));
+    tree.tickExactlyOnce();
+    EXPECT_EQ(board->get<Sentry_BT::SentryStance>("desired_stance"), Sentry_BT::MOVE);
+    executor.remove_node(interface);
+    executor.remove_node(input);
+  }
+  rclcpp::shutdown();
+}
+
+TEST(Referee2027, PreservesBothEventWordsAndUses2027BitsForEitherTeam)
+{
+  rclcpp::init(0, nullptr);
+  {
+    auto board = std::make_shared<Sentry_BT::Blackboard>();
+    board->set<std::shared_ptr<Sentry_BT::TransformUtils>>("transform_utils", nullptr);
+    auto interface = std::make_shared<Sentry_BT::ros_interface>(board);
+    interface->set_parameter(rclcpp::Parameter("publish_area_markers", false));
+    auto input = std::make_shared<rclcpp::Node>("referee_events_input");
+    auto teams = input->create_publisher<ros_interfaces::msg::TeamInformation>("/sentry/team_info", 1);
+    auto games = input->create_publisher<ros_interfaces::msg::GameInfo>("/sentry/game_info", 1);
+    rclcpp::executors::SingleThreadedExecutor executor;
+    executor.add_node(interface);
+    executor.add_node(input);
+    const auto waitFor = [&](const auto & publish, const auto & ready) {
+      const auto deadline = std::chrono::steady_clock::now() + 2s;
+      do {
+        publish();
+        executor.spin_some();
+        if (ready())
+          return true;
+        std::this_thread::sleep_for(2ms);
+      } while (std::chrono::steady_clock::now() < deadline);
+      return false;
+    };
+    for (const bool blue : {false, true}) {
+      ros_interfaces::msg::TeamInformation team;
+      team.allies[0].robot_id = blue ? 101U : 1U;
+      team.allies[1].robot_id = blue ? 102U : 2U;  // removed/reserved slot
+      ASSERT_TRUE(waitFor(
+        [&] {
+          teams->publish(team);
+        },
+        [&] {
+          const auto allies = board->get<std::vector<Sentry_BT::AllyRobotInfo>>("allies_info");
+          return allies.size() == 1 && allies[0].robot_id == (blue ? 101 : 1);
+        }));
+      ros_interfaces::msg::GameInfo game;
+      game.event_code = 0x0a5a12348040022dULL;
+      game.ally_control_degree = 0x1234U;
+      game.enemy_control_degree = 0x5678U;
+      ASSERT_TRUE(waitFor(
+        [&] {
+          games->publish(game);
+        },
+        [&] {
+          return board->get<int>("fort_occupation_status") == (blue ? 2 : 1);
+        }));
+      EXPECT_EQ(board->get<uint64_t>("event_code"), 0x0a5a12348040022dULL);
+      EXPECT_EQ(board->get<int>("small_energy_status"), 2);
+      EXPECT_EQ(board->get<int>("big_energy_status"), 1);
+      EXPECT_EQ(board->get<int>("ally_control_degree"), 0x1234);
+      EXPECT_EQ(board->get<int>("enemy_control_degree"), 0x5678);
+    }
+    executor.remove_node(interface);
+    executor.remove_node(input);
+  }
+  rclcpp::shutdown();
+}
+
 TEST(RefereeStance, ConfirmsRequestsOnlyFromFresh2027Feedback)
 {
   rclcpp::init(0, nullptr);
@@ -190,6 +297,7 @@ TEST(RefereeStance, ConfirmsRequestsOnlyFromFresh2027Feedback)
         return board->get<Sentry_BT::SentryStance>("current_stance") == Sentry_BT::UNKNOWN;
       },
       4s));
+    EXPECT_EQ(board->get<Sentry_BT::EnergyRatio>("energy_ratio"), Sentry_BT::ENERGY_UNKNOWN);
     EXPECT_FALSE(board->get<bool>("current_stance_is_enhanced"));
     EXPECT_FALSE(board->get<bool>("can_activate_energy"));
     EXPECT_FALSE(board->get<bool>("can_free_resurrect"));

@@ -222,3 +222,17 @@ colcon test-result --test-result-base build/bt_manager --verbose
 ## 📚 延伸阅读
 
 完整系统拓扑、启动与比赛功能说明见[项目主 README](../../../README.md)。导航目标下发后的轨迹生成见 [MincoPlanner](../../navigation/minco_planner/README.md)。
+
+### 2027 referee input
+
+`GameInfo.event_code` preserves both 32-bit referee event words as one uint64.
+The small/big energy mechanism states use low-word bits 1–2 and 3–4. The
+existing own-fort view selects low-word bits 5–7 for red or 8–10 for blue from
+valid team robot IDs; unknown identity produces status 4, not idle. The full
+raw word and both control degrees remain on the blackboard. Reserved engineer
+HP slots and zero robot IDs do not create allies.
+
+`SentryInfoOnline.energy_ratio=255` is `EnergyRatio::ENERGY_UNKNOWN`, including
+at startup and after online feedback expires. Unknown energy does not force a basic MOVE request and cannot
+satisfy energy-dependent reinforcement conditions. Update both MC02 boards,
+`ros_interfaces`, and `ros2_libxr` as a set for the 30-byte game payload.

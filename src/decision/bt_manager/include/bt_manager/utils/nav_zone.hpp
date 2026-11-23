@@ -219,6 +219,7 @@ typedef enum _EnergyRatio
   ABOVE_50 = 5,
   ABOVE_100 = 6,
   ABOVE_125 = 7,
+  ENERGY_UNKNOWN = 255,  // 2027 协议不提供能量比例
 } EnergyRatio;
 typedef enum _NavMode
 {
@@ -242,6 +243,7 @@ typedef enum _NavGoal
 
 typedef enum _SentryStance
 {
+  UNKNOWN = 0,
   ATTACK = 1,
   DEFEND = 2,
   MOVE = 3,

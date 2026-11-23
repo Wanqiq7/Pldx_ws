@@ -12,6 +12,24 @@
 #include <vector>
 
 namespace Sentry_BT {
+namespace {
+
+EnergyRatio decodeEnergyRatio(uint8_t percent)
+{
+  if (percent == 255U) {
+    return EnergyRatio::ENERGY_UNKNOWN;
+  }
+  if (percent >= 125U) return EnergyRatio::ABOVE_125;
+  if (percent >= 100U) return EnergyRatio::ABOVE_100;
+  if (percent >= 50U) return EnergyRatio::ABOVE_50;
+  if (percent >= 30U) return EnergyRatio::ABOVE_30;
+  if (percent >= 15U) return EnergyRatio::ABOVE_15;
+  if (percent >= 5U) return EnergyRatio::ABOVE_5;
+  if (percent >= 1U) return EnergyRatio::ABOVE_1;
+  return EnergyRatio::BELOW_1;
+}
+
+}  // namespace
 
 ros_interface::ros_interface(std::shared_ptr<Blackboard> & blackboard_ptr)
 : Node("ros_interface_bt", rclcpp::NodeOptions()), blackboard_(blackboard_ptr)
@@ -192,6 +210,10 @@ void ros_interface::teamInfoCallback(const ros_interfaces::msg::TeamInformation:
     blackboard_->get<std::shared_ptr<Sentry_BT::TransformUtils>>("transform_utils");
 
   for (const auto & ally : msg->allies) {
+    // The former engineer HP slot is reserved in 2027; zero IDs are unused.
+    if (ally.robot_id == 0U || ally.robot_id == 2U || ally.robot_id == 102U) {
+      continue;
+    }
     AllyRobotInfo info;
     info.robot_id = ally.robot_id;
     info.remain_hp = static_cast<int>(ally.robot_hp);
@@ -217,20 +239,23 @@ void ros_interface::gameInfoCallback(const ros_interfaces::msg::GameInfo::Shared
   // 行为树与ROS回调运行在不同线程。最后写比赛状态，避免开赛瞬间读到已开赛但建筑血量仍为默认值。
   blackboard_->set<int>("game_status", static_cast<int>(msg->game_status));
 
-  // 解码event_code字段
-  uint32_t event_code = msg->event_code;
+  // Preserve both raw 2027 event words; strategy reads only named fields it uses.
+  const uint64_t event_code = msg->event_code;
+  blackboard_->set<uint64_t>("event_code", event_code);
+  blackboard_->set<int>("ally_control_degree", msg->ally_control_degree);
+  blackboard_->set<int>("enemy_control_degree", msg->enemy_control_degree);
+  blackboard_->set<int>("small_energy_status", (event_code >> 1U) & 0x03U);
+  blackboard_->set<int>("big_energy_status", (event_code >> 3U) & 0x03U);
 
-  // 提取bit 3-4：己方小能量机关的激活状态
-  uint8_t small_energy_status = (event_code >> 3) & 0x3;
-  blackboard_->set<int>("small_energy_status", static_cast<int>(small_energy_status));
-
-  // 提取bit 5-6：己方大能量机关的激活状态
-  uint8_t big_energy_status = (event_code >> 5) & 0x3;
-  blackboard_->set<int>("big_energy_status", static_cast<int>(big_energy_status));
-  // std::cout << "big_energy_status:" << static_cast<int>(big_energy_status) <<std::endl;
-  // 提取bit 25-26：己方堡垒增益点的占领状态
-  uint8_t fort_occupation_status = (event_code >> 25) & 0x3;
-  blackboard_->set<int>("fort_occupation_status", static_cast<int>(fort_occupation_status));
+  // Fort status is R at bits5-7 and B at bits8-10. Team IDs establish which
+  // one belongs to us; unknown/mixed identity must not be interpreted as idle.
+  bool red = false, blue = false;
+  for (const auto & ally : blackboard_->get<std::vector<AllyRobotInfo>>("allies_info")) {
+    red |= ally.robot_id >= 1 && ally.robot_id <= 11;
+    blue |= ally.robot_id >= 101 && ally.robot_id <= 111;
+  }
+  const int fort = red != blue ? static_cast<int>((event_code >> (blue ? 8U : 5U)) & 0x07U) : 4;
+  blackboard_->set<int>("fort_occupation_status", fort);
 
   geometry_msgs::msg::Pose manual_point_in, manual_point;
   manual_point_in.position.x = msg->manual_point_x;
@@ -351,8 +376,10 @@ void ros_interface::sentryOnlineCallback(const ros_interfaces::msg::SentryInfoOn
   blackboard_->set<int>("cooling_value", static_cast<int>(msg->cooling_value));
   blackboard_->set<int>("heat_limit", static_cast<int>(msg->heat_limit));
   blackboard_->set<int>("current_heat", static_cast<int>(msg->current_heat));
-  blackboard_->set<float>("gimbal_yaw", static_cast<float>(msg->speed_monitor_angle));
-  blackboard_->set<EnergyRatio>("energy_ratio", static_cast<EnergyRatio>(msg->energy_ratio));
+  if (std::isfinite(msg->speed_monitor_angle)) {
+    blackboard_->set<float>("gimbal_yaw", static_cast<float>(msg->speed_monitor_angle));
+  }
+  blackboard_->set<EnergyRatio>("energy_ratio", decodeEnergyRatio(msg->energy_ratio));
 
   const uint16_t sentry_info_2 = msg->sentry_info_2;
   if (sentry_info_2 == 0U && msg->sentry_info_1 == 0U && msg->sentry_info_3 == 0U) {
@@ -425,6 +452,7 @@ void ros_interface::sentryOnlineCallback(const ros_interfaces::msg::SentryInfoOn
 void ros_interface::invalidateSentryInfo()
 {
   last_stance_feedback_ = {};
+  blackboard_->set<EnergyRatio>("energy_ratio", EnergyRatio::ENERGY_UNKNOWN);
   blackboard_->set<SentryStance>("current_stance", SentryStance::UNKNOWN);
   blackboard_->set<bool>("current_stance_is_enhanced", false);
   blackboard_->set<bool>("is_disengaged", true);
