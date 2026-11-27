@@ -1919,14 +1919,14 @@ MincoPlanner::PlanningState MincoPlanner::determinePlanningState(
   double vel_error = (current_speed - pred_vel).norm();
   if (tracking_error > dynamic_error_threshold) {
     std::cout << YELLOW << "[MincoPlanner] Large tracking error (" << tracking_error
-              << "m). Continuing HOT_START." << RESET << std::endl;
-    return PlanningState::HOT_START;
+              << "m). Restarting from measured state." << RESET << std::endl;
+    return PlanningState::COLD_START;
   }
 
   if (vel_error > 1.0) {
     std::cout << YELLOW << "[MincoPlanner] Large velocity error (" << vel_error
-              << "m/s). Continuing HOT_START." << RESET << std::endl;
-    return PlanningState::HOT_START;
+              << "m/s). Restarting from measured state." << RESET << std::endl;
+    return PlanningState::COLD_START;
   }
 
   if (new_path.size() >= 2) {

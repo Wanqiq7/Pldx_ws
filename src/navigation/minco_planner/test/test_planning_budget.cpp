@@ -222,6 +222,8 @@ public:
     p.local_path_processor_->configure(lookahead, 3.0, 2.0, 0.3, p.logger_);
     installSafety(p, query);
     p.use_yaw_opt_ = false;
+    p.latest_odom_.header.frame_id = p.planning_frame_;
+    p.latest_odom_.child_frame_id = "base_link";
     p.latest_odom_.pose.pose.orientation.w = 1.0;
     p.latest_odom_.twist.twist.linear.x = 1.0;
     p.has_latest_odom_ = true;
@@ -1005,6 +1007,39 @@ TEST_F(PlanningBudgetTest, HotStartNearPreviousEndStillStartsAtCurrentPose)
   EXPECT_NEAR(trajectory.getAcc(0.0).x(), 0.5, 1e-6);
 }
 
+TEST_F(PlanningBudgetTest, DistantRobotRestartsFromMeasuredVelocity)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0, 0.5, 0.0, 1.0);
+  ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  setTime(12.0);
+  const auto trajectory =
+    MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, 4.0);
+  ASSERT_FALSE(trajectory.empty());
+  EXPECT_NEAR(trajectory.getVel(0.0).x(), 1.0, 1e-6);
+  EXPECT_NEAR(trajectory.getAcc(0.0).norm(), 0.0, 1e-6);
+}
+
+TEST_F(PlanningBudgetTest, VelocityMismatchRestartsFromMeasuredVelocity)
+{
+  setTime(10.0);
+  nav2_costmap_2d::Costmap2D costmap(30, 30, 1.0, 0.0, 0.0);
+  MincoPlanner p;
+  MincoPlannerTestPeer::initialize(p, node, false);
+  MincoPlannerTestPeer::readyCandidate(p, false, 5.0, 3.0, 0.0, 1.0);
+  ASSERT_EQ(p.planAsync(geometry_msgs::msg::PoseStamped{}, geometry_msgs::msg::PoseStamped{}, false),
+    std::optional(MincoPlanner::PlanOutcome::COMMITTED));
+  setTime(10.1);
+  const auto trajectory =
+    MincoPlannerTestPeer::optimizeStraightSegment(p, std::make_shared<ClearanceQuery>(&costmap), 6.0, 1.3);
+  ASSERT_FALSE(trajectory.empty());
+  EXPECT_NEAR(trajectory.getVel(0.0).x(), 1.0, 1e-6);
+}
+
 TEST_F(PlanningBudgetTest, DistantRobotDoesNotSpliceOldTrajectory)
 {
   setTime(10.0);
@@ -1030,7 +1065,7 @@ TEST_F(PlanningBudgetTest, TrackingDeviationWaitsForPeriodicReplan)
   setTime(0.15);
   for (double x : {1.49, 1.51, 3.0}) {
     MincoPlannerTestPeer::setRobotX(p, x);
-    EXPECT_FALSE(MincoPlannerTestPeer::usesColdStart(p));
+    EXPECT_EQ(MincoPlannerTestPeer::usesColdStart(p), x == 3.0);
     MincoPlannerTestPeer::tick(p);
     EXPECT_FALSE(p.planningInProgress());
   }
