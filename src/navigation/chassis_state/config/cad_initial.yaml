@@ -1,0 +1,9 @@
+# CAD initial values only; other mechanisms locked. Verify on bench before motion.
+chassis_state:
+  ros__parameters:
+    pivot_xyz: [0.0, 0.0, 0.055]
+    axis_rpy: [0.0, 0.0, 0.0]
+    joint_zero: -0.7853981633974483
+    joint_direction: 1.0
+    mount_to_imu_xyz: [0.04911250596831119, -0.16053277127083143, 0.09138062605036074]
+    mount_to_imu_rpy: [0.5256481846082275, 0.3942647576827967, 1.0046444414955074]
