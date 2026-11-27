@@ -1,0 +1,290 @@
+{
+  "completed_legs": 10,
+  "failure": null,
+  "route_metrics": {
+    "sample_count": 3634,
+    "truth_distance_m": 466.44975833394705,
+    "localization_height_max_m": 0.023946314040246663,
+    "localization_yaw_max_rad": 0.0038794154758707844,
+    "localization_max_m": 0.014081896203059831,
+    "localization_p95_m": 0.009110260177717516
+  },
+  "full_pose_samples": 1903,
+  "xyz_error_abs_max_m": [
+    0.014279239052140014,
+    0.012696878015241442,
+    0.022077476082975084
+  ],
+  "orientation_max_deg": 0.4270899077702092,
+  "orientation_p95_deg": 0.21632639246700244,
+  "height_abs_p95_m": 0.008308538971199016,
+  "global_correction_z_range_m": [
+    0.12184341251850128,
+    0.2943909168243408
+  ],
+  "ros_error_count": 0,
+  "planner_stdout_counts": {
+    "collision": 8,
+    "dynamics": 8,
+    "rejected": 16,
+    "yaw_fallback": 3,
+    "large_tracking_error": 1
+  },
+  "chassis_composition_max_element_error": 3.552713678800501e-15,
+  "tracking": {
+    "sample_count": 1441,
+    "max_m": 0.10582410697410642,
+    "p95_m": 0.06801404248873219,
+    "start_sim": 28.57,
+    "end_sim": 401.19
+  },
+  "goal_max_error_m": 0.04669048244853348,
+  "goal_errors_m": [
+    0.02818158376168667,
+    0.042088636947665604,
+    0.028316611965531056,
+    0.017598778420623417,
+    0.0177830948450777,
+    0.037102326132188106,
+    0.008425387319637719,
+    0.04098094358150017,
+    0.010556930620154925,
+    0.04669048244853348
+  ],
+  "max_simulation_rss_gib": 5.2509307861328125,
+  "min_available_memory_gib": 3.9653358459472656,
+  "tf_unique_writers_start_and_end": true,
+  "obstacles": {
+    "obstacle-baseline": {
+      "cloud_points": 0,
+      "peak_cloud_points": 0,
+      "messages": 93,
+      "cloud_z": [],
+      "costs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "max_cost": 0
+    },
+    "obstacle-present24": {
+      "cloud_points": 2,
+      "peak_cloud_points": 4,
+      "messages": 92,
+      "cloud_z": [
+        0.22172453999519348,
+        0.22647835314273834
+      ],
+      "costs": [
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99
+      ],
+      "max_cost": 99
+    },
+    "obstacle-removed": {
+      "cloud_points": 0,
+      "peak_cloud_points": 4,
+      "messages": 96,
+      "cloud_z": [
+        0.22408485412597656,
+        0.22952532768249512
+      ],
+      "costs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "max_cost": 99
+    },
+    "obstacle-baseline-side18": {
+      "cloud_points": 0,
+      "peak_cloud_points": 0,
+      "messages": 140,
+      "cloud_z": [],
+      "costs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "max_cost": 0
+    },
+    "obstacle-present-side18": {
+      "cloud_points": 2,
+      "peak_cloud_points": 5,
+      "messages": 118,
+      "cloud_z": [
+        0.08355724811553955,
+        0.17358550429344177
+      ],
+      "costs": [
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99,
+        99
+      ],
+      "max_cost": 99
+    },
+    "obstacle-removed-side18": {
+      "cloud_points": 0,
+      "peak_cloud_points": 4,
+      "messages": 141,
+      "cloud_z": [
+        0.17613178491592407,
+        0.17649684846401215
+      ],
+      "costs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "max_cost": 99
+    },
+    "blind18-obstacle-present": {
+      "cloud_points": 0,
+      "peak_cloud_points": 0,
+      "messages": 119,
+      "cloud_z": [],
+      "costs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "max_cost": 0
+    }
+  },
+  "unresolved": "Fixed real-model line-of-sight obstruction for an 18 cm box at map (5.8,7.3); confirmed in raw GPU lidar and CAD ray intersections.",
+  "tests": {
+    "minco_planner": {
+      "count": 67,
+      "failures": 0
+    },
+    "icp_relocalization": {
+      "count": 5,
+      "failures": 0
+    },
+    "sentry_simulation": {
+      "ctest_count": 16,
+      "result_count": 22,
+      "failures": 0
+    }
+  }
+}

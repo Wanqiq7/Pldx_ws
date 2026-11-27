@@ -1,0 +1,64 @@
+{
+  "/cloud_obstacles": {
+    "messages": 171,
+    "transformed": 171,
+    "frames": [
+      "map"
+    ],
+    "max_points": 7,
+    "min_z": 0.06024474650621414,
+    "max_z": 0.5036644339561462
+  },
+  "/sim/lidar/left/front/points": {
+    "messages": 141,
+    "transformed": 128,
+    "frames": [
+      "mid360_scan"
+    ],
+    "max_points": 1394,
+    "min_z": 0.1929777756309345,
+    "max_z": 0.5086942369884644,
+    "box_top_elevation_deg": 23.428333233390692,
+    "sensor_xyz": [
+      4.5249124834488645,
+      7.142519020375114,
+      0.21324110423069118
+    ]
+  },
+  "/sim/lidar/left/rear/points": {
+    "messages": 141,
+    "transformed": 129,
+    "frames": [
+      "mid360_scan"
+    ],
+    "max_points": 0,
+    "min_z": null,
+    "max_z": null,
+    "box_top_elevation_deg": 23.428333233390692,
+    "sensor_xyz": [
+      4.5249124834488645,
+      7.142519020375114,
+      0.21324110423069118
+    ]
+  },
+  "/cloud_registered": {
+    "messages": 152,
+    "transformed": 147,
+    "frames": [
+      "camera_init"
+    ],
+    "max_points": 7,
+    "min_z": 0.06602025132711326,
+    "max_z": 0.4998673042525348
+  },
+  "/cloud_registered_full": {
+    "messages": 152,
+    "transformed": 147,
+    "frames": [
+      "camera_init"
+    ],
+    "max_points": 300,
+    "min_z": 0.19809074318113015,
+    "max_z": 0.5068914187651103
+  }
+}

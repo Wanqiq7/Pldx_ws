@@ -46,6 +46,7 @@ class Accuracy(Node):
             parameter_overrides=[Parameter("use_sim_time", value=True)],
         )
         self.directory = Path(directory)
+        self.max_height_error = float("inf")
         self.goal_timeout = goal_timeout
         self.directory.mkdir(parents=True, exist_ok=True)
         self.samples = (self.directory / "samples.jsonl").open("w")
@@ -109,6 +110,7 @@ class Accuracy(Node):
                 self.window_errors.append(math.dist(record["truth"][:2], self.window_target))
             self.samples.write(json.dumps(record) + "\n")
             self.samples.flush()
+            assert record["localization_height_error"] <= self.max_height_error, "in-motion height error exceeded"
             assert record["localization_error"] <= self.max_localization_error, "in-motion localization error exceeded"
             assert record["localization_yaw_error"] <= self.max_yaw_error, "in-motion yaw error exceeded"
 
@@ -154,6 +156,7 @@ class Accuracy(Node):
             "cmd": self.cmd,
             "localization_delta": [mapped[0] - truth[0], mapped[1] - truth[1]],
             "localization_error": math.dist(mapped[:2], truth[:2]),
+            "localization_height_error": abs(mapped[2] - truth[2]),
             "localization_yaw_error": abs(math.atan2(
                 math.sin(mapped[3] - truth[3]), math.cos(mapped[3] - truth[3]))),
         }

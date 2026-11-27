@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--goals", default="[[24.0,7.3],[4.6,7.3]]")
     parser.add_argument("--launch-log", type=Path,
                         help="also count planner stdout diagnostics omitted from /rosout")
+    parser.add_argument("--max-height-error", type=float, default=.08)
     parser.add_argument("--max-localization-error", type=float, default=0.12)
     parser.add_argument("--max-yaw-error", type=float, default=math.radians(3.0))
     parser.add_argument("--max-goal-error", type=float, default=0.15)
@@ -42,6 +43,7 @@ def main():
     rclpy.init()
     node = Accuracy(args.directory, goal_timeout=args.goal_timeout)
     node.max_localization_error = args.max_localization_error
+    node.max_height_error = args.max_height_error
     node.max_yaw_error = args.max_yaw_error
     warnings = (args.directory / "rosout.jsonl").open("w", buffering=1)
     candidate_stream = (args.directory / "candidate_status.jsonl").open("w", buffering=1)
@@ -57,17 +59,20 @@ def main():
         node.samples.flush()
         errors_xy = []
         errors_yaw = []
+        errors_height = []
         distance = 0.0
         previous = None
         for line in (args.directory / "samples.jsonl").read_text().splitlines():
             record = json.loads(line)
             errors_xy.append(record["localization_error"])
             errors_yaw.append(record["localization_yaw_error"])
+            errors_height.append(record["localization_height_error"])
             if previous:
                 distance += math.dist(record["truth"][:2], previous["truth"][:2])
             previous = record
         errors_xy.sort()
         return dict(sample_count=len(errors_xy), truth_distance_m=distance,
+                    localization_height_max_m=max(errors_height) if errors_height else None,
                     localization_yaw_max_rad=max(errors_yaw) if errors_yaw else None,
                     localization_max_m=errors_xy[-1] if errors_xy else None,
                     localization_p95_m=errors_xy[int((len(errors_xy) - 1) * .95)] if errors_xy else None)
@@ -157,6 +162,7 @@ def main():
                     save()
         metrics = sample_metrics()
         assert metrics["localization_max_m"] is not None, "no synchronized pose samples"
+        assert metrics["localization_height_max_m"] <= args.max_height_error, "in-motion height error exceeded"
         assert metrics["localization_max_m"] <= args.max_localization_error, "in-motion localization error exceeded"
         assert metrics["localization_yaw_max_rad"] <= args.max_yaw_error, "in-motion yaw error exceeded"
         print("PASS navigation loop", flush=True)

@@ -1,0 +1,142 @@
+{
+  "/gicp_relocalization_node": {
+    "target_pcd_file": {
+      "bool": false,
+      "double": 0.0,
+      "string": "${WORKSPACE}/install-link/sentry_simulation/share/sentry_simulation/resource/maps/pcd/rmuc_2025_mesh.pcd"
+    },
+    "publish_planar_tf": {
+      "bool": false,
+      "double": 0.0,
+      "string": ""
+    },
+    "enable_continuous_relocalization": {
+      "bool": true,
+      "double": 0.0,
+      "string": ""
+    }
+  },
+  "/laserMapping": {
+    "filter_size_surf": {
+      "bool": false,
+      "double": 0.25,
+      "string": ""
+    },
+    "filter_size_map": {
+      "bool": false,
+      "double": 0.25,
+      "string": ""
+    },
+    "publish.tf_send_en": {
+      "bool": false,
+      "double": 0.0,
+      "string": ""
+    }
+  },
+  "/global_costmap/global_costmap": {
+    "stvl_layer.enabled": {
+      "bool": true,
+      "double": 0.0,
+      "string": ""
+    },
+    "stvl_layer.mid360.topic": {
+      "bool": false,
+      "double": 0.0,
+      "string": "/cloud_obstacles"
+    },
+    "stvl_layer.mid360.sensor_frame": {
+      "bool": false,
+      "double": 0.0,
+      "string": "body"
+    }
+  },
+  "/local_costmap/local_costmap": {
+    "stvl_layer.enabled": {
+      "bool": true,
+      "double": 0.0,
+      "string": ""
+    },
+    "stvl_layer.mid360.topic": {
+      "bool": false,
+      "double": 0.0,
+      "string": "/cloud_obstacles"
+    },
+    "stvl_layer.mid360.sensor_frame": {
+      "bool": false,
+      "double": 0.0,
+      "string": "body"
+    }
+  },
+  "/simulation_yaw_feedback": {
+    "joint_locked": {
+      "bool": true,
+      "double": 0.0,
+      "string": ""
+    }
+  },
+  "/planner_server": {
+    "MincoPlanner.corridor.robot_radius": {
+      "bool": false,
+      "double": 0.44,
+      "string": ""
+    },
+    "MincoPlanner.minco_optimizer.collision_dist": {
+      "bool": false,
+      "double": 0.44,
+      "string": ""
+    }
+  },
+  "/terrain_obstacle_filter": {
+    "terrain_file": {
+      "bool": false,
+      "double": 0.0,
+      "string": "${WORKSPACE}/install-link/sentry_simulation/share/sentry_simulation/resource/maps/rmuc_2025_terrain.npz"
+    }
+  },
+  "tf_edges": {
+    "pcd_map/camera_init": [
+      "observed"
+    ],
+    "body/mid360_scan": [
+      "observed"
+    ],
+    "map/pcd_map": [
+      "observed"
+    ],
+    "body/MID360": [
+      "observed"
+    ],
+    "body/sim_lidar": [
+      "observed"
+    ],
+    "lidar_yaw_mount/body": [
+      "observed"
+    ],
+    "lidar_yaw_mount/vision_gimbal": [
+      "observed"
+    ],
+    "camera_init/base_link": [
+      "observed"
+    ],
+    "base_link/lidar_yaw_mount": [
+      "observed"
+    ],
+    "base_link/base_link_fake": [
+      "observed"
+    ]
+  },
+  "tf_topic_publishers": {
+    "/tf": [
+      "gicp_relocalization_node",
+      "chassis_state",
+      "laserMapping"
+    ],
+    "/tf_static": [
+      "map_to_pcd_map",
+      "body_to_sim_lidar",
+      "body_to_MID360",
+      "body_to_mid360_scan",
+      "chassis_state"
+    ]
+  }
+}

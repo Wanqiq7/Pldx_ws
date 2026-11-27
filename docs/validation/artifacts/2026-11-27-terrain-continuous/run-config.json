@@ -1,0 +1,32 @@
+{
+  "world": "rmuc_2025",
+  "robot_model": "real",
+  "folding_gimbal": false,
+  "chassis_type": "omni",
+  "full_3d_tf": true,
+  "max_height_error_m": 0.05,
+  "max_localization_error_m": 0.12,
+  "max_goal_error_m": 0.15,
+  "cycles": 5,
+  "goals": [
+    [
+      24,
+      7.3
+    ],
+    [
+      4.6,
+      7.3
+    ]
+  ],
+  "sha256": {
+    "src/nav-simulation/sentry_simulation/config/worlds.yaml": "212e97577e14e8d6d19ed3fffb2a032b520189821233d1bd6e94b23ced377f1a",
+    "src/nav-simulation/sentry_simulation/config/real_robot.yaml": "a358bde08e3be32c87f2327cc3b92db3701c836adb6d7c32c91b06349d315e27",
+    "src/nav-simulation/sentry_simulation/config/point_lio_sim.yaml": "cef77ed0bf080894899f69b525ea6ce5274aeb327a5220fea102371e395b0bbd",
+    "src/nav-simulation/sentry_simulation/config/gicp_sim.yaml": "e6c94036709bebf0462cc3f493dbf558ab5f075212463361cede1b21c21e6b2f",
+    "src/nav-simulation/sentry_simulation/resource/maps/pcd/rmuc_2025_mesh.pcd": "99e915da05e1b5eb691d6468d2603c77b102c0ce0cfad65b1b379118f78842cb",
+    "src/nav-simulation/sentry_simulation/resource/maps/rmuc_2025_terrain.npz": "23b89e3d9af443f989af03b4d83e62f493d71918cfda3808f9fb11c6a2ac02e4",
+    "src/nav-simulation/sentry_simulation/sentry_simulation/real_robot.py": "db35b9bfdf6273d90000813eb599149cb7fe099556a8c05dcc54918912b7f840",
+    "src/nav-simulation/sentry_simulation/sentry_simulation/terrain_filter.py": "f526b708544ca2b5e697ed695b3a5c3eb030966858c8f8c5b480794542213e87",
+    "src/navigation/minco_planner/src/minco_core/minco_planner.cpp": "cbb1ce53386e4421d4b5d0cd67720c6e9f27394d3437f6a8b831e2a0c46df7fb"
+  }
+}
