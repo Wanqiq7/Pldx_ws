@@ -7,7 +7,7 @@ setup(
                 ('share/chassis_state', ['package.xml']),
                 ('share/chassis_state/launch', glob('launch/*.launch.py')),
                 ('share/chassis_state/config', glob('config/*.yaml'))],
-    install_requires=['setuptools'], zip_safe=True,
+    install_requires=['setuptools'], tests_require=['pytest'], zip_safe=True,
     maintainer='Wanqiq', maintainer_email='robot@example.com',
     description='Measurement-aligned physical chassis state for yaw-mounted LIO',
     license='Apache-2.0',
