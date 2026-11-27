@@ -1,6 +1,9 @@
 #include "minco_core/components/local_path_processor.hpp"
 #include "minco_core/planning_deadline.hpp"
 
+#include <algorithm>
+#include <limits>
+
 namespace minco_planner {
 
 namespace {
@@ -54,15 +57,151 @@ LocalPathSeed LocalPathProcessor::buildSeed(
   const geometry_msgs::msg::PoseStamped & current_pose,
   const PlannerModeContext & mode_context) const
 {
-  LocalPathSeed seed;
   if (global_path.empty()) {
-    return seed;
+    return {};
   }
 
   Eigen::Vector3d global_goal(global_path.back().pose.position.x, global_path.back().pose.position.y, 0.0);
   Eigen::Vector3d cur_pos(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
 
-  seed.dense_path = extractLocalPath(global_path, cur_pos);
+  return finishSeed(extractLocalPath(global_path, cur_pos), global_goal, mode_context);
+}
+
+LocalPathSeed LocalPathProcessor::buildSeedFromHandoff(
+  const std::vector<geometry_msgs::msg::PoseStamped> & global_path,
+  const geometry_msgs::msg::PoseStamped & current_pose,
+  const Eigen::Vector3d & handoff,
+  const PlannerModeContext & mode_context) const
+{
+  if (global_path.size() < 2U || !handoff.allFinite() || !std::isfinite(lookahead_dist_) ||
+      lookahead_dist_ <= 0.0) {
+    return {};
+  }
+
+  struct Projection
+  {
+    size_t segment{0};
+    double ratio{0.0};
+    Eigen::Vector3d point{Eigen::Vector3d::Zero()};
+    double distance_sq{std::numeric_limits<double>::infinity()};
+    double progress{0.0};
+  };
+  auto pathPoint = [&global_path](size_t i) {
+    const auto & p = global_path[i].pose.position;
+    return Eigen::Vector3d(p.x, p.y, 0.0);
+  };
+  auto project = [&](
+                   const Eigen::Vector3d & position, size_t first, double first_ratio, double max_length) {
+    Projection best;
+    double remaining = max_length;
+    double progress = 0.0;
+    for (size_t i = first; i + 1U < global_path.size(); ++i) {
+      PlanningDeadline::check();
+      const Eigen::Vector3d a = pathPoint(i);
+      const Eigen::Vector3d delta = pathPoint(i + 1U) - a;
+      const double length = delta.head<2>().norm();
+      if (length < 1e-9) {
+        continue;
+      }
+      const double lo = i == first ? first_ratio : 0.0;
+      const double hi = std::min(1.0, lo + remaining / length);
+      const double ratio =
+        std::clamp((position - a).head<2>().dot(delta.head<2>()) / (length * length), lo, hi);
+      const Eigen::Vector3d projected = a + ratio * delta;
+      const double distance_sq = (position - projected).head<2>().squaredNorm();
+      if (distance_sq < best.distance_sq) {
+        best = {i, ratio, projected, distance_sq, progress + (ratio - lo) * length};
+      }
+      const double traversed = (hi - lo) * length;
+      progress += traversed;
+      remaining -= traversed;
+      if (remaining <= 1e-9) {
+        break;
+      }
+    }
+    return best;
+  };
+
+  const Eigen::Vector3d robot(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
+  if (!robot.allFinite()) {
+    return {};
+  }
+  const Projection robot_projection = project(robot, 0U, 0.0, std::numeric_limits<double>::infinity());
+  constexpr double kMaxPathDeviation = 1.0;
+  if (!std::isfinite(robot_projection.distance_sq) ||
+      robot_projection.distance_sq > kMaxPathDeviation * kMaxPathDeviation) {
+    return {};
+  }
+
+  // A nearby crossing or return leg can be closer than the current branch.
+  // Without a progress history for this path version, retain the safe old
+  // trajectory rather than arbitrarily choose between equivalent projections.
+  constexpr double kAmbiguousDistance = 0.05;
+  constexpr double kDistinctProgress = 1.0;
+  const double ambiguous_distance = std::sqrt(robot_projection.distance_sq) + kAmbiguousDistance;
+  double path_progress = 0.0;
+  for (size_t i = 0; i + 1U < global_path.size(); ++i) {
+    PlanningDeadline::check();
+    const Eigen::Vector3d a = pathPoint(i);
+    const Eigen::Vector3d delta = pathPoint(i + 1U) - a;
+    const double length = delta.head<2>().norm();
+    if (length < 1e-9) {
+      continue;
+    }
+    const double ratio =
+      std::clamp((robot - a).head<2>().dot(delta.head<2>()) / (length * length), 0.0, 1.0);
+    const double progress = path_progress + ratio * length;
+    const double distance = (robot - (a + ratio * delta)).head<2>().norm();
+    if (std::abs(progress - robot_projection.progress) > kDistinctProgress &&
+        distance <= ambiguous_distance) {
+      return {};
+    }
+    path_progress += length;
+  }
+
+  // Search only forward from the robot's progress, and only within this local horizon.
+  const Projection anchor =
+    project(handoff, robot_projection.segment, robot_projection.ratio, lookahead_dist_);
+  const Projection unrestricted = project(
+    handoff, robot_projection.segment, robot_projection.ratio, std::numeric_limits<double>::infinity());
+  if (!std::isfinite(anchor.distance_sq) || anchor.distance_sq > kMaxPathDeviation * kMaxPathDeviation ||
+      unrestricted.distance_sq + 1e-8 < anchor.distance_sq ||
+      !isLineFree(mode_context.sparsifyQuery(), handoff, anchor.point) ||
+      !isLineFree(mode_context.dynamicQuery(), handoff, anchor.point)) {
+    return {};
+  }
+
+  std::vector<Eigen::Vector3d> local_path;
+  Eigen::Vector3d start = handoff;
+  start.z() = 0.0;
+  local_path.push_back(start);
+  if ((anchor.point - start).head<2>().norm() > 1e-6) {
+    local_path.push_back(anchor.point);
+  }
+  double length = 0.0;
+  Eigen::Vector3d previous = anchor.point;
+  for (size_t i = anchor.segment + 1U; i < global_path.size(); ++i) {
+    PlanningDeadline::check();
+    const Eigen::Vector3d next = pathPoint(i);
+    const double step = (next - previous).head<2>().norm();
+    if (step > 1e-6) {
+      local_path.push_back(next);
+      length += step;
+      previous = next;
+    }
+    if (length >= lookahead_dist_) {
+      break;
+    }
+  }
+  return finishSeed(std::move(local_path), pathPoint(global_path.size() - 1U), mode_context);
+}
+
+LocalPathSeed LocalPathProcessor::finishSeed(std::vector<Eigen::Vector3d> path,
+  const Eigen::Vector3d & global_goal,
+  const PlannerModeContext & mode_context) const
+{
+  LocalPathSeed seed;
+  seed.dense_path = std::move(path);
   const bool clip_required =
     mode_context.mode() == PlannerMode::EXPLORATION || mode_context.clipSeedByRogBoundary();
   const bool clip_ok = clipLocalPathByRogBoundary(seed.dense_path, mode_context);

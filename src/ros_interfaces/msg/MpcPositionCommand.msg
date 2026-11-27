@@ -6,3 +6,6 @@ uint8 NORMAL_COMMAND = 1
 uint8 BLOCK_COMMAND = 137
 # The planner gave up on the current goal; the controller stops and fails FollowPath.
 uint8 PLANNING_FAILED_COMMAND = 138
+# Validated near-goal braking reference with an explicit final heading.
+# Track translation by time; bound heading feedback during terminal alignment.
+bool terminal_pose

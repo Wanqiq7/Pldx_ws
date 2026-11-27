@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>决策层目录地图 · 导航入门</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+</head>
+<body>
+<main>
+  <header>
+    <div class="meta">导航入门 · 速查</div>
+    <h1>决策层目录地图</h1>
+    <p><code>src/decision/bt_manager</code> 把外部输入组织成行为树可读的状态，再产生导航目标和其他行为指令。</p>
+    <a href="../lessons/0001-decision-to-nav2.html">返回第一课</a>
+  </header>
+  <section>
+    <h2>从哪里读</h2>
+    <table>
+      <thead><tr><th scope="col">入口</th><th scope="col">用它回答的问题</th></tr></thead>
+      <tbody>
+        <tr><th scope="row"><a href="../src/decision/bt_manager/launch/bt_manager.launch.py"><code>launch/</code></a></th><td>启动哪个可执行文件，传入哪些 ROS 参数？</td></tr>
+        <tr><th scope="row"><a href="../src/decision/bt_manager/src/main.cpp"><code>src/main.cpp</code></a></th><td>黑板、ROS 执行器和管理器在哪里接起来？</td></tr>
+        <tr><th scope="row"><a href="../src/decision/bt_manager/src/bt_manager.cpp"><code>src/bt_manager.cpp</code></a></th><td>XML 标签映射到哪个 C++ 类型，哪些树被加载，各树按什么顺序 tick？</td></tr>
+        <tr><th scope="row"><a href="../src/decision/bt_manager/src/ros_interface.cpp"><code>src/ros_interface.cpp</code></a></th><td>外部状态从哪里来，哪些共享数据会组装成 ROS 消息？</td></tr>
+        <tr><th scope="row"><a href="../src/decision/bt_manager/include/bt_manager/blackboard.hpp"><code>include/</code></a></th><td>黑板在哪里定义，节点有哪些接口？巡逻点表在 <a href="../src/decision/bt_manager/include/bt_manager/utils/area.hpp"><code>utils/area.hpp</code></a>，导航 action 包装实现在 <a href="../src/decision/bt_manager/include/bt_manager/action/nav_action.hpp"><code>action/nav_action.hpp</code></a>。</td></tr>
+        <tr><th scope="row"><code>src/condition/</code> 与 <code>src/action/</code></th><td>条件读了什么，动作写了什么？巡逻示例分别看 <a href="../src/decision/bt_manager/src/condition/auto_conditions.cpp"><code>auto_conditions.cpp</code></a> 和 <a href="../src/decision/bt_manager/src/action/auto_actions.cpp"><code>auto_actions.cpp</code></a>。</td></tr>
+        <tr><th scope="row"><code>test/</code></th><td>哪些行为有可执行的例子？<a href="../src/decision/bt_manager/test/test_nav_action.cpp"><code>test_nav_action.cpp</code></a> 覆盖导航终止后的重试退避。<a href="../src/decision/bt_manager/test/test_tunnel_behavior.cpp"><code>test_tunnel_behavior.cpp</code></a> 覆盖隧道相关行为。</td></tr>
+      </tbody>
+    </table>
+  </section>
+  <section>
+    <h2>五棵树按主循环顺序排列</h2>
+    <ol>
+      <li><a href="../src/decision/bt_manager/tree/resource_tree.xml"><code>resource_tree.xml</code></a> 处理资源请求。</li>
+      <li><a href="../src/decision/bt_manager/tree/tactical_tree.xml"><code>tactical_tree.xml</code></a> 选择并记录模式，供其他节点读取。</li>
+      <li><a href="../src/decision/bt_manager/tree/nav_tree.xml"><code>nav_tree.xml</code></a> 是主树。搜 <code>NavPriorityRoot</code> 看导航分支优先级。<a href="../src/decision/bt_manager/tree/recovery_tree.xml"><code>recovery_tree.xml</code></a> 被它 include，恢复动作当前直接出现在主树中。</li>
+      <li><a href="../src/decision/bt_manager/tree/stance_tree.xml"><code>stance_tree.xml</code></a> 选择车体姿态。</li>
+      <li><a href="../src/decision/bt_manager/tree/gimbal_tree.xml"><code>gimbal_tree.xml</code></a> 处理云台相关行为。</li>
+    </ol>
+  </section>
+  <section>
+    <h2>追一个行为的读码顺序</h2>
+    <p class="flow"><span>找到 XML 标签</span> → <span>查 <code>registerNodes()</code></span> → <span>读 <code>tick()</code> 或 action 回调</span> → <span>查黑板键的读写方</span></p>
+    <p><code>nav_goal</code> 的例子里，<code>SelectPatrolPoint</code> 写坐标，<code>NavigateToPoseAction</code> 读取坐标并发起导航任务。回到第一课可按这条链在源码里复现。</p>
+  </section>
+  <section id="pose-input">
+    <h2>黑板中的当前位置</h2>
+    <table>
+      <thead><tr><th scope="col">字段</th><th scope="col">TF 查询成功</th><th scope="col">TF 查询失败</th></tr></thead>
+      <tbody>
+        <tr><th scope="row"><code>x/y</code></th><td><code>base_link</code> 原点在 <code>map</code> 中的平面坐标</td><td>本轮里程计消息</td></tr>
+        <tr><th scope="row"><code>z</code> 与朝向</th><td>本轮里程计消息</td><td>本轮里程计消息</td></tr>
+      </tbody>
+    </table>
+    <p><code>ros_interface</code> 的里程计回调写入 <code>current_pose</code>。<code>CheckInZone</code> 是其中一个读者，只使用 <code>x/y</code> 做区域判断。<a href="../src/decision/bt_manager/src/ros_interface.cpp">订阅回调</a> · <a href="../src/decision/bt_manager/src/condition/resource_conditions.cpp">区域条件</a> · <a href="../lessons/0002-odometry-to-blackboard.html">第二课</a></p>
+  </section>
+  <section id="nav-priority">
+    <h2>导航分支何时被打断</h2>
+    <ul>
+      <li>外层 <code>NavPriorityRoot</code> 是 <code>ReactiveFallback</code>。每轮从第一个子分支开始，遇到 <code>FAILURE</code> 就往下，遇到 <code>RUNNING</code> 或 <code>SUCCESS</code> 就结束本轮筛选。</li>
+      <li>内层普通 <code>Sequence</code> 在连续被 tick 时会从上轮返回 <code>RUNNING</code> 的子节点继续。收到 <code>halt()</code> 后，下一次进入从第一个子节点开始。</li>
+      <li>导航动作收到 <code>halt()</code> 时，由 Nav2 客户端基类判断是否请求取消当前目标。</li>
+    </ul>
+    <p><a href="../src/decision/bt_manager/tree/nav_tree.xml">导航树 XML</a> · <a href="../lessons/0003-navigation-priority.html">第三课与练习</a></p>
+  </section>
+  <footer><a href="../lessons/0001-decision-to-nav2.html">第一课</a> · <a href="../lessons/0002-odometry-to-blackboard.html">第二课</a> · <a href="../lessons/0003-navigation-priority.html">第三课</a> · <a href="https://docs.ros.org/en/jazzy/Concepts/Basic/About-Actions.html">ROS 2 Jazzy Action 文档</a></footer>
+</main>
+</body>
+</html>

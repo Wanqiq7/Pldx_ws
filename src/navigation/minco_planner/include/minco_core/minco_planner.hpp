@@ -112,6 +112,9 @@ private:
   friend class MincoPlannerTestPeer;
   bool PlanGlobalPath(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal);
+  PlanOutcome planTerminalPose(
+    const geometry_msgs::msg::PoseStamped & current_pose, const geometry_msgs::msg::PoseStamped & goal);
+
   PlanOutcome ReplanLocal(const geometry_msgs::msg::PoseStamped & current_pose);
   // Takes a finished result; nullopt when nothing is ready or the result was stale.
   std::optional<PlanOutcome> pollPlanResult();
@@ -139,18 +142,9 @@ private:
     Eigen::Matrix3d & start_state,
     const std::vector<Eigen::Vector3d> & sparse_path);
 
-  void prepareHotStart(const geometry_msgs::msg::Pose & start_pose,
-    double t_dur,
-    Eigen::Matrix3d & start_state,
-    const traj_opt::Trajectory & previous);
-
   void PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path,
     const Eigen::Matrix3d & start_state,
     bool stop_at_local_end,
-    PlanningState state,
-    bool has_shifted_seed,
-    const vec_Vec3f & shifted_waypoints,
-    const VecDf & shifted_durations,
     vec_Vec3f & init_ps,
     VecDf & init_ts,
     VecDf & local_vmaxs) const;

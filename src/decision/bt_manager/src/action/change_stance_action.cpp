@@ -21,6 +21,20 @@ bool isLegalStance(SentryStance stance)
   return value >= 1 && value <= 6;
 }
 
+SentryStance basicStance(SentryStance stance)
+{
+  switch (stance) {
+  case SentryStance::ENHANCED_ATTACK:
+    return SentryStance::ATTACK;
+  case SentryStance::ENHANCED_DEFEND:
+    return SentryStance::DEFEND;
+  case SentryStance::ENHANCED_MOVE:
+    return SentryStance::MOVE;
+  default:
+    return stance;
+  }
+}
+
 // 统一的 ChangeStance 状态日志:
 // - 非法 current_stance:借 logTransition 的 active 去重实现边沿日志(进入/退出各一条,中间沉默)。
 // - 合法时:打"到位(reached)"或"切换中(from->to)",同样靠 active 去重仅在翻转时输出。
@@ -259,7 +273,7 @@ BT::NodeStatus ChangeStance::onStart()
 
   auto blackboard = config().blackboard;
   const std::string stance_str = getInput<std::string>("stance").value_or("DEFEND");
-  desired_stance_ = parse_stance(stance_str);
+  desired_stance_ = basicStance(parse_stance(stance_str));
   const auto energy_ratio = blackboard->get<EnergyRatio>("energy_ratio");
   if (energy_ratio == EnergyRatio::BELOW_1) {
     desired_stance_ = SentryStance::MOVE;
@@ -386,10 +400,8 @@ BT::NodeStatus ApplyManualStanceOverride::tick()
 {
   auto blackboard = config().blackboard;
 
-  // 注:此节点应与 CheckManualStanceOverride 配合使用,CheckManualStanceOverride 已判断所有条件。
-  // 此处直接读取操作手指定的强化姿态并写入 desired_stance,不再重复判断。
   const auto override_stance = blackboard->get<SentryStance>("manual_override_stance");
-  blackboard->set<SentryStance>("desired_stance", override_stance);
+  blackboard->set<SentryStance>("desired_stance", basicStance(override_stance));
   return BT::NodeStatus::SUCCESS;
 }
 

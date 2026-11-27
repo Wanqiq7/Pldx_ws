@@ -1,14 +1,9 @@
 #include "minco_controller/minco_mpc_controller.hpp"
 
-#include <cmath>
-#include <functional>
-#include <limits>
-#include <thread>
-
-#include <gtest/gtest.h>
-
 #include "nav2_core/controller_exceptions.hpp"
-#include "tf2_ros/buffer.h"
+#include <functional>
+#include <gtest/gtest.h>
+#include <rcl/time.h>
 
 using namespace std::chrono_literals;
 
@@ -22,15 +17,12 @@ public:
     p.global_frame_ = "map";
     p.execution_enabled_ = true;
     p.execution_start_ = node->now();
-    p.dynamic_solver_ = std::make_unique<DynamicMpcSolver>(p.dynamic_config_);
+    p.fixed_wz_ = 1.0;  // stale inputs must also suppress fixed gyro commands
+    p.solver_ = std::make_unique<MpcSolver>(p.mpc_config_);
     p.execution_pub_ = node->create_publisher<std_msgs::msg::Bool>("test_execution", 1);
-    auto publisher = node->create_publisher<ros_interfaces::msg::ChassisCommand>(
-      "test_chassis_command", rclcpp::SensorDataQoS());
-    publisher->on_activate();
-    p.chassis_cmd_pub_ = publisher;
     p.global_plan_.poses.resize(1);
   }
-  static void receive(MincoMpcController & p)
+  static void receive(MincoMpcController & p, size_t steps = 40, double speed = 1.0)
   {
     auto node = p.node_.lock();
     auto odom = std::make_shared<nav_msgs::msg::Odometry>();
@@ -41,21 +33,52 @@ public:
     reference->header.frame_id = "map";
     reference->header.stamp = node->now();
     reference->command_flag = ros_interfaces::msg::MpcPositionCommand::NORMAL_COMMAND;
-    reference->cmds.resize(40);
+    reference->cmds.resize(steps);
     for (size_t i = 0; i < reference->cmds.size(); ++i) {
       reference->cmds[i].header = reference->header;
-      reference->cmds[i].position.x = i * 0.05;
-      reference->cmds[i].velocity.x = 1.0;
+      reference->cmds[i].position.x = i * 0.05 * speed;
+      reference->cmds[i].velocity.x = speed;
       reference->cmds[i].trajectory_id = 1;
     }
     p.onOptPath(reference);
   }
-  static void receiveOdomOnly(MincoMpcController & p)
+  static void receiveStationaryRotation(MincoMpcController & p)
   {
-    auto odom = std::make_shared<nav_msgs::msg::Odometry>();
-    odom->header.stamp = p.node_.lock()->now();
-    odom->pose.pose.orientation.w = 1.0;
-    p.onOdom(odom);
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    for (size_t i = 0; i < reference->cmds.size(); ++i) {
+      auto & cmd = reference->cmds[i];
+      cmd.position.x = 0.0;
+      cmd.velocity.x = 0.0;
+      cmd.yaw = static_cast<double>(i) * 0.05;
+      cmd.yaw_dot = 1.0;
+    }
+    p.use_small_gyro_mode_ = false;
+    p.onOptPath(reference);
+  }
+  static void receiveTerminalPose(MincoMpcController & p)
+  {
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
+    reference->terminal_pose = true;
+    for (auto & cmd : reference->cmds) {
+      cmd.position.x = 0.01;
+      cmd.velocity.x = 0.0;
+      cmd.yaw = 3.0;
+      cmd.yaw_dot = 0.0;
+    }
+    p.use_small_gyro_mode_ = false;
+    p.onOptPath(reference);
+  }
+  static void enterTerminalAtHighAngularSpeed(MincoMpcController & p)
+  {
+    p.mpc_config_.omega_min = -5.0;
+    p.mpc_config_.omega_max = 5.0;
+    p.mpc_config_.use_acc_constraints = true;
+    p.mpc_config_.alpha_min = -5.0;
+    p.mpc_config_.alpha_max = 5.0;
+    p.mpc_config_.dt = 0.05;
+    p.applied_control_.z() = 3.0;
+    p.solver_ = std::make_unique<MpcSolver>(p.mpc_config_);
+    receiveTerminalPose(p);
   }
   static void refreshReference(MincoMpcController & p)
   {
@@ -79,12 +102,21 @@ public:
     reference->command_flag = ros_interfaces::msg::MpcPositionCommand::BLOCK_COMMAND;
     p.onOptPath(reference);
   }
-  static void planningFailed(MincoMpcController & p)
+  static void failPlanning(MincoMpcController & p)
   {
-    auto notice = std::make_shared<ros_interfaces::msg::MpcPositionCommand>();
-    notice->header.stamp = p.node_.lock()->now();
-    notice->command_flag = ros_interfaces::msg::MpcPositionCommand::PLANNING_FAILED_COMMAND;
-    p.onOptPath(notice);
+    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>();
+    reference->header.stamp = p.node_.lock()->now();
+    reference->command_flag = ros_interfaces::msg::MpcPositionCommand::PLANNING_FAILED_COMMAND;
+    p.onOptPath(reference);
+  }
+  static void setOdomYaw(MincoMpcController & p, double yaw)
+  {
+    auto odom = std::make_shared<nav_msgs::msg::Odometry>(*p.latest_odom_);
+    odom->header.stamp = p.node_.lock()->now();
+    odom->pose.pose.orientation.z = std::sin(yaw / 2.0);
+    odom->pose.pose.orientation.w = std::cos(yaw / 2.0);
+    p.use_small_gyro_mode_ = false;
+    p.onOdom(odom);
   }
   static void expireReferenceStamp(MincoMpcController & p)
   {
@@ -94,73 +126,41 @@ public:
   {
     p.latest_odom_->header.stamp = p.node_.lock()->now() - rclcpp::Duration::from_seconds(1.0);
   }
-  static void expireReceipt(MincoMpcController & p, bool odom, std::chrono::seconds age = 3s)
+  static void expireReceipt(MincoMpcController & p, bool odom)
   {
-    (odom ? p.odom_received_at_ : p.reference_received_at_) -= age;
+    (odom ? p.odom_received_at_ : p.reference_received_at_) -= 3s;
   }
   static void futureStamp(MincoMpcController & p)
   {
     p.latest_opt_path_->header.stamp = p.node_.lock()->now() + rclcpp::Duration::from_seconds(1.0);
   }
+  static void setTunnelState(MincoMpcController & p, bool prepare, bool ready, bool escape = false)
+  {
+    p.tunnel_prepare_active_ = prepare;
+    p.tunnel_ready_ = ready;
+    p.tunnel_escape_active_ = escape;
+    p.tunnel_escape_vx_ = -0.4;
+    p.tunnel_escape_vy_ = 0.2;
+  }
+  static void receiveBehavior(MincoMpcController & p, bool prepare, bool ready, bool escape = false)
+  {
+    auto message = std::make_shared<ros_interfaces::msg::Behavior>();
+    message->tunnel_prepare_active = prepare;
+    message->tunnel_ready = ready;
+    message->tunnel_escape_active = escape;
+    message->tunnel_escape_vx = -0.4F;
+    message->tunnel_escape_vy = 0.2F;
+    p.onBehavior(message);
+  }
+  static void applyTunnelPolicy(MincoMpcController & p, geometry_msgs::msg::Twist & command)
+  {
+    p.applyTunnelCommandPolicy(command);
+  }
   static bool hasReference(MincoMpcController & p)
   {
-    MincoMpcController::ReferenceTrajectory traj;
-    return p.prepareReference({}, traj);
+    std::vector<ReferencePoint> ref;
+    return p.buildReferenceFromOptPath({}, ref);
   }
-  // map -> camera_init as in the rmuc_2025 simulation; the plan ends at goal in map.
-  static void useOffsetFrames(
-    MincoMpcController & p, const Eigen::Vector2d & goal_in_map, bool publish_tf = true)
-  {
-    auto node = p.node_.lock();
-    p.global_frame_ = "camera_init";
-    p.tf_ = std::make_shared<tf2_ros::Buffer>(node->get_clock());
-    if (publish_tf) {
-      geometry_msgs::msg::TransformStamped t;
-      t.header.frame_id = "map";
-      t.child_frame_id = "camera_init";
-      t.transform.translation.x = 4.24;
-      t.transform.translation.y = 7.09;
-      t.transform.rotation.z = std::sin(0.039 / 2.0);
-      t.transform.rotation.w = std::cos(0.039 / 2.0);
-      p.tf_->setTransform(t, "test", true);
-    }
-    nav_msgs::msg::Path plan;
-    plan.header.frame_id = "map";
-    plan.poses.resize(1);
-    plan.poses[0].pose.position.x = goal_in_map.x();
-    plan.poses[0].pose.position.y = goal_in_map.y();
-    plan.poses[0].pose.orientation.w = 1.0;
-    std::lock_guard<std::mutex> lk(p.plan_mtx_);
-    p.global_plan_ = plan;
-  }
-  static Eigen::Vector3d pendingWrench(const MincoMpcController & p) { return p.pending_wrench_; }
-  static void stationaryReferenceWhileMoving(MincoMpcController & p)
-  {
-    auto reference = std::make_shared<ros_interfaces::msg::MpcPositionCommand>(*p.latest_opt_path_);
-    reference->header.stamp = p.node_.lock()->now();
-    for (auto & cmd : reference->cmds) {
-      cmd.position.x = 0.0;
-      cmd.velocity.x = 0.0;
-    }
-    p.onOptPath(reference);
-    auto odom = std::make_shared<nav_msgs::msg::Odometry>(*p.latest_odom_);
-    odom->header.stamp = p.node_.lock()->now();
-    odom->twist.twist.linear.x = 0.5;
-    p.onOdom(odom);
-  }
-  // Clears the committed input so consecutive cycles start from the same solver state.
-  static void resetSolverHistory(MincoMpcController & p) { p.dynamic_solver_->resetLastAcceleration(); }
-  static double mass(const MincoMpcController & p) { return p.dynamic_solver_->config().mass; }
-  static void enableWheelOdometry(MincoMpcController & p) { p.wheel_odometry_enabled_ = true; }
-  static void pushWheel(MincoMpcController & p, const rclcpp::Time & stamp, double vx)
-  {
-    auto msg = std::make_shared<geometry_msgs::msg::TwistStamped>();
-    msg->header.stamp = stamp;
-    msg->twist.linear.x = vx;
-    p.onWheelOdometry(msg);
-  }
-  static uint64_t wheelFallbacks(const MincoMpcController & p) { return p.wheel_odometry_fallbacks_; }
-  static rclcpp::Time odomStamp(const MincoMpcController & p) { return p.latest_odom_->header.stamp; }
   static void restart(MincoMpcController & p)
   {
     p.reset();
@@ -195,29 +195,6 @@ private:
   std::function<void()> callback_;
 };
 
-// Position-only goal check that records the distance it was given.
-class DistanceGoalChecker : public nav2_core::GoalChecker
-{
-public:
-  void initialize(const rclcpp_lifecycle::LifecycleNode::WeakPtr &,
-    const std::string &,
-    const std::shared_ptr<nav2_costmap_2d::Costmap2DROS>) override
-  {
-  }
-  void reset() override {}
-  bool isGoalReached(const geometry_msgs::msg::Pose & pose,
-    const geometry_msgs::msg::Pose & goal,
-    const geometry_msgs::msg::Twist &) override
-  {
-    ++calls;
-    distance = std::hypot(pose.position.x - goal.position.x, pose.position.y - goal.position.y);
-    return distance < 0.1;
-  }
-  bool getTolerances(geometry_msgs::msg::Pose &, geometry_msgs::msg::Twist &) override { return false; }
-  int calls{0};
-  double distance{std::numeric_limits<double>::quiet_NaN()};
-};
-
 class ControllerFreshnessTest : public ::testing::Test
 {
 protected:
@@ -236,7 +213,6 @@ protected:
     EXPECT_DOUBLE_EQ(cmd.twist.linear.x, 0.0);
     EXPECT_DOUBLE_EQ(cmd.twist.linear.y, 0.0);
     EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 0.0);
-    EXPECT_EQ(MincoMpcControllerTestPeer::pendingWrench(controller), Eigen::Vector3d::Zero());
   }
   rclcpp_lifecycle::LifecycleNode::SharedPtr node;
   MincoMpcController controller;
@@ -247,50 +223,148 @@ TEST_F(ControllerFreshnessTest, FreshInputProducesMotion)
 {
   ASSERT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
   const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_DOUBLE_EQ(cmd.twist.linear.x, 0.0);
-  EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 0.0);
-  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
+  EXPECT_GT(cmd.twist.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(cmd.twist.angular.z, 1.0);
 }
 
-TEST_F(ControllerFreshnessTest, StationaryReferenceBrakesMovingChassis)
+TEST_F(ControllerFreshnessTest, ShortRecoveryReferenceHonorsSimulationClockAndFreshnessGuards)
 {
-  MincoMpcControllerTestPeer::stationaryReferenceWhileMoving(controller);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_LT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
+  node->set_parameter(rclcpp::Parameter("use_sim_time", true));
+  ASSERT_EQ(rcl_enable_ros_time_override(node->get_clock()->get_clock_handle()), RCL_RET_OK);
+  ASSERT_EQ(rcl_set_ros_time_override(node->get_clock()->get_clock_handle(), 251000000000LL), RCL_RET_OK);
+  MincoMpcControllerTestPeer::restart(controller);
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  const auto escape = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(escape.twist.linear.x, 0.0);
+
+  MincoMpcControllerTestPeer::futureStamp(controller);
+  expectStopped();
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  MincoMpcControllerTestPeer::expireReferenceStamp(controller);
+  expectStopped();
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  MincoMpcControllerTestPeer::expireOdomStamp(controller);
+  expectStopped();
+
+  ASSERT_EQ(rcl_set_ros_time_override(node->get_clock()->get_clock_handle(), 252000000000LL), RCL_RET_OK);
+  MincoMpcControllerTestPeer::receive(controller, 10, 0.1);
+  const auto refreshed = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(refreshed.twist.linear.x, 0.0);
 }
 
-TEST_F(ControllerFreshnessTest, PublishesForceAndCancelPublishesZero)
+TEST_F(ControllerFreshnessTest, TunnelPreparationScalesXYBeforeMpcOutput)
 {
-  auto receiver = std::make_shared<rclcpp::Node>("force_command_receiver");
-  std::vector<ros_interfaces::msg::ChassisCommand> received;
-  auto subscription =
-    receiver->create_subscription<ros_interfaces::msg::ChassisCommand>("test_chassis_command",
-      rclcpp::SensorDataQoS(),
-      [&](ros_interfaces::msg::ChassisCommand::ConstSharedPtr msg) {
-        received.push_back(*msg);
-      });
-  const auto deadline = std::chrono::steady_clock::now() + 2s;
-  while (received.empty() && std::chrono::steady_clock::now() < deadline) {
-    MincoMpcControllerTestPeer::receive(controller);
-    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-    rclcpp::spin_some(receiver);
-    std::this_thread::sleep_for(5ms);
-  }
-  ASSERT_FALSE(received.empty());
-  EXPECT_EQ(received.back().header.frame_id, "map");
-  EXPECT_GT(received.back().wrench.force.x, 0.0);
-  received.clear();
-  controller.cancel();
-  const auto cancel_deadline = std::chrono::steady_clock::now() + 2s;
-  while ((received.empty() || received.back().wrench.force.x != 0.0) &&
-         std::chrono::steady_clock::now() < cancel_deadline) {
-    rclcpp::spin_some(receiver);
-    std::this_thread::sleep_for(5ms);
-  }
-  ASSERT_FALSE(received.empty());
-  EXPECT_DOUBLE_EQ(received.back().wrench.force.x, 0.0);
-  EXPECT_DOUBLE_EQ(received.back().wrench.force.y, 0.0);
-  EXPECT_DOUBLE_EQ(received.back().wrench.torque.z, 0.0);
+  geometry_msgs::msg::Twist command;
+  command.linear.x = 1.0;
+  command.linear.y = -0.4;
+  command.angular.z = 0.5;
+
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, false);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, 0.15);
+  EXPECT_DOUBLE_EQ(command.linear.y, -0.06);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.5);
+
+  command.linear.x = 1.0;
+  command.linear.y = -0.4;
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, true);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, 1.0);
+  EXPECT_DOUBLE_EQ(command.linear.y, -0.4);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.5);
+}
+
+TEST_F(ControllerFreshnessTest, BehaviorStateShapesComputedVelocityCommand)
+{
+  MincoMpcController normal_controller;
+  MincoMpcController tunnel_controller;
+  MincoMpcControllerTestPeer::initialize(normal_controller, node);
+  MincoMpcControllerTestPeer::initialize(tunnel_controller, node);
+  MincoMpcControllerTestPeer::receive(normal_controller);
+  MincoMpcControllerTestPeer::receive(tunnel_controller);
+  MincoMpcControllerTestPeer::receiveBehavior(tunnel_controller, true, false);
+
+  const auto normal = normal_controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  const auto tunnel = tunnel_controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_NEAR(tunnel.twist.linear.x, normal.twist.linear.x * 0.15, 1e-9);
+  EXPECT_NEAR(tunnel.twist.linear.y, normal.twist.linear.y * 0.15, 1e-9);
+  EXPECT_DOUBLE_EQ(tunnel.twist.angular.z, normal.twist.angular.z);
+}
+
+TEST_F(ControllerFreshnessTest, TunnelEscapeReplacesXYBeforePreparationScaling)
+{
+  geometry_msgs::msg::Twist command;
+  command.linear.x = 1.0;
+  command.linear.y = -0.4;
+  command.angular.z = 0.5;
+
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, false, true);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, -0.06);
+  EXPECT_DOUBLE_EQ(command.linear.y, 0.03);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.5);
+}
+
+TEST_F(ControllerFreshnessTest, InvalidMpcCommandIsClearedBeforeTunnelPolicy)
+{
+  geometry_msgs::msg::Twist command;
+  command.linear.x = std::numeric_limits<double>::quiet_NaN();
+  command.linear.y = 1.0;
+  command.angular.z = 0.5;
+
+  MincoMpcControllerTestPeer::setTunnelState(controller, true, false);
+  MincoMpcControllerTestPeer::applyTunnelPolicy(controller, command);
+  EXPECT_DOUBLE_EQ(command.linear.x, 0.0);
+  EXPECT_DOUBLE_EQ(command.linear.y, 0.0);
+  EXPECT_DOUBLE_EQ(command.angular.z, 0.0);
+}
+
+TEST_F(ControllerFreshnessTest, StationaryRotationAdvancesWhilePositionIsUnchanged)
+{
+  node->set_parameter(rclcpp::Parameter("use_sim_time", true));
+  ASSERT_EQ(rcl_enable_ros_time_override(node->get_clock()->get_clock_handle()), RCL_RET_OK);
+  const auto set_time = [&](int64_t nanoseconds) {
+    ASSERT_EQ(rcl_set_ros_time_override(node->get_clock()->get_clock_handle(), nanoseconds), RCL_RET_OK);
+  };
+  set_time(10000000000LL);
+  MincoMpcControllerTestPeer::restart(controller);
+  MincoMpcControllerTestPeer::receiveStationaryRotation(controller);
+  const auto initial = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  set_time(10500000000LL);
+  MincoMpcControllerTestPeer::setOdomYaw(controller, 0.0);
+  const auto advanced = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(advanced.twist.angular.z, initial.twist.angular.z + 0.1);
+  EXPECT_NEAR(advanced.twist.linear.x, 0.0, 1e-6);
+  EXPECT_NEAR(advanced.twist.linear.y, 0.0, 1e-6);
+}
+
+TEST_F(ControllerFreshnessTest, TerminalPoseBoundsRotationAndStillHonorsBlockAndCancel)
+{
+  MincoMpcControllerTestPeer::receiveTerminalPose(controller);
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GT(cmd.twist.angular.z, 0.0);
+  EXPECT_LE(cmd.twist.angular.z, 1.0);
+  MincoMpcControllerTestPeer::block(controller);
+  expectStopped();
+  MincoMpcControllerTestPeer::receive(controller);
+  MincoMpcControllerTestPeer::receiveTerminalPose(controller);
+  ASSERT_TRUE(controller.cancel());
+  expectStopped();
+}
+
+TEST_F(ControllerFreshnessTest, TerminalRotationDeceleratesWithinConfiguredAcceleration)
+{
+  MincoMpcControllerTestPeer::enterTerminalAtHighAngularSpeed(controller);
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_GE(cmd.twist.angular.z, 2.75 - 1e-6);
+  EXPECT_LE(cmd.twist.angular.z, 3.25 + 1e-6);
+}
+
+TEST_F(ControllerFreshnessTest, UsesOdomYawWhenNav2PoseHasZeroYaw)
+{
+  MincoMpcControllerTestPeer::setOdomYaw(controller, 1.0);
+  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_LT(cmd.twist.angular.z, 0.0);
 }
 
 TEST_F(ControllerFreshnessTest, ReferenceUpdateDuringComputationDiscardsPreviousCommand)
@@ -320,6 +394,25 @@ TEST_F(ControllerFreshnessTest, BlockDuringComputationDiscardsCommand)
   EXPECT_FALSE(MincoMpcControllerTestPeer::hasReference(controller));
 }
 
+TEST_F(ControllerFreshnessTest, PlanningFailureStopsAndFailsFollowPath)
+{
+  MincoMpcControllerTestPeer::failPlanning(controller);
+  EXPECT_FALSE(MincoMpcControllerTestPeer::hasReference(controller));
+  EXPECT_THROW(controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr),
+    nav2_core::NoValidControl);
+}
+
+TEST_F(ControllerFreshnessTest, SpeedLimitChangeDuringComputationDiscardsCommand)
+{
+  CallbackGoalChecker checker([&] {
+    controller.setSpeedLimit(0.2, false);
+  });
+  expectStopped(&checker);
+  const auto limited = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
+  EXPECT_LE(std::hypot(limited.twist.linear.x, limited.twist.linear.y), 0.2 + 1e-9);
+  EXPECT_GT(limited.twist.linear.x, 0.0);
+}
+
 TEST_F(ControllerFreshnessTest, StaleReferenceAndOdomSuppressAllMotion)
 {
   MincoMpcControllerTestPeer::expireReferenceStamp(controller);
@@ -340,23 +433,6 @@ TEST_F(ControllerFreshnessTest, SteadyTimeoutWorksWithoutRosTimeAdvancing)
   expectStopped();
 }
 
-TEST_F(ControllerFreshnessTest, ReceiptExpiryRejectsFreshMessageStamps)
-{
-  MincoMpcControllerTestPeer::expireReceipt(controller, true, 3s);
-  expectStopped();
-  MincoMpcControllerTestPeer::receive(controller);
-  MincoMpcControllerTestPeer::expireReceipt(controller, false, 8s);
-  expectStopped();
-}
-
-TEST_F(ControllerFreshnessTest, ReceiptExpiryDuringComputationDiscardsCommand)
-{
-  CallbackGoalChecker checker([&] {
-    MincoMpcControllerTestPeer::expireReceipt(controller, true, 3s);
-  });
-  expectStopped(&checker);
-}
-
 TEST_F(ControllerFreshnessTest, FutureDatedReferenceIsRejected)
 {
   MincoMpcControllerTestPeer::futureStamp(controller);
@@ -373,108 +449,8 @@ TEST_F(ControllerFreshnessTest, RestartDuringComputationDiscardsPreviousCommand)
   // belongs to the execution that reset() cancelled.
   expectStopped(&checker);
   EXPECT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
-}
-TEST_F(ControllerFreshnessTest, PlanningFailureFailsFollowPathUntilNextExecution)
-{
-  MincoMpcControllerTestPeer::planningFailed(controller);
-  EXPECT_FALSE(MincoMpcControllerTestPeer::hasReference(controller));
-  EXPECT_THROW(controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr),
-    nav2_core::NoValidControl);
-  // The failure is latched for this execution even if odometry keeps arriving.
-  MincoMpcControllerTestPeer::receiveOdomOnly(controller);
-  EXPECT_THROW(controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr),
-    nav2_core::NoValidControl);
-  // A new FollowPath execution (reset + setPlan) starts clean.
-  MincoMpcControllerTestPeer::restart(controller);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
-}
-
-TEST_F(ControllerFreshnessTest, WheelOdometryIsUsedWhenFreshAndFallsBackOtherwise)
-{
-  MincoMpcControllerTestPeer::enableWheelOdometry(controller);
-  // No samples yet: falls back to the LIO state and still moves.
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
-  EXPECT_EQ(MincoMpcControllerTestPeer::wheelFallbacks(controller), 1u);
-  // Samples covering the odom stamp up to now are used.
-  const rclcpp::Time t0 = MincoMpcControllerTestPeer::odomStamp(controller);
-  for (int i = -2; i <= 2; ++i) {
-    MincoMpcControllerTestPeer::pushWheel(controller, t0 + rclcpp::Duration::from_seconds(0.005 * i), 0.2);
-  }
-  MincoMpcControllerTestPeer::pushWheel(controller, node->now(), 0.2);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), 0.0);
-  EXPECT_EQ(MincoMpcControllerTestPeer::wheelFallbacks(controller), 1u);
-  // Stale samples fall back again.
-  std::this_thread::sleep_for(80ms);
-  MincoMpcControllerTestPeer::receive(controller);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_EQ(MincoMpcControllerTestPeer::wheelFallbacks(controller), 2u);
-}
-
-TEST_F(ControllerFreshnessTest, FirstOptimizedWrenchDrivesFromRestAndStopsWithStaleInput)
-{
-  MincoMpcControllerTestPeer::resetSolverHistory(controller);
-  const auto cmd = controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_DOUBLE_EQ(cmd.twist.linear.x, 0.0);
-  const auto wrench = MincoMpcControllerTestPeer::pendingWrench(controller);
-  EXPECT_GT(wrench.x(), 0.0);
-  EXPECT_LE(wrench.head<2>().norm(), 60.0);
-  MincoMpcControllerTestPeer::expireOdomStamp(controller);
-  expectStopped();
-}
-
-TEST_F(ControllerFreshnessTest, SpeedLimitConstrainsPredictionAndRejectsInvalidLimits)
-{
-  controller.setSpeedLimit(0.1, false);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  const auto limited = MincoMpcControllerTestPeer::pendingWrench(controller);
-  EXPECT_GT(limited.x(), 0.0);
-  controller.setSpeedLimit(0.0, false);
-  MincoMpcControllerTestPeer::resetSolverHistory(controller);
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr);
-  EXPECT_GT(MincoMpcControllerTestPeer::pendingWrench(controller).x(), limited.x());
-  EXPECT_THROW(controller.setSpeedLimit(NAN, false), std::invalid_argument);
-}
-
-TEST_F(ControllerFreshnessTest, GoalCheckComparesInThePoseFrame)
-{
-  const Eigen::Vector2d goal(4.7, 10.9);
-  MincoMpcControllerTestPeer::useOffsetFrames(controller, goal);
-  DistanceGoalChecker checker;
-  // Standing on the raw map coordinates of the goal is 8.3 m away from it.
-  pose.header.frame_id = "camera_init";
-  pose.pose.position.x = goal.x();
-  pose.pose.position.y = goal.y();
-  controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, &checker);
-  EXPECT_EQ(checker.calls, 1);
-  EXPECT_GT(checker.distance, 8.0);
-  EXPECT_TRUE(MincoMpcControllerTestPeer::hasReference(controller));
-  // The goal expressed in camera_init (inverse of the map -> camera_init transform) is
-  // reached and stops the vehicle.
-  const double c = std::cos(0.039);
-  const double s = std::sin(0.039);
-  const Eigen::Vector2d d = goal - Eigen::Vector2d(4.24, 7.09);
-  pose.pose.position.x = c * d.x() + s * d.y();
-  pose.pose.position.y = -s * d.x() + c * d.y();
-  expectStopped(&checker);
-  EXPECT_EQ(checker.calls, 2);
-  EXPECT_NEAR(checker.distance, 0.0, 1e-9);
-  EXPECT_FALSE(MincoMpcControllerTestPeer::hasReference(controller));
-}
-
-TEST_F(ControllerFreshnessTest, GoalCheckIsSkippedWithoutTransform)
-{
-  // Without map -> camera_init neither the goal nor the map-frame reference can be used:
-  // the goal check must not run on untransformed coordinates and the command is zero.
-  MincoMpcControllerTestPeer::useOffsetFrames(controller, Eigen::Vector2d(4.7, 10.9), false);
-  DistanceGoalChecker checker;
-  pose.header.frame_id = "camera_init";
-  expectStopped(&checker);
-  EXPECT_EQ(checker.calls, 0);
+  EXPECT_GT(
+    controller.computeVelocityCommands(pose, geometry_msgs::msg::Twist{}, nullptr).twist.linear.x, 0.0);
 }
 }  // namespace
 }  // namespace minco_controller

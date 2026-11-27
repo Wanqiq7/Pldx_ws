@@ -3,13 +3,10 @@
 #   ./start_sim.sh
 #   ./start_sim.sh robot_model:=real
 #   ./start_sim.sh world:=rmuc_2024 headless:=true rviz:=false
-#   SIM_WHEEL_ODOM=1 SIM_SLOPE_COMP=1 ./start_sim.sh
-# It writes a copy of sentry1.yaml to log/sim_params/sentry1_sim.yaml with the mass of
-# the simulated chassis, so the shared real-robot configuration stays unchanged. An
-# explicit params_file:= argument takes precedence and is passed through unchanged.
-# SIM_WHEEL_ODOM=1 also runs scripts/sim_wheel_odometry.py (noisy ground-truth body
-# velocity on /sentry/chassis_velocity) and enables dynamic.wheel_odometry in the copy.
-# SIM_SLOPE_COMP=1 enables dynamic.slope_gravity and dynamic.disturbance_observer.
+# It writes a model-specific copy of sentry1.yaml under log/sim_params. The omni
+# model uses the same MPC velocity limits; the real model gets its CAD geometry
+# from the launch profile. An explicit params_file:= takes precedence.
+# Foxglove Bridge listens on port 8765 and stops when this script exits.
 set -eo pipefail
 
 WORKSPACE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,57 +33,67 @@ fi
 source "${NAV_INSTALL_DIR}/setup.bash"
 
 cd "${WORKSPACE_DIR}"
-has_world=false
+for required_package in navi2 sentry_simulation; do
+    if ! ros2 pkg prefix "${required_package}" >/dev/null 2>&1; then
+        echo "Required ROS package '${required_package}' is missing from ${NAV_INSTALL_DIR}." >&2
+        echo "Build the workspace with ./build.bash, then source ${NAV_INSTALL_DIR}/setup.bash." >&2
+        exit 1
+    fi
+done
+
+world=""
 has_params=false
+has_folding_gimbal=false
+robot_model=omni
 for arg in "$@"; do
     case "$arg" in
-        world:=*) has_world=true ;;
+        world:=*) world="${arg#world:=}" ;;
         params_file:=*) has_params=true ;;
+        folding_gimbal:=*) has_folding_gimbal=true ;;
+        robot_model:=*) robot_model="${arg#robot_model:=}" ;;
     esac
 done
-if [[ "$has_world" == false ]]; then
+if [[ -z "$world" ]]; then
     set -- world:=rmuc_2026 "$@"
+fi
+if [[ "$robot_model" == real && "$world" == rmuc_2025 && "$has_folding_gimbal" == false ]]; then
+    set -- "$@" folding_gimbal:=false
 fi
 
 if [[ "$has_params" == false ]]; then
     base_params="$(ros2 pkg prefix --share navi2)/params/sentry1.yaml"
-    sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
+    if [[ "${robot_model}" == real ]]; then
+        sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_real_sim.yaml"
+    else
+        sim_params="${WORKSPACE_DIR}/log/sim_params/sentry1_sim.yaml"
+    fi
     mkdir -p "$(dirname "${sim_params}")"
-    # Physical parameters of the simulated omni chassis (sentry_omni model mass;
-    # max_force sets the 2.4 m/s^2 limit of this simulation model).
-    sed -E -e "s/^(        mass:) [0-9.]+\$/\1 38.15/" \
-        -e "s/^(        max_force:) [0-9.]+\$/\1 91.56/" "${base_params}" > "${sim_params}"
-    if ! grep -qE "^        mass: 38.15\$" "${sim_params}"; then
-        echo "FollowPath.dynamic.mass not found in ${base_params}" >&2
-        exit 1
-    fi
-    if [[ "${SIM_WHEEL_ODOM:-0}" == 1 ]]; then
-        sed -i -E "s/^(        wheel_odometry:) (true|false)\$/\1 true/" "${sim_params}"
-        if ! grep -qE "^        wheel_odometry: true\$" "${sim_params}"; then
-            echo "FollowPath.dynamic.wheel_odometry not found in ${base_params}" >&2
-            exit 1
-        fi
-    fi
-    if [[ "${SIM_SLOPE_COMP:-0}" == 1 ]]; then
-        for key in slope_gravity disturbance_observer; do
-            sed -i -E "s/^(        ${key}:) (true|false)\$/\1 true/" "${sim_params}"
-            if ! grep -qE "^        ${key}: true\$" "${sim_params}"; then
-                echo "FollowPath.dynamic.${key} not found in ${base_params}" >&2
-                exit 1
-            fi
-        done
-    fi
-    echo "Force-control MPC: wheel odometry: ${SIM_WHEEL_ODOM:-0}," \
-        "slope compensation: ${SIM_SLOPE_COMP:-0}, drive wrench output" \
-        "(params: ${sim_params})"
+    cp "${base_params}" "${sim_params}"
     set -- "$@" "params_file:=${sim_params}"
 fi
 
-if [[ "${SIM_WHEEL_ODOM:-0}" != 1 ]]; then
-    exec ros2 launch sentry_simulation simulation.launch.py "$@"
+if ! ros2 pkg prefix foxglove_bridge >/dev/null 2>&1; then
+    echo "foxglove_bridge is not installed or not available in the sourced ROS environment." >&2
+    exit 1
 fi
-# Emulated wheel odometry from ground truth; stopped together with the launch.
-python3 "${WORKSPACE_DIR}/scripts/sim_wheel_odometry.py" --ros-args -p use_sim_time:=true &
-wheel_pid=$!
-trap 'kill "${wheel_pid}" 2>/dev/null || true' EXIT
+
+bridge_pid=""
+cleanup() {
+    for pid in "${bridge_pid}"; do
+        if [[ -n "${pid}" ]]; then
+            kill -TERM "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+        fi
+    done
+}
+trap cleanup EXIT
+
+if ss -ltn 'sport = :8765' | grep -q LISTEN; then
+    echo "Port 8765 is already in use; using the existing Foxglove connection if available."
+else
+    ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 &
+    bridge_pid=$!
+    echo "Starting Foxglove Bridge on ws://localhost:8765"
+fi
+
 ros2 launch sentry_simulation simulation.launch.py "$@"

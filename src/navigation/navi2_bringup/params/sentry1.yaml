@@ -67,18 +67,17 @@ controller_server:
       plugin: "nav2_controller::SimpleProgressChecker"
       # 规定的最小移动半径，如果没有超过该范围则认为未前进。
       required_movement_radius: 0.1
-      # 在该时间内没有明显进展，则 FollowPath 失败并交给行为树恢复。
-      # 必须长于一次内部恢复（fail_threshold 次失败 + cooldown_sec + recovery_window_sec ≈ 5 s）。
-      # 确定性的规划失败由 MincoPlanner 的 FAILED 通知直接上报，这里只做兜底。
-      movement_time_allowance: 10.0
+      # 沿用原工程：隧道准备期间慢行，位置进度检查允许 1000 秒。
+      # 仅位置变化计为进展；确定性规划失败和输入失效仍由各自路径处理。
+      movement_time_allowance: 1000.0
     general_goal_checker:
       # 每次同时检查当前位置和停车速度，避免运动中短暂入圈便锁存成功。
       stateful: False
       plugin: "nav2_controller::StoppedGoalChecker"
       # XY 平面到点容差，单位 m；在定位坐标中检查。
       xy_goal_tolerance: 0.1
-      # Yaw 角度误差容差，单位 rad，设置为 2π 表示允许任意角度到达时也判定为已到达。
-      yaw_goal_tolerance: 6.28
+      # Yaw 角度误差容差，单位 rad。
+      yaw_goal_tolerance: 0.1
       trans_stopped_velocity: 0.1
       rot_stopped_velocity: 0.1
 
@@ -87,60 +86,39 @@ controller_server:
       # 独立失效保护（秒）：同时检查消息时间戳与稳态接收时间。
       reference_timeout_sec: 2.0
       odom_timeout_sec: 0.3
-      # odom 时间戳到命令生效的时延，期间按上一次下发的加速度外推。
+      # MPC 采样周期和前视时间，决定模型预测控制的时间分辨率。
+      dt: 0.05
+      lookahead_time: 0.5
+      # 是否启用小陀螺模式；该模式会压低旋转带宽并适合特定机器人。
+      use_small_gyro_mode: false
+      # 当速度低于该阈值时，认为车辆处于死区，减少抖动信号。
+      deadzone_speed_threshold: 0.1
+      # 轨迹控制延迟补偿，避免执行时滞导致跟踪偏差。
       control_delay_compensation: 0.05
 
-      # 速度上下限（map 系），作为力控 MPC 的速度状态约束。
+      # 代价权重 Q 和 R：Q 表示状态误差权重，R 表示控制量误差权重。
+      # Q 越大表示对状态误差敏感，R 越大表示对控制量变化敏感。
+      Q: [3.0, 3.0, 2.0]
+      R: [1.5, 1.5, 1.0]
+
+      # 速度上下限约束，仅对各轴速度进行限制。
       vx_min: -3.0
       vx_max: 3.0
       vy_min: -3.0
       vy_max: 3.0
+      fixed_wz: 4.18 # rad/s，开启 use_small_gyro_mode 时使用的固定角速度
       omega_min: -5.0
       omega_max: 5.0
 
-      # 力控 MPC：状态 [p, yaw, v, omega]，只下发首步优化驱动力 Fx/Fy/Mz。
-      # 加速度上限 min(mu·g, max_force/mass)；质量/惯量与 MC02 配置对应，仍需实测标定。
-      dynamic:
-        dt: 0.02
-        lookahead_time: 0.8
-        # 二次参考：按预测速度与参考速度夹角余弦缩短时间步，牺牲纵向进度换横向精度。
-        secondary_reference: false
-        # 平移推力上限 m*2 m/s²；偏航力矩上限 Iz*4 rad/s²。
-        mass: 28.0
-        inertia_z: 0.58
-        friction_coeff: 0.6
-        max_force: 56.0
-        max_torque: 2.32
-        # 位置/速度权重按参考速度切向分解为沿轨迹与横向。
-        q_pos_along: 5.0
-        q_pos_cross: 40.0
-        q_vel_along: 1.0
-        q_vel_cross: 2.0
-        q_yaw: 10.0
-        q_omega: 0.5
-        # 输入相对参考加速度（力前馈 m·a_ref）的偏差权重与相邻输入差分权重。
-        r_acc: 0.05
-        r_jerk: 0.002
-        r_alpha: 0.02
-        r_dalpha: 0.001
-        # 坡道扰动 d 进入模型 v'=F/m+d，优化驱动力包含抵消扰动的分量。
-        slope_gravity: false
-        # body 相对底盘的固定安装横滚（rad）。仿真 body 水平取 0；实车需按安装标定，
-        # 不要直接沿用 lidar_roll_offset（错的值会在平地产生恒定横向扰动）。
-        gravity_body_roll_offset: 0.0
-        # 基于已下发驱动加速度和速度测量的扰动观测器，默认关闭。
-        disturbance_observer: false
-        observer_bandwidth: 4.0
-        observer_max_estimate: 1.0
-        # 轮速融合（报告 5.5.5.4.1）：订阅底盘系速度 [vx, vy, wz]（TwistStamped），从 LIO 时间戳
-        # 积分到当前时刻替代该段的固定延迟外推；数据缺失、中断或陈旧时退回 LIO。
-        # 实车由 ros2_libxr 发布（MC02 chassis_feedback，需烧录含 0x32B 轮速帧的固件）；
-        # 启用前用 scripts/check_chassis_velocity_frame.py 核对轴向与 wz 符号。
-        # 仿真用 SIM_WHEEL_ODOM=1 ./start_sim.sh。
-        wheel_odometry: false
-        wheel_odometry_topic: /sentry/chassis_velocity
-        wheel_odometry_max_gap: 0.05
-        wheel_odometry_timeout: 0.05
+      # 可选加速度约束，进一步限制平移和转向加速度。
+      use_acc_constraints: true
+      ax_min: -2.0
+      ax_max: 2.0
+      ay_min: -2.0
+      ay_max: 2.0
+      alpha_min: -5.0
+      alpha_max: 5.0
+
       # 激光雷达外参参数，用于将传感器坐标系与机器人基坐标系对齐。
       lidar_offset_x: 0.0
       lidar_offset_y: -0.20

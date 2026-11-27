@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>追踪黑板里的当前位置 · 导航入门</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+  <script src="../assets/feedback.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <div class="meta">第二课 · 约 7 分钟</div>
+    <h1>追踪黑板里的当前位置</h1>
+    <p>第一课追了目标 <code>nav_goal</code>。这次从 ROS 订阅回调出发，找出区域判断读到的 <code>current_pose</code> 来自哪里。</p>
+    <nav aria-label="课程导航"><a href="0001-decision-to-nav2.html">返回第一课</a> · <a href="../reference/decision-map.html#pose-input">位姿来源速查</a></nav>
+  </header>
+
+  <section>
+    <h2>从一条里程计消息追到黑板</h2>
+    <p><code>base_link</code> 是随底盘移动的坐标系，<code>map</code> 是地图坐标系。把 <code>base_link</code> 自己的原点 <code>(0, 0, 0)</code> 转到 <code>map</code> 里，就得到这个原点在地图里的位置。读 <code>lookupTransform</code> 时按<strong>目标坐标系、来源坐标系</strong>理解参数顺序。<a href="https://docs.ros.org/en/jazzy/Concepts/Intermediate/About-Tf2.html">ROS 2 Jazzy · About tf2</a></p>
+    <p class="flow"><span><code>/aft_mapped_to_init</code></span> → <span>里程计回调查 TF</span> → <span>黑板 <code>current_pose</code></span> → <span><code>CheckInZone</code></span></p>
+    <ol>
+      <li><strong>先复制里程计位姿。</strong>订阅回调把 <code>msg-&gt;pose.pose</code> 复制给 <code>raw_pose</code>。因此这一轮从收到的新消息开始。<a href="../src/decision/bt_manager/src/ros_interface.cpp">查订阅回调</a></li>
+      <li><strong>查最新可用的 TF。</strong>查询 <code>lookupTransform("map", "base_link", tf2::TimePointZero)</code>。成功时，回调只用查询结果覆盖 <code>x</code> 和 <code>y</code>。<code>z</code> 和朝向沿用里程计的值。查询失败时，函数返回 <code>false</code>，跳过覆盖。<a href="../src/decision/bt_manager/src/utils/tf_utils.cpp">查 TF 工具</a></li>
+      <li><strong>写入黑板，供条件节点读取。</strong>两种情况下都执行 <code>set("current_pose", raw_pose)</code>。例如 <code>CheckInZone</code> 被 tick 时，读取这个键里的 <code>x</code> 和 <code>y</code>，检查点是否落在指定区域。<a href="../src/decision/bt_manager/src/condition/resource_conditions.cpp">查条件节点实现</a></li>
+    </ol>
+    <p>你上次看到的 <code>body_to_base_*</code> 是 <code>bt_manager</code> 启动入口留下的参数。这里的查询从 TF 缓冲区读变换。真正广播 <code>body</code> 到 <code>base_link</code> 静态变换的是 <code>fake_vel_transform</code>，它从自己的节点参数取偏移量。<a href="../src/navigation/fake_vel_transform/src/fake_vel_transform.cpp">查 TF 发布方</a></p>
+  </section>
+
+  <section>
+    <h2>手算两次回调</h2>
+    <p>假设本轮收到的里程计位置是 <code>(2, 3, 1)</code>。如果 TF 查询成功，查到的底盘原点位置是 <code>(8, 9, 4)</code>。三个分量依次是 <code>x, y, z</code>。</p>
+    <fieldset class="question">
+      <legend>1. 查询成功时，这一轮写进黑板的位置是什么？</legend>
+      <div class="options">
+        <button type="button" aria-pressed="false" data-feedback="这是查询返回的三维位置。再看看回调实际给 raw_pose 的哪些分量赋了值。">(8, 9, 4)</button>
+        <button type="button" aria-pressed="false" data-feedback="这是本轮的里程计位置。查询成功后，回调会用 TF 的 x 和 y 覆盖它的平面位置。">(2, 3, 1)</button>
+        <button type="button" aria-pressed="false" data-feedback="对。x 和 y 来自 TF，z 沿用本轮里程计。">(8, 9, 1)</button>
+      </div>
+      <output aria-live="polite"></output>
+    </fieldset>
+    <fieldset class="question">
+      <legend>2. 假设查询失败，紧接着被 tick 的 CheckInZone 会检查哪个平面点？</legend>
+      <div class="options">
+        <button type="button" aria-pressed="false" data-feedback="对。回调保留本轮的里程计位姿并写进黑板，CheckInZone 读取其中的 x 和 y。">(2, 3)</button>
+        <button type="button" aria-pressed="false" data-feedback="这个点来自查询成功的路径。失败时执行流程会跳过 x 和 y 的覆盖。">(8, 9)</button>
+        <button type="button" aria-pressed="false" data-feedback="(0, 0) 是查询时使用的底盘原点输入。失败时，回调会写入本轮收到的里程计位姿。">(0, 0)</button>
+      </div>
+      <output aria-live="polite"></output>
+    </fieldset>
+    <details>
+      <summary>核对答案</summary>
+      <p>第一题是 <code>(8, 9, 1)</code>。第二题是 <code>(2, 3)</code>。自己在订阅回调中找出两处 <code>x/y</code> 赋值，再找到写黑板的位置。</p>
+    </details>
+    <p>下次先凭记忆说出查询成功和失败时 <code>x/y</code> 的来源，再翻讲义核对。遇到想追的下一行代码，可以贴给我一起读。</p>
+  </section>
+  <footer><a href="0001-decision-to-nav2.html">返回第一课</a> · <a href="../reference/decision-map.html#pose-input">位姿来源速查</a> · <a href="0003-navigation-priority.html">第三课 · 巡逻什么时候会被打断？</a></footer>
+</main>
+</body>
+</html>

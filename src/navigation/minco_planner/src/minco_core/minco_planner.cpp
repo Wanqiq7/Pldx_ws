@@ -774,7 +774,13 @@ void MincoPlanner::planningWorkerLoop()
       });
       try {
         PlanningDeadline::check();
-        if (request.global_search && !PlanGlobalPath(request.current_pose, request.goal)) {
+        const double goal_distance =
+          std::hypot(request.goal.pose.position.x - request.current_pose.pose.position.x,
+            request.goal.pose.position.y - request.current_pose.pose.position.y);
+        if (goal_distance <= traj_goal_tolerance_) {
+          stage = "terminal pose validation";
+          outcome = planTerminalPose(request.current_pose, request.goal);
+        } else if (request.global_search && !PlanGlobalPath(request.current_pose, request.goal)) {
           outcome = PlanOutcome::INFEASIBLE;
         } else {
           stage = "local optimization/validation";
@@ -1160,7 +1166,11 @@ nav_msgs::msg::Path MincoPlanner::createPlan(const geometry_msgs::msg::PoseStamp
       // Only absorb floating-point noise, not intentional goal adjustments.
       constexpr double epsilon = 1e-9;
       if (std::hypot(incoming.x - previous.x, incoming.y - previous.y, incoming.z - previous.z) <=
-          epsilon) {
+            epsilon &&
+          std::abs(std::atan2(std::sin(utils::quaternionToYaw(normalized_goal.pose.orientation) -
+                                       utils::quaternionToYaw(last_accepted_goal_->pose.orientation)),
+            std::cos(utils::quaternionToYaw(normalized_goal.pose.orientation) -
+                     utils::quaternionToYaw(last_accepted_goal_->pose.orientation)))) <= epsilon) {
         return path;
       }
     }
@@ -1202,6 +1212,13 @@ bool MincoPlanner::PlanGlobalPath(
 
   PlanningDeadline::check();
   std::lock_guard<std::mutex> path_lock(path_mutex_);
+  // Search may return a boundary substitute in exploration mode. Only carry
+  // the requested orientation onto a path that actually ends at that goal.
+  if (!planned_path.empty() &&
+      std::hypot(planned_path.back().pose.position.x - goal.pose.position.x,
+        planned_path.back().pose.position.y - goal.pose.position.y) <= traj_goal_tolerance_) {
+    planned_path.back().pose.orientation = goal.pose.orientation;
+  }
   latest_global_path_ = std::move(planned_path);
   return latest_global_path_.size() >= 2U;
 }
@@ -1281,7 +1298,7 @@ std::optional<MincoPlanner::PlanOutcome> MincoPlanner::pollPlanResult()
     last_traj_ = std::move(candidate.position);
     last_yaw_traj_ = std::move(candidate.yaw);
     last_traj_.start_WT = stamp.seconds();
-    last_yaw_traj_.start_WT = stamp.seconds();
+    last_yaw_traj_.start_WT = last_traj_.start_WT;
     has_last_traj_ = has_last_yaw_traj_ = true;
   }
   PlanningDeadline::check();
@@ -1316,6 +1333,79 @@ void MincoPlanner::submitPlanRequest(const geometry_msgs::msg::PoseStamped & cur
                                        std::chrono::duration<double>(planning_budget_sec_));
   pending_planning_request_ = PlanningRequest{current_pose, goal, global_search, version, deadline};
   planning_cv_.notify_one();
+}
+
+MincoPlanner::PlanOutcome MincoPlanner::planTerminalPose(
+  const geometry_msgs::msg::PoseStamped & current_pose, const geometry_msgs::msg::PoseStamped & goal)
+{
+  // No path tangent exists for a pure rotation. Build a bounded quintic from
+  // measured motion to the exact goal pose, with zero terminal velocity.
+  const Eigen::Vector3d start(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
+  const Eigen::Vector3d end(goal.pose.position.x, goal.pose.position.y, 0.0);
+  Eigen::Vector3d velocity = getCurrentSpeed();
+  velocity.z() = 0.0;
+  const double yaw = getCurrentYawFromOdom();
+  const double goal_yaw = utils::quaternionToYaw(goal.pose.orientation);
+  const double yaw_delta = std::atan2(std::sin(goal_yaw - yaw), std::cos(goal_yaw - yaw));
+  if (!start.allFinite() || !end.allFinite() || !velocity.allFinite() || !std::isfinite(yaw_delta) ||
+      !(minco_config.max_acc > 0.0)) {
+    return PlanOutcome::INFEASIBLE;
+  }
+  const double duration = std::max({2.0,
+    std::sqrt(6.0 * (end - start).norm() / minco_config.max_acc),
+    4.0 * velocity.norm() / minco_config.max_acc});
+  if (!std::isfinite(duration) || duration > 30.0) {
+    return PlanOutcome::INFEASIBLE;
+  }
+  const auto quintic =
+    [duration](const Eigen::Vector3d & p0, const Eigen::Vector3d & v0, const Eigen::Vector3d & p1) {
+      const double t = duration;
+      const Eigen::Vector3d d = p1 - p0;
+      Eigen::MatrixXd c = Eigen::MatrixXd::Zero(3, 6);
+      c.col(5) = p0;
+      c.col(4) = v0;
+      c.col(2) = 10.0 * d / std::pow(t, 3) - 6.0 * v0 / (t * t);
+      c.col(1) = -15.0 * d / std::pow(t, 4) + 8.0 * v0 / std::pow(t, 3);
+      c.col(0) = 6.0 * d / std::pow(t, 5) - 3.0 * v0 / std::pow(t, 4);
+      return c;
+    };
+  traj_opt::Trajectory position, heading;
+  position.emplace_back(duration, quintic(start, velocity, end));
+  // Final heading is a pose setpoint, not a tangent or a timed angular
+  // feedforward. The controller bounds the terminal angular feedback.
+  Eigen::MatrixXd yaw_coefficients = Eigen::MatrixXd::Zero(3, 6);
+  yaw_coefficients(0, 5) = yaw + yaw_delta;
+  heading.emplace_back(duration, yaw_coefficients);
+  if (!validateTrajectory(position, end) || !mode_context_ || !mode_context_->globalQuery()) {
+    return PlanOutcome::UNSAFE;
+  }
+  // PRIORMAP static costs and dynamic ROG clearance are independent. A short
+  // direct trajectory must satisfy both, just like the search/seed it replaces.
+  const auto global_query = mode_context_->globalQuery();
+  const double resolution = global_query->resolution();
+  if (!std::isfinite(resolution) || resolution <= 0.0) {
+    return PlanOutcome::UNSAFE;
+  }
+  // Bound spatial sampling too, so a fast braking segment cannot skip a
+  // narrow static obstacle between the dynamic checker's time samples.
+  const double sample_dt = std::min(0.05, resolution / (1.5 * minco_config.max_vel));
+  const int samples = static_cast<int>(std::ceil(duration / sample_dt));
+  for (int i = 0; i <= samples; ++i) {
+    PlanningDeadline::check();
+    const auto point = position.getPos(std::min(duration, i * sample_dt));
+    unsigned int mx = 0, my = 0;
+    if (!global_query->worldToMap(point.x(), point.y(), mx, my) || !global_query->isFree(mx, my)) {
+      return PlanOutcome::UNSAFE;
+    }
+  }
+  std_msgs::msg::Header header;
+  header.frame_id = output_frame_;
+  header.stamp = node_.lock()->now();
+  auto command = utils::sampleOptimizedTrajectory(
+    position, heading, 0, header, static_cast<int>(std::ceil(duration / 0.05)) + 1, 0.05);
+  command.terminal_pose = true;
+  candidate_ = Candidate{std::move(position), std::move(heading), std::move(command)};
+  return PlanOutcome::COMMITTED;
 }
 
 MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::PoseStamped & current_pose)
@@ -1391,7 +1481,7 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     return finish(PlanOutcome::INFEASIBLE, "COLLISION");
   }
   std::vector<Eigen::Vector3d> sparse_path = seed.sparse_waypoints;
-  const bool local_end_is_goal = seed.local_end_is_goal;
+  bool local_end_is_goal = seed.local_end_is_goal;
 
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
@@ -1416,28 +1506,27 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
   if (state == PlanningState::EMERGENCY_STOP) {
     return finish(PlanOutcome::INFEASIBLE, "RECOVERY_TRIGGERED");
   }
+  if (state == PlanningState::HOT_START) {
+    const double elapsed = nowSeconds() - last_traj_start_WT;
+    if (!isTrajSafe()) {
+      return finish(PlanOutcome::INFEASIBLE, "COLLISION");
+    }
+    const double remaining = last_traj_snapshot.getTotalDuration() - elapsed;
+    if (elapsed < 0.0 || remaining <= 0.2) {
+      state = PlanningState::COLD_START;
+    }
+  }
 
   // 5. Prepare start state.
   Eigen::Matrix3d start_state;
-  vec_Vec3f shifted_waypoints;
-  VecDf shifted_durations;
-  bool has_shifted_seed = false;
   if (state == PlanningState::HOT_START) {
-    const double now = nowSeconds() + 0.005;  // small buffer
-    const double t_dur = now - last_traj_start_WT;
-    prepareHotStart(current_pose.pose, t_dur, start_state, last_traj_snapshot);
-
-    // Extract remaining trajectory segment as shifted warm-start seed.
-    if (has_last_traj_snapshot) {
-      traj_opt::Trajectory remain;
-      const double total = last_traj_snapshot.getTotalDuration();
-      if (std::isfinite(t_dur) && t_dur > 0.0 && total > t_dur + 1e-3 &&
-          last_traj_snapshot.getPartialTrajectoryByTime(t_dur, total, remain)) {
-        shifted_waypoints = remain.getWaypoints();
-        shifted_durations = remain.getDurations();
-        has_shifted_seed = (!shifted_waypoints.empty() && shifted_durations.size() > 0);
-      }
-    }
+    // Match the template planner: regenerate the whole trajectory from the
+    // current pose while inheriting the old trajectory's dynamic state.
+    const double t_dur = nowSeconds() - last_traj_start_WT + 0.005;
+    start_state.setZero();
+    start_state.col(0) = Eigen::Vector3d(current_pose.pose.position.x, current_pose.pose.position.y, 0.0);
+    start_state.col(1) = last_traj_snapshot.getVel(t_dur);
+    start_state.col(2) = last_traj_snapshot.getAcc(t_dur);
   } else {
     prepareColdStart(current_pose.pose, start_state, sparse_path);
     // Avoid reusing stale warm-start guesses.
@@ -1449,6 +1538,9 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     constexpr double kMargin = 0.05;
     Eigen::Vector3d start_pos = start_state.col(0);
     if (safety_checker_->projectOutOfObstacle(start_pos, kMargin)) {
+      if (state == PlanningState::HOT_START) {
+        return finish(PlanOutcome::UNSAFE, "COLLISION");
+      }
       start_state.col(0) = start_pos;
     }
   }
@@ -1513,16 +1605,7 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
   if (N > 0) {
     vec_Vec3f init_ps;
     VecDf init_ts(N);
-    PTAllocation(sparse_path,
-      start_state,
-      local_end_is_goal,
-      state,
-      has_shifted_seed,
-      shifted_waypoints,
-      shifted_durations,
-      init_ps,
-      init_ts,
-      local_vmaxs);
+    PTAllocation(sparse_path, start_state, local_end_is_goal, init_ps, init_ts, local_vmaxs);
 
     minco_optimizer_->setInitPsAndTs(init_ps, init_ts);
   }
@@ -1610,6 +1693,8 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     }
   }
 
+  // Transit retains route/slope heading. The requested final orientation is
+  // consumed separately by planTerminalPose after entering the arrival region.
   constexpr double slope_threshold = 0.1;
   if (std::abs(pitch) > slope_threshold && sparse_path.size() >= 2) {
     goal_yaw = std::atan2(end_state.col(1).y(), end_state.col(1).x());
@@ -1625,6 +1710,14 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
   }
 
   traj_opt::Trajectory yaw_traj;
+  const auto make_yaw_fallback = [&]() {
+    Eigen::MatrixXd coefficients = Eigen::MatrixXd::Zero(3, 6);
+    const double duration = std::max(0.02, opt_traj.getTotalDuration());
+    coefficients(0, 5) = std::isfinite(fallback_yaw) ? fallback_yaw : 0.0;
+    yaw_traj.clear();
+    yaw_traj.emplace_back(duration, coefficients);
+    yaw_traj.start_WT = opt_traj.start_WT;
+  };
   if (use_yaw_opt_) {
     const bool yaw_success =
       optimizeYaw(start_state, opt_traj, yaw_traj, state, current_pose.pose, goal_yaw);
@@ -1633,22 +1726,10 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
                 << "[MincoPlanner] Yaw optimization failed. Falling back to constant yaw trajectory."
                 << RESET << std::endl;
 
-      Eigen::MatrixXd cMat(3, 6);
-      cMat.setZero();
-      cMat(0, 5) = std::isfinite(fallback_yaw) ? fallback_yaw : 0.0;
-      const double yaw_dur = std::max(0.02, opt_traj.getTotalDuration());
-      yaw_traj.clear();
-      yaw_traj.emplace_back(yaw_dur, cMat);
-      yaw_traj.start_WT = opt_traj.start_WT;
+      make_yaw_fallback();
     }
   } else {
-    Eigen::MatrixXd cMat(3, 6);
-    cMat.setZero();
-    cMat(0, 5) = std::isfinite(fallback_yaw) ? fallback_yaw : 0.0;
-    const double yaw_dur = std::max(0.02, opt_traj.getTotalDuration());
-    yaw_traj.clear();
-    yaw_traj.emplace_back(yaw_dur, cMat);
-    yaw_traj.start_WT = opt_traj.start_WT;
+    make_yaw_fallback();
   }
 
   // 9. Publish and cache.
@@ -1681,10 +1762,6 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
 void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path,
   const Eigen::Matrix3d & start_state,
   bool goal_reached,
-  PlanningState state,
-  bool has_shifted_seed,
-  const vec_Vec3f & shifted_waypoints,
-  const VecDf & shifted_durations,
   vec_Vec3f & init_ps,
   VecDf & init_ts,
   VecDf & local_vmaxs) const
@@ -1709,17 +1786,7 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
 
   init_ps.clear();
   init_ps.reserve(static_cast<size_t>(std::max(0, N - 1)));
-  int copyPs = 0;
-  if (state == PlanningState::HOT_START && has_shifted_seed) {
-    const int oldWp = static_cast<int>(shifted_waypoints.size());
-    const int oldPs = std::max(0, oldWp - 2);
-    copyPs = std::min(std::max(0, N - 1), oldPs);
-  }
-  for (int j = 0; j < copyPs; ++j) {
-    PlanningDeadline::check();
-    init_ps.emplace_back(shifted_waypoints[static_cast<size_t>(j + 1)]);
-  }
-  for (int j = copyPs; j < (N - 1); ++j) {
+  for (int j = 0; j < (N - 1); ++j) {
     PlanningDeadline::check();
     init_ps.emplace_back(sparse_path[static_cast<size_t>(j + 1)]);
   }
@@ -1785,17 +1852,6 @@ void MincoPlanner::PTAllocation(const std::vector<Eigen::Vector3d> & sparse_path
     const double v_next = utils::ComputeNextSpeed(v_curr, L, remain, amax, local_vmax);
     init_ts(i) = utils::ComputeSegmentTime(L, v_curr, v_next, local_vmax, amax, kMinSegTime);
     v_curr = v_next;
-  }
-
-  if (state == PlanningState::HOT_START && has_shifted_seed) {
-    const int oldN = std::min(N, static_cast<int>(shifted_durations.size()));
-    for (int i = 0; i < oldN; ++i) {
-      PlanningDeadline::check();
-      const double t_seed = shifted_durations(i);
-      if (std::isfinite(t_seed) && t_seed > 0.02) {
-        init_ts(i) = std::max(init_ts(i), t_seed);
-      }
-    }
   }
 }
 
@@ -1912,19 +1968,6 @@ void MincoPlanner::prepareColdStart(const geometry_msgs::msg::Pose & start_pose,
   start_state.col(1) = real_speed;
 }
 
-void MincoPlanner::prepareHotStart(const geometry_msgs::msg::Pose & start_pose,
-  double t_dur,
-  Eigen::Matrix3d & start_state,
-  const traj_opt::Trajectory & previous)
-{
-  start_state.setZero();
-  // start_state.col(0) = previous.getPos(t_dur);
-  start_state.col(0) = Eigen::Vector3d(start_pose.position.x, start_pose.position.y, 0.0);
-  start_state.col(1) = previous.getVel(t_dur);
-  // Eigen::Vector3d real_speed = getCurrentSpeed();
-  start_state.col(2) = previous.getAcc(t_dur);
-}
-
 bool MincoPlanner::optimizeYaw(const Eigen::Matrix3d & start_state,
   const traj_opt::Trajectory & pos_traj,
   traj_opt::Trajectory & out_yaw_traj,
@@ -1956,6 +1999,7 @@ bool MincoPlanner::optimizeYaw(const Eigen::Matrix3d & start_state,
         const double sample_t = std::min(t_dur, yaw_dur);
         init_yaw_state(0) = last_yaw_traj_.getPos(sample_t)(0);
         init_yaw_state(1) = last_yaw_traj_.getVel(sample_t)(0);
+        init_yaw_state(2) = last_yaw_traj_.getAcc(sample_t)(0);
         use_hot_seed = true;
       }
     }
@@ -2127,7 +2171,7 @@ void MincoPlanner::publishEmergencyStop(const geometry_msgs::msg::PoseStamped & 
 {
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
-  header_msg.stamp = rclcpp::Clock().now();
+  header_msg.stamp = node_.lock()->now();
 
   Eigen::Matrix3d start_state;
   prepareColdStart(current_pose.pose, start_state, std::vector<Eigen::Vector3d>{});
@@ -2410,7 +2454,7 @@ void MincoPlanner::publishEscapeCommand(
 
   std_msgs::msg::Header header_msg;
   header_msg.frame_id = output_frame_;
-  header_msg.stamp = rclcpp::Clock().now();
+  header_msg.stamp = node_.lock()->now();
   const double current_yaw = getCurrentYawFromOdom();
   utils::publishEscapeCommand(
     current_pose, escape_vel, current_yaw, opt_path_pub_, opt_trajectory_id_, header_msg);

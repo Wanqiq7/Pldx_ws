@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>追踪一个巡逻目标 · 导航入门</title>
+  <link rel="stylesheet" href="../assets/teaching.css">
+  <script src="../assets/feedback.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <div class="meta">导航入门 · 第一课 · 约 8 分钟</div>
+    <h1>追踪一个巡逻目标</h1>
+    <p>从 <code>src/decision</code> 出发，找到巡逻点在哪里选出来，又怎样成为 Nav2 的导航任务。</p>
+    <a href="../reference/decision-map.html">目录速查与源码入口</a>
+  </header>
+
+  <section>
+    <h2>行为树在什么时候做决定</h2>
+    <p><code>src/decision</code> 下只有一个 ROS 包 <code>bt_manager</code>。ROS 回调接收外部状态，写入<strong>黑板</strong>（共享键值数据）。管理器反复 <strong>tick</strong> 行为树，也就是从根节点发起一次求值。<code>main.cpp</code> 里调用 <code>run(30.0)</code>，主循环目标频率是 30 Hz。每轮依次处理资源、战术模式、导航、姿态和云台。</p>
+    <p class="sources"><a href="../src/decision/bt_manager/src/main.cpp">程序入口</a> · <a href="../src/decision/bt_manager/src/bt_manager.cpp">加载与 tick 顺序</a> · <a href="../src/decision/bt_manager/src/ros_interface.cpp">ROS 回调</a></p>
+    <p>先记住两条读树规则。<code>ReactiveFallback</code> 每轮重新从上往下试，遇到 <code>FAILURE</code> 就试下一项，遇到 <code>RUNNING</code> 或 <code>SUCCESS</code> 就在本轮停止往下试。普通 <code>Sequence</code> 按顺序执行，当前子节点成功才走下一步。如果当前子节点返回 <code>RUNNING</code>，下一轮在同一条序列继续时会接着 tick 它。</p>
+    <p class="sources"><a href="https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/src/controls/reactive_fallback.cpp">ReactiveFallback 实现</a> · <a href="https://github.com/BehaviorTree/BehaviorTree.CPP/blob/master/src/controls/sequence_node.cpp">Sequence 实现</a></p>
+  </section>
+
+  <section>
+    <h2>从 XML 追到 Nav2</h2>
+    <p>在 <code>nav_tree.xml</code> 搜索 <code>Priority5TrackPatrol</code>。假设上方分支本轮都返回 <code>FAILURE</code>，这条巡逻分支才会被 tick。第一条巡逻序列可以压缩成四步。</p>
+    <pre><code>CheckGameTimeWindow      检查黑板里的剩余时间是否在 301–390 秒
+SelectPatrolPoint       读取巡逻索引，选点并写入 nav_goal
+NavigateToPoseAction    读取 nav_goal，交给 Nav2 导航
+Wait                    导航节点成功后，进入等待</code></pre>
+    <ol>
+      <li><strong>判断。</strong>ROS 接口把剩余时间写成黑板键 <code>game_time_remaining</code>。<code>CheckGameTimeWindow::tick()</code> 读取它，与 XML 给出的范围比较。<span class="sources"><a href="../src/decision/bt_manager/src/condition/auto_conditions.cpp">条件实现</a> · <a href="../src/decision/bt_manager/tree/nav_tree.xml">巡逻 XML</a></span></li>
+      <li><strong>选点。</strong><code>SelectPatrolPoint::tick()</code> 用 <code>tactical_mode</code> 和 XML 的 <code>patrol_branch</code> 选点表，用 <code>patrol_index</code> 选出一个点，然后推进索引并把坐标写入 <code>nav_goal</code>。<span class="sources"><a href="../src/decision/bt_manager/src/action/auto_actions.cpp">选点实现</a></span></li>
+      <li><strong>发送。</strong><code>bt_manager.cpp</code> 把 XML 标签 <code>NavigateToPoseAction</code> 注册为动作客户端，默认 action 名称为 <code>navigate_to_pose</code>。它从黑板读取 <code>nav_goal</code>，构造 <code>map</code> 坐标系下的位姿目标，由 Nav2 的 <code>BtActionNode</code> 基类发送。<span class="sources"><a href="../src/decision/bt_manager/src/bt_manager.cpp">注册</a> · <a href="../src/decision/bt_manager/include/bt_manager/action/nav_action.hpp">目标封装</a> · <a href="https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_behavior_tree/include/nav2_behavior_tree/bt_action_node.hpp">Nav2 基类</a></span></li>
+    </ol>
+    <p class="flow"><span>巡逻分支</span> → <span>黑板 <code>nav_goal</code></span> → <span>ROS action</span> → <span>Nav2</span></p>
+    <p>这条链里，<code>bt_manager</code> 负责选目的地，Nav2 接收目标并执行导航。ROS action 是长任务的接口，可以发送目标、接收反馈、获取结果，也支持取消。</p>
+    <p class="sources">首读一手资料 · <a href="https://docs.ros.org/en/jazzy/Concepts/Basic/About-Actions.html">ROS 2 Jazzy 的 About Actions</a>，读到 Goal、Feedback、Result 即可回到源码。<a href="https://api.nav2.org/actions/jazzy/navigatetopose.html">NavigateToPose 消息定义</a>。</p>
+  </section>
+
+  <section>
+    <h2>预测下一步</h2>
+    <fieldset class="question">
+      <legend>1. 巡逻序列刚进入，剩余时间是 350 秒。谁写入目标？</legend>
+      <div class="options">
+        <button type="button" aria-pressed="false" data-feedback="再想一下。时间条件只返回检查结果。">时间检查节点</button>
+        <button type="button" aria-pressed="false" data-feedback="对。350 在第一条序列的时间范围内，选点节点把坐标写入 nav_goal。">巡逻选点节点</button>
+        <button type="button" aria-pressed="false" data-feedback="再想一下。导航动作读取选点节点已经写入的目标。">导航动作节点</button>
+      </div>
+      <output aria-live="polite"></output>
+    </fieldset>
+    <fieldset class="question">
+      <legend>2. 导航返回 RUNNING。下一轮仍 tick 到同一巡逻序列，从哪继续？</legend>
+      <div class="options">
+        <button type="button" aria-pressed="false" data-feedback="对。普通 Sequence 保留运行中子节点的索引，导航成功后才会轮到 Wait。">继续导航步骤</button>
+        <button type="button" aria-pressed="false" data-feedback="再想一下。普通 Sequence 保留运行中的子节点，所以这一轮接着导航。">重做选点步骤</button>
+        <button type="button" aria-pressed="false" data-feedback="再想一下。Wait 要等前面的导航节点返回 SUCCESS。">开始等待步骤</button>
+      </div>
+      <output aria-live="polite"></output>
+    </fieldset>
+    <details>
+      <summary>核对答案</summary>
+      <p>第一题是「巡逻选点节点」。第二题是「继续导航步骤」。外层优先级每轮重新评估，第二题的前提是这一轮仍然选到了同一巡逻序列。</p>
+    </details>
+    <p>明天试着合上讲义复述三个角色。谁选点，谁保存目标，谁接收导航任务？如果某一步说不清，把 XML 标签或源码片段发给我，我们一起跟进去。</p>
+  </section>
+  <footer><a href="../reference/decision-map.html">查阅决策层目录地图</a> · <a href="0002-odometry-to-blackboard.html">第二课：追踪黑板里的当前位置</a></footer>
+</main>
+</body>
+</html>

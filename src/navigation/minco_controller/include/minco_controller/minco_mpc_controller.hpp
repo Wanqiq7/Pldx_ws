@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,14 +20,12 @@
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "tf2_ros/buffer.h"
 
-#include "ros_interfaces/msg/chassis_command.hpp"
+#include "ros_interfaces/msg/behavior.hpp"
 #include "ros_interfaces/msg/mpc_position_command.hpp"
 
 #include "log.hpp"
-#include "minco_controller/disturbance.hpp"
-#include "minco_controller/dynamic_mpc_solver.hpp"
+#include "minco_controller/mpc_solver.hpp"
 #include "minco_controller/performance/mpc_performance_monitor.hpp"
-#include "minco_controller/wheel_odometry.hpp"
 
 namespace minco_controller {
 
@@ -53,6 +50,8 @@ public:
     const geometry_msgs::msg::Twist & velocity,
     nav2_core::GoalChecker * goal_checker) override;
 
+  void applyGravityCompensation(const nav_msgs::msg::Odometry::SharedPtr & odom, double & vx, double & vy);
+
   void setPlan(const nav_msgs::msg::Path & path) override;
 
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
@@ -62,49 +61,22 @@ public:
 private:
   friend class MincoMpcControllerTestPeer;
   bool inputsFreshLocked() const;
-  // === Callbacks ===
-  void onOptPath(const ros_interfaces::msg::MpcPositionCommand::SharedPtr msg);
-  void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
-  void publishZeroCommand();
-
-  // === Utility & Helper Functions ===
-  void configureMpcPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
-  void configureDynamicModel(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
-
-  // --- Reference and Path Processing ---
-  // Transformed /opt_path samples and the trajectory time projected from the current position.
-  struct ReferenceTrajectory
-  {
-    std::vector<ros_interfaces::msg::PositionCommand> cmds;
-    double planner_dt{0.05};
-    double start_time{0.0};
-  };
-  bool prepareReference(const State & curr, ReferenceTrajectory & out) const;
-  ReferencePoint sampleReference(const ReferenceTrajectory & traj, double time) const;
-  static void unwrapReferenceYaw(double curr_yaw, std::vector<ReferencePoint> & ref);
-
-  void onWheelOdometry(const geometry_msgs::msg::TwistStamped::SharedPtr msg);
-  // Replaces the delayed odom state by wheel-integrated state at `now`; false keeps it unchanged.
-  bool propagateWithWheelOdometry(
-    const nav_msgs::msg::Odometry::SharedPtr & odom, const rclcpp::Time & now, State & curr);
-
-  // Force-control MPC: fills the drive wrench and prediction, or returns a failure reason.
-  // raw_velocity is the global-frame odom velocity before the small-speed dead band.
-  const char * solveDynamic(const State & measured,
-    const Eigen::Vector2d & raw_velocity,
-    const nav_msgs::msg::Odometry::SharedPtr & odom,
-    const rclcpp::Time & now,
-    Eigen::Vector3d & out_wrench,
-    std::vector<State> & pred_states,
-    std::optional<MpcPerfSample> & perf);
-  // Gravity along the ground plus the observer estimate, in the global frame.
-  Eigen::Vector2d estimateDisturbance(
-    const Eigen::Vector2d & raw_velocity, const nav_msgs::msg::Odometry::SharedPtr & odom);
-
-  // Plan end pose in the robot pose frame for the goal check; false if TF is unavailable.
   bool goalInPoseFrame(const geometry_msgs::msg::PoseStamped & goal,
     const std::string & pose_frame,
     geometry_msgs::msg::PoseStamped & out) const;
+  // === Callbacks ===
+  void onOptPath(const ros_interfaces::msg::MpcPositionCommand::SharedPtr msg);
+  void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg);
+  void onBehavior(const ros_interfaces::msg::Behavior::SharedPtr msg);
+  void publishZeroCommand();
+  void applyTunnelCommandPolicy(geometry_msgs::msg::Twist & command) const;
+
+  // === Utility & Helper Functions ===
+  void configureMpcPerfLogging(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
+
+  // --- Reference and Path Processing ---
+  // Find the nearest point on cached trajectory and build horizon reference sequence.
+  bool buildReferenceFromOptPath(const State & curr, std::vector<ReferencePoint> & out_ref) const;
 
   bool transformPathToOdom(const ros_interfaces::msg::MpcPositionCommand::SharedPtr & opt,
     std::vector<ros_interfaces::msg::PositionCommand> & out_cmds) const;
@@ -146,13 +118,15 @@ private:
   // === ROS 2 Interfaces (Publishers, Subscribers, Timers) ===
   rclcpp::Subscription<ros_interfaces::msg::MpcPositionCommand>::SharedPtr opt_path_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+  rclcpp::Subscription<ros_interfaces::msg::Behavior>::SharedPtr behavior_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_predict_path_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr mpc_real_path_pub_;
-  // Planned drive wrench in the controller global frame.
-  rclcpp::Publisher<ros_interfaces::msg::ChassisCommand>::SharedPtr chassis_cmd_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_mpc_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr execution_pub_;
   bool execution_enabled_{false};
+  bool planning_failed_{false};
   uint64_t reference_version_{0};
+  Eigen::Vector3d applied_control_{Eigen::Vector3d::Zero()};
   std::chrono::steady_clock::time_point reference_received_at_;
   std::chrono::steady_clock::time_point odom_received_at_;
   double reference_timeout_sec_{2.0};
@@ -181,8 +155,14 @@ private:
   mutable std::mutex data_mtx_;
   ros_interfaces::msg::MpcPositionCommand::SharedPtr latest_opt_path_;
   nav_msgs::msg::Odometry::SharedPtr latest_odom_;
-  // Set by a PLANNING_FAILED_COMMAND of the current execution; fails FollowPath.
-  bool planning_failed_{false};
+
+  // Tunnel preparation is a decision input. Apply its command policy before
+  // publishing /cmd_vel_mpc so transport nodes only convert and transmit it.
+  bool tunnel_prepare_active_{false};
+  bool tunnel_ready_{false};
+  bool tunnel_escape_active_{false};
+  double tunnel_escape_vx_{0.0};
+  double tunnel_escape_vy_{0.0};
 
   // --- Reference Tracking State ---
   // Track reference index over time when trajectory is not updated to avoid jumping back to start.
@@ -196,11 +176,8 @@ private:
   mutable std::mutex plan_mtx_;
 
   // === Core Modules (Pointers to FSM, Optimizers, etc.) ===
-  // Force-control MPC. The top-level vx/vy/omega bounds are read into dynamic_config_.
-  DynamicMpcConfig dynamic_config_;
-  std::unique_ptr<DynamicMpcSolver> dynamic_solver_;
-  // Second pass shrinks reference time steps by cos(angle(v_pred, v_ref)) to favour cross-track accuracy.
-  bool secondary_reference_{false};
+  MPCConfig mpc_config_;
+  std::unique_ptr<MpcSolver> solver_;
 
   // === Configurations & Parameters ===
   // Dynamic speed limit from Nav2 setSpeedLimit().
@@ -208,29 +185,26 @@ private:
   bool speed_limit_percentage_{false};
 
   // Other controller parameters.
-  // Sample period of /opt_path (MincoPlanner publishes at 20 Hz).
-  static constexpr double kPlannerDt = 0.05;
+  double fixed_wz_{0.0};
+  double deadzone_speed_threshold_{0.02};
   double control_delay_compensation_{0.25};
   double lidar_offset_x_{0.0};
   double lidar_offset_y_{0.0};
+  double lidar_roll_offset_ = 0.0;
+  bool use_small_gyro_mode_{true};
   MpcPerformanceMonitor mpc_perf_monitor_;
   long long last_mpc_perf_stamp_ns_{0};
 
-  // Slope disturbance for the dynamic model (compute thread only).
-  bool slope_gravity_{false};
-  double gravity_body_roll_offset_{0.0};
-  bool disturbance_observer_enabled_{false};
-  DisturbanceObserver disturbance_observer_;
-  rclcpp::Time observer_odom_stamp_{0, 0, RCL_ROS_TIME};
-  // Last published drive input, used by the force-input disturbance observer.
-  Eigen::Vector2d last_published_acceleration_{0.0, 0.0};
-  Eigen::Vector3d pending_wrench_{0.0, 0.0, 0.0};
+  // Low-pass filter for MPC output to prevent stick-slip oscillation on slopes.
+  mutable Eigen::Vector3d prev_u_global_{0.0, 0.0, 0.0};
+  double vel_smooth_alpha_{0.3};
 
-  // Wheel odometry (body-frame chassis velocity) integrated from the delayed LIO pose to now.
-  bool wheel_odometry_enabled_{false};
-  rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr wheel_odom_sub_;
-  WheelOdometry wheel_odometry_;  // guarded by data_mtx_
-  uint64_t wheel_odometry_fallbacks_{0};
+  // P0: Integral action for unmodeled disturbances (gravity on slopes, slip).
+  // Leaky integrators of along-track and cross-track position errors.
+  mutable Eigen::Vector2d integral_err_{0.0, 0.0};
+  double k_i_along_{1.5};  // integral gain: along-track (boost on slopes)
+  double k_i_cross_{3.0};  // integral gain: cross-track (precision on curves)
+  double integral_decay_{0.98};
 };
 
 }  // namespace minco_controller

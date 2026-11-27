@@ -53,14 +53,15 @@ ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写
 
 ## 🗺️ 生效树文件
 
-| 文件 | 职责 | 当前重点 |
-|---|---|---|
-| `tactical_tree.xml` | 战术模式选择 | 人工/进攻条件优先，其余进入常规模式 |
-| `nav_tree.xml` | 主导航决策 | 人工覆盖、前哨站进攻、补给与全局资源等响应式分支 |
-| `stance_tree.xml` | 车体姿态 | 隧道对齐、人工增强姿态、进攻与移动姿态 |
-| `resource_tree.xml` | 资源请求 | 复活、血量与弹量兑换等生效分支 |
-| `recovery_tree.xml` | 导航恢复 | 当前包含隧道后退脱困动作 |
-| `gimbal_tree.xml` | 云台相关行为 | 根据共享状态执行云台策略 |
+
+| 文件                | 职责         | 当前重点                                         |
+| ------------------- | ------------ | ------------------------------------------------ |
+| `tactical_tree.xml` | 战术模式选择 | 人工/进攻条件优先，其余进入常规模式              |
+| `nav_tree.xml`      | 主导航决策   | 人工覆盖、前哨站进攻、补给与全局资源等响应式分支 |
+| `stance_tree.xml`   | 车体姿态     | 隧道对齐、人工增强姿态、进攻与移动姿态           |
+| `resource_tree.xml` | 资源请求     | 复活、血量与弹量兑换等生效分支                   |
+| `recovery_tree.xml` | 导航恢复     | 当前包含隧道后退脱困动作                         |
+| `gimbal_tree.xml`   | 云台相关行为 | 根据共享状态执行云台策略                         |
 
 > XML 中保留的注释分支属于历史或待验证方案，不代表运行能力，也不应仅因“看起来完整”而启用。
 
@@ -68,22 +69,23 @@ ROS Interface 持续把裁判系统、定位、轨迹、速度和人工输入写
 
 Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、类型或写入优先级可能同时影响多个子树。
 
-| Key | 语义 | 典型生产者 / 消费者 |
-|---|---|---|
-| `tactical_mode` | 战术层模式 | tactical tree → navigation/stance/resource |
-| `current_mode` | 当前导航/行为模式 | mode 节点与 ROS 通信 |
-| `nav_goal` | 当前导航目标 | nav tree → Nav2 action 节点 |
-| `navigation_abort_retry` | 最近中止目标、连续失败计数及下次允许发送时间 | 共享 blackboard 上的导航 action 实例 |
-| `desired_stance` | 目标姿态 | stance tree → 通信接口 |
-| `current_stance` | 实际姿态反馈 | 裁判/下位机回调 → stance conditions |
-| `desired_lifter_pos` | 目标升降位置 | 姿态动作 → 通信接口 |
-| `cmd_vel` | 当前速度信息 | ROS 回调 → 恢复/状态判断 |
-| `use_gyro_mode`, `gyro_vel` | 小陀螺开关与角速度 | 决策节点 → 控制/通信 |
-| `target_valid`, `target_pose` | 目标有效性与位置 | 感知/裁判回调 → 导航决策 |
-| `outpost_auto_attack_active`, `outpost_retreat_active` | 自动前哨攻击及专项回血阶段 | 前哨状态节点 → 导航树 |
-| `outpost_enhanced_defend_active` | 每次前哨撤退最初5秒强化防御窗口 | 前哨状态节点 → 姿态树共用强化防御分支 |
-| `enemy_outpost_health`, `enemy_base_health` | 敌方前哨站与基地血量 | `GameInfo` 回调 → 黑板 |
-| `enemy_outpost_destroyed` | 是否停止前哨站进攻/响应的策略标志 | 前哨状态节点/B键 → 导航树 |
+
+| Key                                                    | 语义                                         | 典型生产者 / 消费者                         |
+| ------------------------------------------------------ | -------------------------------------------- | ------------------------------------------- |
+| `tactical_mode`                                        | 战术层模式                                   | tactical tree → navigation/stance/resource |
+| `current_mode`                                         | 当前导航/行为模式                            | mode 节点与 ROS 通信                        |
+| `nav_goal`                                             | 当前导航目标                                 | nav tree → Nav2 action 节点                |
+| `navigation_abort_retry`                               | 最近中止目标、连续失败计数及下次允许发送时间 | 共享 blackboard 上的导航 action 实例        |
+| `desired_stance`                                       | 目标姿态                                     | stance tree → 通信接口                     |
+| `current_stance`                                       | 实际姿态反馈                                 | 裁判/下位机回调 → stance conditions        |
+| `desired_lifter_pos`                                   | 目标升降位置                                 | 姿态动作 → 通信接口                        |
+| `cmd_vel`                                              | 当前速度信息                                 | ROS 回调 → 恢复/状态判断                   |
+| `use_gyro_mode`, `gyro_vel`                            | 小陀螺开关与角速度                           | 决策节点 → 控制/通信                       |
+| `target_valid`, `target_pose`                          | 目标有效性与位置                             | 感知/裁判回调 → 导航决策                   |
+| `outpost_auto_attack_active`, `outpost_retreat_active` | 自动前哨攻击及专项回血阶段                   | 前哨状态节点 → 导航树                      |
+| `outpost_enhanced_defend_active`                       | 每次前哨撤退最初5秒强化防御窗口              | 前哨状态节点 → 姿态树共用强化防御分支      |
+| `enemy_outpost_health`, `enemy_base_health`            | 敌方前哨站与基地血量                         | `GameInfo` 回调 → 黑板                     |
+| `enemy_outpost_destroyed`                              | 是否停止前哨站进攻/响应的策略标志            | 前哨状态节点/B键 → 导航树                  |
 
 新增或修改 key 前，应同时搜索 XML 端口、C++ `get/set` 和默认值，避免隐式类型不一致。
 
@@ -103,11 +105,12 @@ Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、�
 
 ### 输出
 
-| Topic | 说明 |
-|---|---|
+
+| Topic                   | 说明                                           |
+| ----------------------- | ---------------------------------------------- |
 | `/sentry/behaivor_send` | 哨兵行为、资源与姿态指令；名称沿用现有接口拼写 |
-| `/cmd_vel` | 明确恢复/接管场景中的速度指令链路 |
-| `/sentry/area_markers` | 战术区域可视化 |
+| `/cmd_vel`              | 明确恢复/接管场景中的速度指令链路              |
+| `/sentry/area_markers`  | 战术区域可视化                                 |
 
 通信协议位段与下位机约定是跨模块接口，不能只修改发送端或单个枚举。
 
@@ -115,13 +118,14 @@ Blackboard 是决策树与 ROS 接口间的状态契约。修改 key 名称、�
 
 主程序声明以下调试参数：
 
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `bt_debug_logs` | `true` | 输出节点状态转移日志 |
-| `bt_debug_log_to_file` | `false` | 是否将转移日志写入文件 |
-| `bt_debug_log_file` | `logs/bt_transition.log` | 文件日志路径 |
-| `joint_yaw_sign` | `1.0` | `body → base_link` 关节符号 s，yaw=`-s·joint` |
-| `body_to_base_z` | `-0.5` | `body → base_link` 平移 z（m） |
+
+| 参数                   |                   默认值 | 说明                                            |
+| ---------------------- | -----------------------: | ----------------------------------------------- |
+| `bt_debug_logs`        |                   `true` | 输出节点状态转移日志                            |
+| `bt_debug_log_to_file` |                  `false` | 是否将转移日志写入文件                          |
+| `bt_debug_log_file`    | `logs/bt_transition.log` | 文件日志路径                                    |
+| `joint_yaw_sign`       |                    `1.0` | `body → base_link` 关节符号 s，yaw=`-s·joint` |
+| `body_to_base_z`       |                   `-0.5` | `body → base_link` 平移 z（m）                 |
 
 比赛运行时不建议开启高频、逐 tick 的详细日志。调试优先使用“条件变化 + 节点转移”信息，以免影响回调调度。
 
@@ -194,14 +198,15 @@ colcon test-result --test-result-base build/bt_manager --verbose
 
 ## 🛠️ 常见问题
 
-| 现象 | 优先检查 |
-|---|---|
-| 树初始化失败 | package share 路径、XML 安装、节点注册名和端口类型 |
-| 低优先级行为从不执行 | 更高优先级条件是否持续为真 |
-| 条件显示成功但后续不执行 | `ReactiveSequence` 中其他条件是否失败 |
-| 模式无法退出 | blackboard 状态是否刷新、退出分支是否恢复参数 |
-| 指令值与预期不符 | 裁判协议位段、枚举、打包与下位机约定 |
-| 日志过多影响运行 | 关闭文件日志，减少非状态变化类输出 |
+
+| 现象                     | 优先检查                                           |
+| ------------------------ | -------------------------------------------------- |
+| 树初始化失败             | package share 路径、XML 安装、节点注册名和端口类型 |
+| 低优先级行为从不执行     | 更高优先级条件是否持续为真                         |
+| 条件显示成功但后续不执行 | `ReactiveSequence` 中其他条件是否失败              |
+| 模式无法退出             | blackboard 状态是否刷新、退出分支是否恢复参数      |
+| 指令值与预期不符         | 裁判协议位段、枚举、打包与下位机约定               |
+| 日志过多影响运行         | 关闭文件日志，减少非状态变化类输出                 |
 
 ## ⚠️ 已知问题与改进方向
 
@@ -222,3 +227,17 @@ colcon test-result --test-result-base build/bt_manager --verbose
 ## 📚 延伸阅读
 
 完整系统拓扑、启动与比赛功能说明见[项目主 README](../../../README.md)。导航目标下发后的轨迹生成见 [MincoPlanner](../../navigation/minco_planner/README.md)。
+
+### 2027 referee input
+
+`GameInfo.event_code` preserves both 32-bit referee event words as one uint64.
+The small/big energy mechanism states use low-word bits 1–2 and 3–4. The
+existing own-fort view selects low-word bits 5–7 for red or 8–10 for blue from
+valid team robot IDs; unknown identity produces status 4, not idle. The full
+raw word and both control degrees remain on the blackboard. Reserved engineer
+HP slots and zero robot IDs do not create allies.
+
+`SentryInfoOnline.energy_ratio=255` is `EnergyRatio::ENERGY_UNKNOWN`, including
+at startup and after online feedback expires. Unknown energy does not force a basic MOVE request and cannot
+satisfy energy-dependent reinforcement conditions. Update both MC02 boards,
+`ros_interfaces`, and `ros2_libxr` as a set for the 30-byte game payload.

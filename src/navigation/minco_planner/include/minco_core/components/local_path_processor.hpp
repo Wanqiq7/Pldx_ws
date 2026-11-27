@@ -31,7 +31,16 @@ public:
     const geometry_msgs::msg::PoseStamped & current_pose,
     const PlannerModeContext & mode_context) const;
 
+  LocalPathSeed buildSeedFromHandoff(const std::vector<geometry_msgs::msg::PoseStamped> & global_path,
+    const geometry_msgs::msg::PoseStamped & current_pose,
+    const Eigen::Vector3d & handoff,
+    const PlannerModeContext & mode_context) const;
+
 private:
+  LocalPathSeed finishSeed(std::vector<Eigen::Vector3d> path,
+    const Eigen::Vector3d & global_goal,
+    const PlannerModeContext & mode_context) const;
+
   std::vector<Eigen::Vector3d> extractLocalPath(
     const std::vector<geometry_msgs::msg::PoseStamped> & global_path,
     const Eigen::Vector3d & cur_pos) const;
