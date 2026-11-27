@@ -70,6 +70,11 @@ int main(int argc, char ** argv)
     if (!latest) {
       return;
     }
+    const rclcpp::Time measurement(latest->header.stamp, RCL_ROS_TIME);
+    if (plannerNode->now() != measurement || controllerNode->now() != measurement ||
+        io->now() != measurement) {
+      return;  // All simulated clocks must consume the tick before solving this sample.
+    }
     geometry_msgs::msg::PoseStamped pose;
     if (!planner.getRobotPose(pose) || pose.header.stamp != latest->header.stamp) {
       return;

@@ -92,6 +92,11 @@ class ReplayTest(unittest.TestCase):
                         clock = Clock()
                         clock.clock = stamp
                         clock_pub.publish(clock)
+                        # Each process applies /clock before consuming this sample. The control
+                        # prediction is stamped with its ROS clock, not the input odometry stamp.
+                        clock_deadline = time.monotonic() + .03
+                        while time.monotonic() < clock_deadline:
+                            rclpy.spin_once(node, timeout_sec=.005)
                         base = R.from_euler('xyz', [.13, -.11, base_rate * t])
                         q = 3.05 + joint_rate * t
                         joint = YawJointState()
@@ -148,7 +153,10 @@ class ReplayTest(unittest.TestCase):
                         deadline = time.monotonic() + 3.
                         while (key not in planner_poses or key not in planner_velocities
                                or key not in predictions or not commands):
-                            self.assertLess(time.monotonic(), deadline, 'planner/MPC did not process sample')
+                            self.assertLess(time.monotonic(), deadline,
+                                            f'{scenario}/{k}: pose={key in planner_poses}, '
+                                            f'velocity={key in planner_velocities}, '
+                                            f'prediction={key in predictions}, commands={len(commands)}')
                             rclpy.spin_once(node, timeout_sec=.01)
                         planner = planner_poses[key].pose
                         np.testing.assert_allclose([planner.position.x,planner.position.y,planner.position.z],
