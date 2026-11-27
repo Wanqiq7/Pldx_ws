@@ -101,17 +101,13 @@ XY 速度替换 MPC 的平移输出；当 `tunnel_prepare_active && !tunnel_read
 | `use_small_gyro_mode` | `false` | 固定角速度小陀螺模式 |
 | `fixed_wz` | `4.18` | 小陀螺目标角速度 |
 
-### 📐 杆臂与姿态补偿
+### 📐 实体底盘状态输入
 
 ```yaml
-lidar_offset_x: 0.0
-lidar_offset_y: -0.20
-lidar_roll_offset: 0.1745
+odom_topic: /chassis/odom
 ```
 
-- `lidar_offset_x/y`：里程计参考点与底盘控制参考点的平面偏移。
-- `lidar_roll_offset`：安装姿态导致的固定横滚补偿。
-- 三者均是实体标定量，不应仅凭轨迹观感随意调整。
+- `odom_topic`：实体底盘里程计。pose 使用 `camera_init`，twist 使用 `base_link`；状态转换集中在 `chassis_state`，控制器不再补偿雷达杆臂或固定安装倾角。
 - 修改后应低速验证原地旋转、纯 x/y 平移和组合运动，确认补偿方向正确。
 
 ## 🚀 启动与检查

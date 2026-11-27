@@ -1,6 +1,7 @@
 #include "minco_controller/minco_mpc_controller.hpp"
 #include "color_text.hpp"
 #include "log.hpp"
+#include "ros_interfaces/chassis_odometry.hpp"
 #include <iostream>
 
 #include <algorithm>
@@ -158,10 +159,8 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".odom_frame", rclcpp::ParameterValue("camera_init"));
   nav2_util::declare_parameter_if_not_declared(node, name + ".map_frame", rclcpp::ParameterValue("map"));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".lidar_offset_x", rclcpp::ParameterValue(0.0));
-  nav2_util::declare_parameter_if_not_declared(node, name + ".lidar_offset_y", rclcpp::ParameterValue(0.0));
   nav2_util::declare_parameter_if_not_declared(
-    node, name + ".lidar_roll_offset", rclcpp::ParameterValue(0.0));
+    node, name + ".odom_topic", rclcpp::ParameterValue("/chassis/odom"));
 
   double dt = 0.05;
   double lookahead_time = 0.5;
@@ -207,9 +206,8 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
 
   node->get_parameter(name + ".odom_frame", odom_frame_);
   node->get_parameter(name + ".map_frame", map_frame_);
-  node->get_parameter(name + ".lidar_offset_x", lidar_offset_x_);
-  node->get_parameter(name + ".lidar_offset_y", lidar_offset_y_);
-  node->get_parameter(name + ".lidar_roll_offset", lidar_roll_offset_);
+  std::string odom_topic;
+  node->get_parameter(name + ".odom_topic", odom_topic);
 
   nav2_util::declare_parameter_if_not_declared(
     node, name + ".reference_timeout_sec", rclcpp::ParameterValue(2.0));
@@ -232,7 +230,7 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
   // 订阅里程计：用于延迟补偿和mpc输入状态
   auto odom_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   odom_sub_ = node->create_subscription<nav_msgs::msg::Odometry>(
-    "/aft_mapped_to_init", odom_qos, std::bind(&MincoMpcController::onOdom, this, std::placeholders::_1));
+    odom_topic, odom_qos, std::bind(&MincoMpcController::onOdom, this, std::placeholders::_1));
   behavior_sub_ = node->create_subscription<ros_interfaces::msg::Behavior>("/sentry/behaivor_send",
     rclcpp::QoS(10),
     std::bind(&MincoMpcController::onBehavior, this, std::placeholders::_1));
@@ -247,7 +245,7 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
 
   RCLCPP_INFO(logger_,
     "%s: MincoMpcController configured (dt=%.3f, lookahead_time=%.3f, deadzone=%.3f, delay_comp=%.3f, "
-    "small_gyro=%s, fixed_wz=%.3f, lidar_offset_x=%.3f, lidar_offset_y=%.3f, lidar_roll_offset=%.3f)",
+    "small_gyro=%s, fixed_wz=%.3f, odom=%s)",
     name_.c_str(),
     dt,
     lookahead_time,
@@ -255,62 +253,7 @@ void MincoMpcController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPt
     control_delay_compensation_,
     use_small_gyro_mode_ ? "true" : "false",
     fixed_wz_,
-    lidar_offset_x_,
-    lidar_offset_y_,
-    lidar_roll_offset_);
-}
-
-void MincoMpcController::compensateLeverArm(double v_lidar_x,
-  double v_lidar_y,
-  double omega_z,
-  double yaw,
-  double & vx_global,
-  double & vy_global,
-  double & omega_global) const
-{
-  const double v_body_x = v_lidar_x + omega_z * lidar_offset_y_;
-  const double v_body_y = v_lidar_y - omega_z * lidar_offset_x_;
-
-  const double cos_yaw = std::cos(yaw);
-  const double sin_yaw = std::sin(yaw);
-  vx_global = v_body_x * cos_yaw - v_body_y * sin_yaw;
-  vy_global = v_body_x * sin_yaw + v_body_y * cos_yaw;
-  omega_global = omega_z;
-  // std::cout << "Raw velocities: vx_lidar=" << v_lidar_x << ", vy_lidar=" << v_lidar_y
-  //           << ", omega_z=" << omega_z << ", yaw=" << yaw << std::endl;
-  // std::cout << "Compensated velocities: vx_global=" << vx_global << ", vy_global=" << vy_global
-  //           << ", omega_global=" << omega_global << std::endl;
-}
-
-void MincoMpcController::extractGlobalVelocityAndYaw(const nav_msgs::msg::Odometry::SharedPtr & odom,
-  double & vx_global,
-  double & vy_global,
-  double & omega_global,
-  double & yaw_global) const
-{
-  // 1. 提取 3D 体轴速度 (IMU 物理中心的局部速度)
-  Eigen::Vector3d v_body_imu(
-    odom->twist.twist.linear.x, odom->twist.twist.linear.y, odom->twist.twist.linear.z);
-
-  // 2. 提取全量 3D 姿态四元数
-  Eigen::Quaterniond q(odom->pose.pose.orientation.w,
-    odom->pose.pose.orientation.x,
-    odom->pose.pose.orientation.y,
-    odom->pose.pose.orientation.z);
-
-  // 3. 3D 旋转：将倾斜机体系下的速度无损映射回与地面平行的全局系
-  Eigen::Vector3d v_imu_global = q * v_body_imu;
-
-  // 4. 提取角速度与 Yaw 角
-  omega_global = odom->twist.twist.angular.z;
-  yaw_global = tf2::getYaw(odom->pose.pose.orientation);
-
-  // 5. 计算全局杆臂补偿 (将底盘水平安装偏置旋转到全局系)
-  double offset_global_x = std::cos(yaw_global) * lidar_offset_x_ - std::sin(yaw_global) * lidar_offset_y_;
-  double offset_global_y = std::sin(yaw_global) * lidar_offset_x_ + std::cos(yaw_global) * lidar_offset_y_;
-  // 6. 计算底盘旋转中心的全局速度
-  vx_global = v_imu_global.x() + omega_global * offset_global_y;
-  vy_global = v_imu_global.y() - omega_global * offset_global_x;
+    odom_topic.c_str());
 }
 
 void MincoMpcController::cleanup()
@@ -795,7 +738,7 @@ void MincoMpcController::applyGravityCompensation(
   double yaw = 0.0;
   tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
   // std::cout << "Original roll: " << roll << ", pitch: " << pitch << ", yaw: " << yaw << std::endl;
-  const double true_roll = roll - lidar_roll_offset_;
+  const double true_roll = roll;
   constexpr double angle_threshold = 0.05;
   constexpr double k_gravity_x = 1.0;
   constexpr double k_gravity_y = 20.0;
@@ -916,33 +859,34 @@ geometry_msgs::msg::TwistStamped MincoMpcController::computeVelocityCommands(
   cmd.header.stamp = now;
   cmd.header.frame_id = global_frame_;
 
-  // base_link_fake removes yaw, so use the LIO body orientation and angular
-  // velocity for the original SE(2) model and lever-arm compensation.
+  // base_link_fake removes yaw, so use the physical chassis orientation and angular
+  // velocity at the physical chassis reference point for the SE(2) model.
   State curr;
   curr.x = pose.pose.position.x;
   curr.y = pose.pose.position.y;
   curr.yaw = normalizeYaw(tf2::getYaw(pose.pose.orientation));
   if (latest_odom) {
-    double vx = latest_odom->twist.twist.linear.x;
-    double vy = latest_odom->twist.twist.linear.y;
-    double omega = latest_odom->twist.twist.angular.z;
-    double yaw_lio = normalizeYaw(tf2::getYaw(latest_odom->pose.pose.orientation));
+    ros_interfaces::ChassisWorldState chassis;
     if (!latest_odom->header.frame_id.empty() && latest_odom->header.frame_id != global_frame_) {
       if (!tf_) {
         return finish(cmd, false, "ODOM_TRANSFORM_UNAVAILABLE");
       }
       try {
-        const auto transform =
-          tf_->lookupTransform(global_frame_, latest_odom->header.frame_id, tf2::TimePointZero);
-        yaw_lio = normalizeYaw(yaw_lio + tf2::getYaw(transform.transform.rotation));
+        const auto transform = tf_->lookupTransform(
+          global_frame_, latest_odom->header.frame_id, rclcpp::Time(latest_odom->header.stamp));
+        chassis = ros_interfaces::chassisStateInWorld(*latest_odom, transform);
       } catch (const tf2::TransformException &) {
         return finish(cmd, false, "ODOM_TRANSFORM_UNAVAILABLE");
       }
+    } else {
+      chassis = ros_interfaces::chassisStateInWorld(*latest_odom);
     }
-    curr.yaw = yaw_lio;
-    double omega_global = 0.0;
-    compensateLeverArm(vx, vy, omega, yaw_lio, curr.vx, curr.vy, omega_global);
-    curr.omega = omega_global;
+    curr.x = chassis.pose.pose.position.x;
+    curr.y = chassis.pose.pose.position.y;
+    curr.yaw = normalizeYaw(chassis.yaw);
+    curr.vx = chassis.linear.x;
+    curr.vy = chassis.linear.y;
+    curr.omega = chassis.yawRate;
 
     const double noise_threshold = 0.03;
     if (std::abs(curr.vx) < noise_threshold) {

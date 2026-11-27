@@ -18,6 +18,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -49,7 +50,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs nav_msgs sensor_msgs
 )
 
+install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+ament_export_include_directories(include/${PROJECT_NAME})
+ament_export_dependencies(nav_msgs tf2_geometry_msgs)
+
 # Export dependencies
 ament_export_dependencies(rosidl_default_runtime)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_chassis_odometry test/test_chassis_odometry.cpp)
+  target_include_directories(test_chassis_odometry PRIVATE include)
+  ament_target_dependencies(test_chassis_odometry nav_msgs tf2_geometry_msgs)
+endif()
 
 ament_package()

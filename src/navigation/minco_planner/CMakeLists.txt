@@ -154,6 +154,8 @@ ament_export_targets(${library_name})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(chassis_input_test test/chassis_input_test.cpp)
+  target_link_libraries(chassis_input_test ${library_name})
   ament_add_gtest(test_goal_deduplication test/test_goal_deduplication.cpp)
   target_link_libraries(test_goal_deduplication ${library_name})
   ament_add_gtest(test_planning_budget test/test_planning_budget.cpp)

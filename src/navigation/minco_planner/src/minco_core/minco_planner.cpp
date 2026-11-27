@@ -341,15 +341,8 @@ void MincoPlanner::configure(const nav2_util::LifecycleNode::WeakPtr & parent,
     node, prefix + "allow_unknown", rclcpp::ParameterValue(true));
   node->get_parameter(prefix + "allow_unknown", allow_unknown_);
 
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "lidar_offset_x", rclcpp::ParameterValue(0.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, prefix + "lidar_offset_y", rclcpp::ParameterValue(-0.2));
-  node->get_parameter(prefix + "lidar_offset_x", lidar_offset_x_);
-  node->get_parameter(prefix + "lidar_offset_y", lidar_offset_y_);
-
   // Odometry topic
-  std::string odom_topic = "/odom";
+  std::string odom_topic = "/chassis/odom";
   nav2_util::declare_parameter_if_not_declared(
     node, prefix + "odom_topic", rclcpp::ParameterValue(odom_topic));
   node->get_parameter(prefix + "odom_topic", odom_topic);
@@ -1680,17 +1673,14 @@ MincoPlanner::PlanOutcome MincoPlanner::ReplanLocal(const geometry_msgs::msg::Po
     fallback_yaw = getCurrentYawFromOdom();
   }
 
-  // Slope-aware short-horizon yaw lock based on real odometry attitude.
+  // Slope-aware short-horizon yaw lock uses physical chassis attitude.
   double pitch = 0.0;
-  {
-    std::lock_guard<std::mutex> lk(odom_mutex_);
-    if (has_latest_odom_) {
-      const auto & odom_q = latest_odom_.pose.pose.orientation;
-      const tf2::Quaternion q(odom_q.x, odom_q.y, odom_q.z, odom_q.w);
-      double roll = 0.0;
-      double yaw = 0.0;
-      tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-    }
+  ros_interfaces::ChassisWorldState chassis;
+  if (getChassisState(chassis)) {
+    const auto & orientation = chassis.pose.pose.orientation;
+    const tf2::Quaternion rotation(orientation.x, orientation.y, orientation.z, orientation.w);
+    double roll = 0.0, yaw = 0.0;
+    tf2::Matrix3x3(rotation).getRPY(roll, pitch, yaw);
   }
 
   // Transit retains route/slope heading. The requested final orientation is
@@ -2299,82 +2289,48 @@ double MincoPlanner::getTrajectoryRemainTime() const
   return std::max(0.0, last_traj_.getTotalDuration() - passed_time);
 }
 
-bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const
+bool MincoPlanner::getChassisState(ros_interfaces::ChassisWorldState & state) const
 {
-  const bool direct_odom_pose = mode_context_ && mode_context_->directOdomPose();
-  if (!direct_odom_pose && costmap_ros_) {
-    if (costmap_ros_->getRobotPose(pose)) {
-      pose.header.frame_id = planning_frame_;
-      return true;
-    }
-  }
-
   nav_msgs::msg::Odometry odom;
   {
-    std::lock_guard<std::mutex> lk(odom_mutex_);
+    std::lock_guard<std::mutex> lock(odom_mutex_);
     if (!has_latest_odom_) {
       return false;
     }
     odom = latest_odom_;
   }
-
-  geometry_msgs::msg::PoseStamped odom_pose;
-  odom_pose.header = odom.header;
-  odom_pose.pose = odom.pose.pose;
-
-  if (direct_odom_pose) {
-    if (odom_pose.header.frame_id.empty()) {
-      RCLCPP_WARN_THROTTLE(logger_,
-        *rclcpp::Clock::make_shared(),
-        2000,
-        "[MincoPlanner] EXPLORATION odom frame is empty, treating it as %s.",
-        planning_frame_.c_str());
-    }
-    odom_pose.header.frame_id = planning_frame_;
-    pose = odom_pose;
+  if (odom.header.frame_id == planning_frame_) {
+    state = ros_interfaces::chassisStateInWorld(odom);
     return true;
   }
-
-  if (odom_pose.header.frame_id.empty()) {
-    RCLCPP_WARN_THROTTLE(logger_,
-      *rclcpp::Clock::make_shared(),
-      2000,
-      "[MincoPlanner] PRIORMAP odom frame is empty, treating it as %s before transforming to %s.",
-      rog_frame_.c_str(),
-      planning_frame_.c_str());
-    odom_pose.header.frame_id = rog_frame_;
-  }
-
-  if (odom_pose.header.frame_id == planning_frame_ || odom_pose.header.frame_id == map_frame_) {
-    odom_pose.header.frame_id = planning_frame_;
-    pose = odom_pose;
-    return true;
-  }
-
-  if (!tf_) {
-    RCLCPP_WARN_THROTTLE(logger_,
-      *rclcpp::Clock::make_shared(),
-      2000,
-      "[MincoPlanner] Cannot transform PRIORMAP odom pose from %s to %s: TF buffer is null.",
-      odom_pose.header.frame_id.c_str(),
-      planning_frame_.c_str());
+  if (!tf_ || odom.header.frame_id.empty()) {
     return false;
   }
-
   try {
-    pose = tf_->transform(odom_pose, planning_frame_);
-    pose.header.frame_id = planning_frame_;
+    const auto transform =
+      tf_->lookupTransform(planning_frame_, odom.header.frame_id, rclcpp::Time(odom.header.stamp));
+    state = ros_interfaces::chassisStateInWorld(odom, transform);
     return true;
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN_THROTTLE(logger_,
       *rclcpp::Clock::make_shared(),
       2000,
-      "[MincoPlanner] Failed to transform odom pose from %s to %s: %s",
-      odom_pose.header.frame_id.c_str(),
+      "[MincoPlanner] Chassis state transform %s -> %s failed: %s",
+      odom.header.frame_id.c_str(),
       planning_frame_.c_str(),
       ex.what());
     return false;
   }
+}
+
+bool MincoPlanner::getRobotPose(geometry_msgs::msg::PoseStamped & pose) const
+{
+  ros_interfaces::ChassisWorldState state;
+  if (!getChassisState(state)) {
+    return false;
+  }
+  pose = state.pose;
+  return true;
 }
 
 bool MincoPlanner::checkGoalReached(const geometry_msgs::msg::PoseStamped & current_pose)
@@ -2393,40 +2349,17 @@ bool MincoPlanner::checkGoalReached(const geometry_msgs::msg::PoseStamped & curr
 
 Eigen::Vector3d MincoPlanner::getCurrentSpeed() const
 {
-  std::lock_guard<std::mutex> lk(odom_mutex_);
-  if (has_latest_odom_) {
-    const auto & twist = latest_odom_.twist.twist;
-    const double yaw = utils::quaternionToYaw(latest_odom_.pose.pose.orientation);
-
-    double vx_global = 0.0;
-    double vy_global = 0.0;
-    double omega_global = 0.0;
-    utils::compensateLeverArm(twist.linear.x,
-      twist.linear.y,
-      twist.angular.z,
-      yaw,
-      lidar_offset_x_,
-      lidar_offset_y_,
-      vx_global,
-      vy_global,
-      omega_global);
-
-    // std::cout << "[MincoPlanner] Lever-arm compensation: raw_v=(" << twist.linear.x << ", "
-    //           << twist.linear.y << ") wz=" << twist.angular.z << " yaw=" << yaw << " -> v=("
-    //           << vx_global << ", " << vy_global << ")" << std::endl;
-
-    return Eigen::Vector3d(vx_global, vy_global, twist.linear.z);
+  ros_interfaces::ChassisWorldState state;
+  if (!getChassisState(state)) {
+    return Eigen::Vector3d::Zero();
   }
-  return Eigen::Vector3d::Zero();
+  return Eigen::Vector3d(state.linear.x, state.linear.y, state.linear.z);
 }
 
 double MincoPlanner::getCurrentYawFromOdom() const
 {
-  std::lock_guard<std::mutex> lk(odom_mutex_);
-  if (!has_latest_odom_) {
-    return 0.0;
-  }
-  return utils::quaternionToYaw(latest_odom_.pose.pose.orientation);
+  ros_interfaces::ChassisWorldState state;
+  return getChassisState(state) ? state.yaw : 0.0;
 }
 
 bool MincoPlanner::isTrajectoryTimeExpired(double now_s) const

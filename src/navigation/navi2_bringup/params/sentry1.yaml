@@ -11,7 +11,7 @@ bt_navigator:
     # 机器人底盘基座标系，需与 TF 中的基座标系一致。
     robot_base_frame: "base_link_fake"
     # 用于估计里程计状态的主题。
-    odom_topic: /aft_mapped_to_init
+    odom_topic: /chassis/odom
     # 行为树主循环频率，单位 ms。
     bt_loop_duration: 20 # ms
     # 行为树请求的默认超时时间，单位秒。
@@ -44,7 +44,7 @@ controller_server:
     # 是否使用仿真时钟。
     use_sim_time: False
     # Nav2 的停车检查与 MPC 使用同一里程计；由 controller_odom_topic 一并 remap。
-    odom_topic: /aft_mapped_to_init
+    odom_topic: /chassis/odom
     # 控制器执行频率，单位 Hz，越高越敏感。
     controller_frequency: 100.0
     # x 方向速度低于阈值时被视为停止，避免抖动带来误判。
@@ -119,10 +119,8 @@ controller_server:
       alpha_min: -5.0
       alpha_max: 5.0
 
-      # 激光雷达外参参数，用于将传感器坐标系与机器人基坐标系对齐。
-      lidar_offset_x: 0.0
-      lidar_offset_y: -0.20
-      lidar_roll_offset: 0.1745
+      # 实体底盘状态，三维安装几何由 chassis_state 处理。
+      odom_topic: /chassis/odom
 
       # 坐标系设置：里程计和地图参考坐标系。
       odom_frame: "camera_init"
@@ -364,10 +362,8 @@ planner_server:
       # 是否允许规划穿越未知区域。
       allow_unknown: false
       # 里程计话题，用于获取当前状态。
-      odom_topic: /aft_mapped_to_init
-      # 传感器与机器人基座之间的横向偏移
-      lidar_offset_x: 0.0
-      lidar_offset_y: -0.20
+      odom_topic: /chassis/odom
+      # 安装几何由 chassis_state 集中恢复，消费者不再补偿杆臂。
       performance:
         # 是否开启规划性能统计。
         enable: false
@@ -693,7 +689,7 @@ velocity_smoother:
     min_velocity: [-3.5, -3.5, -5.0]
     max_accel: [5.0, 5.0, 5.0]
     max_decel: [-5.0, -5.0, -5.0]
-    odom_topic: "aft_mapped_to_init"
+    odom_topic: "/chassis/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0

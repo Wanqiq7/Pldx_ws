@@ -244,6 +244,8 @@ public:
 
   static void setMotion(MincoPlanner & p, double yaw, double speed = 0.0)
   {
+    p.latest_odom_.header.frame_id = p.planning_frame_;
+    p.latest_odom_.child_frame_id = "base_link";
     p.latest_odom_.pose.pose.orientation.z = std::sin(yaw / 2.0);
     p.latest_odom_.pose.pose.orientation.w = std::cos(yaw / 2.0);
     p.latest_odom_.twist.twist.linear.x = speed;

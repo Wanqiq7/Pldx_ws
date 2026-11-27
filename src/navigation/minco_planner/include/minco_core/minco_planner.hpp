@@ -4,6 +4,7 @@
 #include "minco_core/header.hpp"
 #include "minco_core/performance/planner_performance_monitor.hpp"
 #include "minco_core/planning_deadline.hpp"
+#include "ros_interfaces/chassis_odometry.hpp"
 
 #include "std_msgs/msg/bool.hpp"
 #include <condition_variable>
@@ -110,6 +111,7 @@ public:
 
 private:
   friend class MincoPlannerTestPeer;
+  bool getChassisState(ros_interfaces::ChassisWorldState & state) const;
   bool PlanGlobalPath(
     const geometry_msgs::msg::PoseStamped & start, const geometry_msgs::msg::PoseStamped & goal);
   PlanOutcome planTerminalPose(
@@ -257,8 +259,6 @@ private:
   double priormap_rog_boundary_sample_step_{0.1};
   double exploration_boundary_margin_{0.8};
   double exploration_boundary_sample_step_{0.1};
-  double lidar_offset_x_{0.0};
-  double lidar_offset_y_{-0.2};
   double opt_freq_;
   double lookahead_dist_;
   double traj_goal_tolerance_{0.5};

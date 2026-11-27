@@ -259,3 +259,29 @@ CSV 记录 `planner_mode`、`success`、`failure_reason`、`global_search_time_m
 ## 📚 延伸阅读
 
 系统级安装、启动顺序与完整参数关系见[项目主 README](../../../README.md)。地图内部结构见 [ROGMap 文档](../../perception/rog_map/README.md)，轨迹执行见 [MPC 控制器文档](../minco_controller/README.md)。
+
+## 实体底盘状态
+
+`odom_topic` 默认 `/chassis/odom`：位置、朝向属于实体底盘参考点，
+`header.frame_id=camera_init`，`child_frame_id=base_link`，twist 表达在 `base_link`。
+规划器按消息测量时间将 pose 和完整三维 twist 转到规划世界系；PRIORMAP 下也使用相同
+参考点和 map 定位修正。低速 yaw、坡度姿态与速度来自同一底盘状态。
+雷达安装杆臂只在 `chassis_state` 恢复一次，规划器不再消费 `lidar_offset_x/y`。
+ROG 点云订阅及其原始雷达 odometry 保持原语义。
+
+隔离 ROS 域下验证真实插件公共接口（不连接硬件）：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source install-link/setup.bash
+ROS_DOMAIN_ID=218 colcon test --build-base build-link \
+    --packages-select ros_interfaces minco_planner minco_controller \
+    --executor sequential --event-handlers console_direct+
+```
+
+`minco_planner/chassis_input_test` 通过 ROS 订阅将底盘状态送入插件，验证 90° map
+修正和非零 map 平移下的同测量时间 pose、yaw 与世界速度。
+`minco_controller/chassis_input_test` 通过 ROS 订阅和公开控制入口验证预测状态，覆盖虚拟
+零 yaw 与物理 yaw 不同、干扰原始雷达 odometry、child twist 世界旋转、0.1 s 延迟
+补偿，以及旧非零雷达偏移参数不导致二次补偿。
+`ros_interfaces/test_chassis_odometry` 另外验证三维倾斜、角速度与平面航向导数。
