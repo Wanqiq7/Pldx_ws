@@ -34,6 +34,7 @@ GicpRosInterface::GicpRosInterface(const rclcpp::NodeOptions & options)
   source_cloud_topic_ = this->declare_parameter<std::string>("source_cloud_topic", "/livox/stdpc");
   alignment_frequency_ = this->declare_parameter<double>("alignment_frequency", 1.0);
   tf_publish_frequency_ = this->declare_parameter<double>("tf_publish_frequency", 10.0);
+  publish_planar_tf_ = this->declare_parameter<bool>("publish_planar_tf", true);
   accumulate_frames_ = this->declare_parameter<int>("accumulate_frames", 5);
   score_threshold_ = this->declare_parameter<double>("gicp.score_threshold", -1.0);
   normalized_score_threshold_ = this->declare_parameter<double>("gicp.normalized_score_threshold", 0.1);
@@ -354,7 +355,8 @@ void GicpRosInterface::tfPublishTimerCallback()
     }
     pose_snapshot = map_to_camera_init_;
   }
-  gicp_utils::publishCurrentTransform(tf_broadcaster_, map_frame_, pose_snapshot, this->now());
+  gicp_utils::publishCurrentTransform(
+    tf_broadcaster_, map_frame_, pose_snapshot, this->now(), publish_planar_tf_);
 }
 
 void GicpRosInterface::relocalizeServiceCallback(
@@ -384,7 +386,7 @@ void GicpRosInterface::relocalizeServiceCallback(
   gicp_initialized_ = false;
   last_cloud_stamp_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
 
-  //超时计时器重置
+  // 超时计时器重置
   reloc_start_time_ = std::chrono::steady_clock::now();
 
   // 2. Reactivate Lidar Subscription if needed
@@ -446,7 +448,8 @@ void GicpRosInterface::publishDefaultPose()
     pose_snapshot = map_to_camera_init_;
   }
 
-  gicp_utils::publishCurrentTransform(tf_broadcaster_, map_frame_, pose_snapshot, this->now());
+  gicp_utils::publishCurrentTransform(
+    tf_broadcaster_, map_frame_, pose_snapshot, this->now(), publish_planar_tf_);
   std::cout << color_text::GREEN << "[GICP] Default pose published" << color_text::RESET << std::endl;
 }
 
@@ -1099,7 +1102,8 @@ void GicpRosInterface::runFSM()
           std::lock_guard<std::mutex> lock(pose_mtx_);
           pose_snapshot = map_to_camera_init_;
         }
-        gicp_utils::publishCurrentTransform(tf_broadcaster_, map_frame_, pose_snapshot, this->now());
+        gicp_utils::publishCurrentTransform(
+          tf_broadcaster_, map_frame_, pose_snapshot, this->now(), publish_planar_tf_);
         if (!enable_continuous_relocalization_) {
           // Suspend operations to save resources
           std::cout << color_text::BLUE << "[GICP] Suspending GICP update timer and lidar subscription."

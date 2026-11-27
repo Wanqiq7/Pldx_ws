@@ -57,6 +57,8 @@ class Accuracy(Node):
         self.records = []
         self.window_target = None
         self.window_errors = []
+        self.max_localization_error = math.inf
+        self.max_yaw_error = math.inf
         self.buffer = Buffer()
         self.listener = TransformListener(self.buffer, self)
         self.create_subscription(
@@ -107,6 +109,8 @@ class Accuracy(Node):
                 self.window_errors.append(math.dist(record["truth"][:2], self.window_target))
             self.samples.write(json.dumps(record) + "\n")
             self.samples.flush()
+            assert record["localization_error"] <= self.max_localization_error, "in-motion localization error exceeded"
+            assert record["localization_yaw_error"] <= self.max_yaw_error, "in-motion yaw error exceeded"
 
     def measurement(self, gt):
         now = self.get_clock().now().nanoseconds * 1e-9
@@ -150,6 +154,8 @@ class Accuracy(Node):
             "cmd": self.cmd,
             "localization_delta": [mapped[0] - truth[0], mapped[1] - truth[1]],
             "localization_error": math.dist(mapped[:2], truth[:2]),
+            "localization_yaw_error": abs(math.atan2(
+                math.sin(mapped[3] - truth[3]), math.cos(mapped[3] - truth[3]))),
         }
         if lio is not None:
             record["lio"] = {
@@ -291,6 +297,7 @@ def main():
     parser.add_argument("directory")
     parser.add_argument("--stationary-only", action="store_true")
     parser.add_argument("--max-localization-error", type=float, default=0.12)
+    parser.add_argument("--max-yaw-error", type=float, default=math.radians(3.0))
     parser.add_argument("--max-goal-error", type=float, default=0.15)
     parser.add_argument("--max-vertical-drift", type=float, default=0.2)
     parser.add_argument("--goals", default="[[4.5,8.5],[4.5,7.3]]")
@@ -332,6 +339,10 @@ def main():
             if r["localization_error"] > args.max_localization_error:
                 violations.append(
                     f"{r['label']} localization error {r['localization_error']:.3f}m > {args.max_localization_error}m"
+                )
+            if r["localization_yaw_error"] > args.max_yaw_error:
+                violations.append(
+                    f"{r['label']} yaw error {math.degrees(r['localization_yaw_error']):.3f} deg"
                 )
             if (
                 r["label"] in (["action_result"] if args.resend_seconds else ["action_result", "settled"])

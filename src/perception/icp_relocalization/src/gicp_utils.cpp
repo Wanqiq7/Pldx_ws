@@ -98,12 +98,21 @@ double computeSafeLeafSize(const PointCloud::Ptr & cloud, double requested_leaf)
 void publishCurrentTransform(const std::shared_ptr<tf2_ros::TransformBroadcaster> & tf_broadcaster,
   const std::string & map_frame,
   const Eigen::Matrix4f & map_to_camera_init,
-  const rclcpp::Time & stamp)
+  const rclcpp::Time & stamp,
+  bool planar)
 {
   if (!tf_broadcaster) {
     return;
   }
 
+  tf_broadcaster->sendTransform(currentTransform(map_frame, map_to_camera_init, stamp, planar));
+}
+
+geometry_msgs::msg::TransformStamped currentTransform(const std::string & map_frame,
+  const Eigen::Matrix4f & map_to_camera_init,
+  const rclcpp::Time & stamp,
+  bool planar)
+{
   geometry_msgs::msg::TransformStamped t;
   t.header.stamp = stamp;
   t.header.frame_id = map_frame;
@@ -121,7 +130,15 @@ void publishCurrentTransform(const std::shared_ptr<tf2_ros::TransformBroadcaster
   t.transform.rotation.z = std::sin(static_cast<double>(yaw) * 0.5);
   t.transform.rotation.w = std::cos(static_cast<double>(yaw) * 0.5);
 
-  tf_broadcaster->sendTransform(t);
+  if (!planar) {
+    const Eigen::Quaternionf q(map_to_camera_init.block<3, 3>(0, 0));
+    t.transform.translation.z = map_to_camera_init(2, 3);
+    t.transform.rotation.x = q.x();
+    t.transform.rotation.y = q.y();
+    t.transform.rotation.z = q.z();
+    t.transform.rotation.w = q.w();
+  }
+  return t;
 }
 
 void publishStaticTf(const std::shared_ptr<tf2_ros::StaticTransformBroadcaster> & static_tf_broadcaster,
@@ -200,11 +217,10 @@ void printEvaluation(
   while (dyaw < -PI)
     dyaw += 2 * PI;
 
-  std::cout << color_text::GREEN << "[GICP Eval] Time: " << time_ms << " ms"
-            << " | Init[x=" << init_x << ", y=" << init_y << ", yaw=" << init_yaw << "]"
-            << " | Final[x=" << final_x << ", y=" << final_y << ", yaw=" << final_yaw << "]"
-            << " | Dev[dx=" << dx << ", dy=" << dy << ", dyaw=" << dyaw << "]" << color_text::RESET
-            << std::endl;
+  std::cout << color_text::GREEN << "[GICP Eval] Time: " << time_ms << " ms" << " | Init[x=" << init_x
+            << ", y=" << init_y << ", yaw=" << init_yaw << "]" << " | Final[x=" << final_x
+            << ", y=" << final_y << ", yaw=" << final_yaw << "]" << " | Dev[dx=" << dx << ", dy=" << dy
+            << ", dyaw=" << dyaw << "]" << color_text::RESET << std::endl;
 }
 
 void publishTargetCroppedDebug(bool visualization_en,

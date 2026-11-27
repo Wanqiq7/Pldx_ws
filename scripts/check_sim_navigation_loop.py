@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--launch-log", type=Path,
                         help="also count planner stdout diagnostics omitted from /rosout")
     parser.add_argument("--max-localization-error", type=float, default=0.12)
+    parser.add_argument("--max-yaw-error", type=float, default=math.radians(3.0))
     parser.add_argument("--max-goal-error", type=float, default=0.15)
     args = parser.parse_args()
     goals = json.loads(args.goals)
@@ -40,6 +41,8 @@ def main():
 
     rclpy.init()
     node = Accuracy(args.directory, goal_timeout=args.goal_timeout)
+    node.max_localization_error = args.max_localization_error
+    node.max_yaw_error = args.max_yaw_error
     warnings = (args.directory / "rosout.jsonl").open("w", buffering=1)
     candidate_stream = (args.directory / "candidate_status.jsonl").open("w", buffering=1)
     errors = []
@@ -53,16 +56,19 @@ def main():
     def sample_metrics():
         node.samples.flush()
         errors_xy = []
+        errors_yaw = []
         distance = 0.0
         previous = None
         for line in (args.directory / "samples.jsonl").read_text().splitlines():
             record = json.loads(line)
             errors_xy.append(record["localization_error"])
+            errors_yaw.append(record["localization_yaw_error"])
             if previous:
                 distance += math.dist(record["truth"][:2], previous["truth"][:2])
             previous = record
         errors_xy.sort()
         return dict(sample_count=len(errors_xy), truth_distance_m=distance,
+                    localization_yaw_max_rad=max(errors_yaw) if errors_yaw else None,
                     localization_max_m=errors_xy[-1] if errors_xy else None,
                     localization_p95_m=errors_xy[int((len(errors_xy) - 1) * .95)] if errors_xy else None)
 
@@ -121,6 +127,7 @@ def main():
 
     try:
         node.ready()
+        assert node.latest["localization_yaw_error"] <= args.max_yaw_error, "initial yaw error exceeded"
         for cycle in range(1, args.cycles + 1):
             for index, goal in enumerate(goals, 1):
                 before = len(node.records)
@@ -151,6 +158,7 @@ def main():
         metrics = sample_metrics()
         assert metrics["localization_max_m"] is not None, "no synchronized pose samples"
         assert metrics["localization_max_m"] <= args.max_localization_error, "in-motion localization error exceeded"
+        assert metrics["localization_yaw_max_rad"] <= args.max_yaw_error, "in-motion yaw error exceeded"
         print("PASS navigation loop", flush=True)
     except (Exception, KeyboardInterrupt) as error:
         failure = str(error) or type(error).__name__

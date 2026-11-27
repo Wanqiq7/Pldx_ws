@@ -35,8 +35,8 @@ public:
   explicit GicpRosInterface(const rclcpp::NodeOptions & options);
 
 private:
-  //超时处理
-  std::chrono::steady_clock::time_point reloc_start_time_;  //重定位开始时间
+  // 超时处理
+  std::chrono::steady_clock::time_point reloc_start_time_;  // 重定位开始时间
   double timeout_seconds_;                                  // 超时阈值
   std::vector<double> default_pose_on_timeout_;             // 超时后发布的默认位姿
 
@@ -182,6 +182,7 @@ private:
 
   std::chrono::duration<double> fsm_period_{1.0};
   double tf_publish_frequency_ = 10.0;
+  bool publish_planar_tf_ = true;
   std::chrono::duration<double> tf_publish_period_{0.1};
 
   GicpFilter::Options gicp_options_;

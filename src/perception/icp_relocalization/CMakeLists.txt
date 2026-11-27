@@ -92,4 +92,12 @@ install(
 )
 
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_gicp_tf test/test_gicp_tf.cpp src/gicp_utils.cpp)
+  ament_target_dependencies(test_gicp_tf rclcpp sensor_msgs nav_msgs geometry_msgs
+    tf2_ros tf2_eigen pcl_conversions)
+  target_link_libraries(test_gicp_tf gicp_filter)
+endif()
+
 ament_package()

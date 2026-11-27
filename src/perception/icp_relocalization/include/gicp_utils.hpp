@@ -13,10 +13,16 @@
 
 namespace icp_relocalization::gicp_utils {
 
+geometry_msgs::msg::TransformStamped currentTransform(const std::string & map_frame,
+  const Eigen::Matrix4f & map_to_camera_init,
+  const rclcpp::Time & stamp,
+  bool planar);
+
 void publishCurrentTransform(const std::shared_ptr<tf2_ros::TransformBroadcaster> & tf_broadcaster,
   const std::string & map_frame,
   const Eigen::Matrix4f & map_to_camera_init,
-  const rclcpp::Time & stamp);
+  const rclcpp::Time & stamp,
+  bool planar = true);
 
 void publishStaticTf(const std::shared_ptr<tf2_ros::StaticTransformBroadcaster> & static_tf_broadcaster,
   const std::string & map_frame,
