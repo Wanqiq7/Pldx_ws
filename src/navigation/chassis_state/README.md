@@ -74,9 +74,11 @@ The simulation launch supplies its level equivalent-IMU geometry rather than the
 physical MID360 tilted IMU calibration. The command adapter reads the resulting
 physical `base_link` TF in `camera_init`. No consumer applies another lever arm.
 
-The public ROS replay includes the real communication bridge with injected
-transport (no USB access), decodes the complete LibXR `nav_data` packet and checks
-fixed-world command direction in every scenario. Its capture executable requires
-`ros2_libxr` built with `BUILD_TESTING=ON`. Bench recording instructions and the
+The public ROS replay includes the real planner and MPC plugins, sends the
+recovered state through both, checks their world state and prediction, then uses
+the real communication bridge with injected transport (no USB access) to decode
+the complete LibXR `nav_data` packet and check MPC command direction in every
+scenario. Its capture executable requires
+`ros2_libxr` and `minco_controller` built with `BUILD_TESTING=ON`. Bench recording instructions and the
 unfilled real-hardware acceptance report are in
 [the bench guide](../../../docs/validation/yaw-chassis-bench.md).

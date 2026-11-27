@@ -46,7 +46,8 @@ def main():
             velocity_residuals.extend((b[1] - a[1]) / dt - .5 * (a[3] + b[3]))
             angular_residuals.extend((b[2] * a[2].inv()).as_rotvec() / dt - .5 * (a[4] + b[4]))
     report = {'case': manifest['case'], 'status': 'requires_operator_review',
-              'samples': len(odom), 'duplicate_tf_children': manifest['duplicate_tf_children'],
+              'samples': len(odom), 'conflicting_tf_parents': manifest['conflicting_tf_parents'],
+              'tf_child_ownership': manifest['tf_child_ownership'],
               'joint_receive_minus_measurement_seconds': statistics(timing),
               'timing_note': 'Includes transport and mapping error; not a measurement of clock offset truth.',
               'linear_difference_residual_m_s': statistics(velocity_residuals),

@@ -48,13 +48,17 @@ def main():
     def callback(topic):
         def record(message, info):
             counts[topic] = counts.get(topic, 0) + 1
-            source = bytes(info.publisher_gid).hex()
+            # Jazzy rclpy MessageInfo exposes timestamps but not the writer GID.
+            # Record endpoint identities separately; do not invent child ownership.
+            gid = info.get("publisher_gid")
+            source = bytes(gid).hex() if gid is not None else None
             if topic in ('/tf', '/tf_static'):
                 for transform in message.transforms:
                     child = transform.child_frame_id
-                    tf_sources.setdefault(child, set()).add((transform.header.frame_id, source))
+                    tf_sources.setdefault(child, set()).add(transform.header.frame_id)
             record = {'topic': topic, 'receive_ns': node.get_clock().now().nanoseconds,
-                      'publisher_gid': source, 'message': message_to_ordereddict(message)}
+                      'publisher_gid': source, 'transport_info': info,
+                      'message': message_to_ordereddict(message)}
             stream.write(json.dumps(record) + '\n')
         return record
 
@@ -75,9 +79,17 @@ def main():
         pass
     finally:
         stream.close()
+        endpoints = {}
+        for topic in ('/tf', '/tf_static'):
+            endpoints[topic] = [
+                {'node': endpoint.node_namespace + '/' + endpoint.node_name,
+                 'gid': bytes(endpoint.endpoint_gid).hex()}
+                for endpoint in node.get_publishers_info_by_topic(topic)]
         manifest.update(status='recorded_unreviewed', counts=counts,
+                        tf_publisher_endpoints=endpoints,
+                        tf_child_ownership='requires_manual_verification_if_gid_unavailable',
                         tf_sources={key: sorted(value) for key, value in tf_sources.items()},
-                        duplicate_tf_children=[key for key, value in tf_sources.items() if len(value) > 1])
+                        conflicting_tf_parents=[key for key, value in tf_sources.items() if len(value) > 1])
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
         node.destroy_node()
         rclpy.shutdown()

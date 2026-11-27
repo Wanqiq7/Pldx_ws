@@ -24,7 +24,7 @@ python3 scripts/record_chassis_bench.py --case stationary_baseline \
 python3 scripts/analyze_chassis_bench.py /tmp/chassis-baseline
 ```
 
-每次记录使用新目录。记录器保存实际样本、测量时间、接收时间、TF 发布源 GID、参数副本
+每次记录使用新目录。记录器保存实际样本、测量时间、接收时间、TF 发布端点 GID/节点列表、参数副本
 及 manifest。补全 manifest 中的硬件/固定机构/方向/传动/真值来源/容差依据字段。
 额外保留原始 LiDAR/IMU 与通信抓包以便重新处理，可在独立终端录制：
 
@@ -64,3 +64,7 @@ ros2 bag record /tf /tf_static /aft_mapped_to_init /chassis/odom \
 容差及其依据、实际最大误差、通过/失败、操作员与日期。自动分析始终标为
 `requires_operator_review`。发现偏差先按证据修正标定或创建具体问题。未完成真实测量
 前保持 #11 开放；#10 的视觉挂接仅验证锁定其他机构时的 CAD 几何。
+
+当前 Jazzy rclpy 每条消息不提供 publisher GID；记录器因此只自动检测冲突的 TF 父系，
+不能自动判定同一 parent/child 是否由两个节点发布。请对照 manifest 中端点列表，
+使用 `ros2 topic info /tf --verbose` 和逐个启动/停用发布源核实 child 的唯一归属。
