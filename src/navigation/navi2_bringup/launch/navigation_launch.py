@@ -109,8 +109,8 @@ def generate_launch_description():
 
     declare_controller_odom_topic_cmd = DeclareLaunchArgument(
         'controller_odom_topic',
-        default_value='/aft_mapped_to_init',
-        description='Controller-only remap target for the raw odometry topic')
+        default_value='/chassis/odom',
+        description='Physical chassis odometry for controller state')
 
     declare_use_respawn_cmd = DeclareLaunchArgument(
         'use_respawn', default_value='False',
@@ -131,7 +131,7 @@ def generate_launch_description():
                 respawn_delay=2.0,
                 parameters=[configured_params],
                 arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('/aft_mapped_to_init', controller_odom_topic),
+                remappings=remappings + [('/chassis/odom', controller_odom_topic),
                                          ('cmd_vel', 'cmd_vel_nav')]),
             Node(
                 package='nav2_smoother',
@@ -215,7 +215,7 @@ def generate_launch_description():
                 plugin='nav2_controller::ControllerServer',
                 name='controller_server',
                 parameters=[configured_params],
-                remappings=remappings + [('/aft_mapped_to_init', controller_odom_topic),
+                remappings=remappings + [('/chassis/odom', controller_odom_topic),
                                          ('cmd_vel', 'cmd_vel_nav')]),
             ComposableNode(
                 package='nav2_smoother',

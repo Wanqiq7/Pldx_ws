@@ -34,6 +34,7 @@ TF ownership with the production launch:
 | camera_init | base_link | chassis_state, dynamic, LIO stamp |
 | base_link | lidar_yaw_mount | chassis_state, dynamic, same stamp |
 | lidar_yaw_mount | body | chassis_state, static installation |
+| lidar_yaw_mount | vision_gimbal | chassis_state, static CAD small_pitch, other joints locked |
 | body | livox_frame | single_livox_pointlio launch, static IMU/LiDAR extrinsic |
 | base_link | base_link_fake | chassis_state, same stamp, inverse chassis rotation |
 
@@ -65,3 +66,17 @@ and require error below 1e-8 for twist and 1e-9 for pose. Public ROS replay perm
 1e-7 in SI units and tests wrap crossing, stationary chassis, locked joint,
 simultaneous rotation and world translation. These tolerances are synthetic,
 not real-hardware noise limits.
+
+Simulation uses `simulation_feedback` to relay `JointState.position/velocity` from
+the same simulator sample, retaining its timestamp. `joint_locked=true` publishes
+the known rigid-installation constraint at each LIO timestamp for fixed models.
+The simulation launch supplies its level equivalent-IMU geometry rather than the
+physical MID360 tilted IMU calibration. The command adapter reads the resulting
+physical `base_link` TF in `camera_init`. No consumer applies another lever arm.
+
+The public ROS replay includes the real communication bridge with injected
+transport (no USB access), decodes the complete LibXR `nav_data` packet and checks
+fixed-world command direction in every scenario. Its capture executable requires
+`ros2_libxr` built with `BUILD_TESTING=ON`. Bench recording instructions and the
+unfilled real-hardware acceptance report are in
+[the bench guide](../../../docs/validation/yaw-chassis-bench.md).

@@ -49,6 +49,10 @@ class ChassisStateNode(Node):
             joint_direction=param('joint_direction', 1.))
         if self.geometry.joint_direction not in (-1., 1.):
             raise ValueError('joint_direction must be +1 or -1')
+        self.vision = param('vision_frame', 'vision_gimbal')
+        self.vision_xyz = param('mount_to_vision_xyz', [0.17282073, -0.042, 0.092])
+        self.vision_rotation = Rotation.from_euler(
+            'xyz', param('mount_to_vision_rpy', [0., 0., 0.]))
         self.publish_tf = param('publish_tf', True)
         self.joints = JointBuffer()
         self.pending = deque(maxlen=2000)
@@ -59,9 +63,13 @@ class ChassisStateNode(Node):
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
         if self.publish_tf:
-            self.static_tf.sendTransform(self.transform(
+            static = [self.transform(
                 self.get_clock().now().to_msg(), self.mount, self.body,
-                self.geometry.imu_translation, self.geometry.imu_rotation))
+                self.geometry.imu_translation, self.geometry.imu_rotation)]
+            if self.vision:
+                static.append(self.transform(self.get_clock().now().to_msg(), self.mount,
+                                             self.vision, self.vision_xyz, self.vision_rotation))
+            self.static_tf.sendTransform(static)
         self.create_subscription(YawJointState, param('joint_topic', '/sentry/yaw_joint_state'),
                                  self.on_joint, 200)
         self.create_subscription(Odometry, param('lio_topic', '/aft_mapped_to_init'),
@@ -160,6 +168,9 @@ def main(args=None):
     node = ChassisStateNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()

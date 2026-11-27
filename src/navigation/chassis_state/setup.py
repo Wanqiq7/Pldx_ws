@@ -11,5 +11,6 @@ setup(
     maintainer='Wanqiq', maintainer_email='robot@example.com',
     description='Measurement-aligned physical chassis state for yaw-mounted LIO',
     license='Apache-2.0',
-    entry_points={'console_scripts': ['chassis_state = chassis_state.node:main']},
+    entry_points={'console_scripts': ['chassis_state = chassis_state.node:main',
+                       'simulation_feedback = chassis_state.simulation_feedback:main']},
 )

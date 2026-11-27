@@ -34,8 +34,8 @@ def generate_launch_description():
         launch.actions.DeclareLaunchArgument('use_rviz', default_value='True',
                                              description='Whether to start RViz'),
         launch.actions.DeclareLaunchArgument(
-            'controller_odom_topic', default_value='/aft_mapped_to_init',
-            description='Controller-only remap target for the raw odometry topic'),
+            'controller_odom_topic', default_value='/chassis/odom',
+            description='Physical chassis odometry for controller state'),
 
         # 静态TF: map -> camera_init
         # launch_ros.actions.Node(
@@ -54,22 +54,11 @@ def generate_launch_description():
         #     arguments=['4.234', '7.1', '0', '0.04', '0', '0', 'map', 'camera_init'],
         #     output='screen'),
 
-        launch_ros.actions.Node(
-            package='fake_vel_transform',
-            executable='fake_vel_transform_node',
-            name='fake_vel_transform',
-            output='screen',
-            parameters=[{
-                'use_sim_time': use_sim_time,
-                'odom_frame': 'camera_init',
-                'body_frame': 'body',
-                'robot_base_frame': 'base_link',
-                'fake_robot_base_frame': 'base_link_fake',
-                'joint_yaw_sign': 1.0,
-                'body_to_base_x': 0.0,
-                'body_to_base_y': 0.20,
-                'body_to_base_z': 0.0,
-            }]),
+        launch.actions.IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('chassis_state'),
+                '/launch/chassis_state.launch.py']),
+            launch_arguments={'use_sim_time': use_sim_time}.items()),
 
         # 静态TF: map -> minimap
         launch_ros.actions.Node(

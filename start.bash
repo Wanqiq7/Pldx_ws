@@ -135,6 +135,9 @@ ROSBAG_TOPICS=(
   /tf
   /tf_static
   /aft_mapped_to_init
+  /chassis/odom
+  /chassis/pose_difference
+  /sentry/yaw_joint_state
   /global_costmap/costmap_raw
   /opt_path
   /opt_path_vis
