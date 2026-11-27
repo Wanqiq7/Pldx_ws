@@ -1,0 +1,61 @@
+{
+  "samples": 94,
+  "tf_misses": 3,
+  "max_position_error_m": 0.06448960697408304,
+  "max_orientation_error_rad": 0.012259388212820988,
+  "max_chassis_age_sec": 0.150035000999992,
+  "counts": {
+    "/sentry/yaw_joint_state": 1923,
+    "/sim/ground_truth/odom": 1931,
+    "/chassis/odom": 1519,
+    "/sim/imu": 18416,
+    "/aft_mapped_to_init": 1519,
+    "/cloud_registered_full": 184
+  },
+  "sim_seconds": 18.75600000000003,
+  "wall_seconds": 20.00017713700072,
+  "edge_publishers": {
+    "body -> MID360": [
+      "unavailable"
+    ],
+    "base_link -> gimbal_front": [
+      "unavailable"
+    ],
+    "pcd_map -> camera_init": [
+      "unavailable"
+    ],
+    "lidar_yaw_mount -> body": [
+      "unavailable"
+    ],
+    "lidar_yaw_mount -> vision_gimbal": [
+      "unavailable"
+    ],
+    "camera_init -> base_link": [
+      "unavailable"
+    ],
+    "base_link -> lidar_yaw_mount": [
+      "unavailable"
+    ],
+    "base_link -> base_link_fake": [
+      "unavailable"
+    ],
+    "MID360 -> mid360_scan": [
+      "unavailable"
+    ],
+    "map -> pcd_map": [
+      "unavailable"
+    ],
+    "body -> sim_lidar": [
+      "unavailable"
+    ]
+  },
+  "duplicate_edges": [],
+  "publisher_identity_available": false,
+  "conflicting_parents": {},
+  "tf_publishers": [
+    "laserMapping",
+    "gicp_relocalization_node",
+    "sentry_sim_gimbal",
+    "chassis_state"
+  ]
+}

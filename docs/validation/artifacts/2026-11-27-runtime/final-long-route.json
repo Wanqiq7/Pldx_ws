@@ -1,0 +1,491 @@
+{
+  "cycles_requested": 5,
+  "route": [
+    [
+      24.0,
+      7.3
+    ],
+    [
+      4.6,
+      7.3
+    ]
+  ],
+  "legs": [
+    {
+      "cycle": 1,
+      "leg": 1,
+      "target": [
+        24.0,
+        7.3
+      ],
+      "start_t": 20.011000000000003,
+      "start_truth": [
+        4.602469290095229,
+        7.306754951055611,
+        0.13268515959085195,
+        0.03844754569028928
+      ],
+      "success": false,
+      "error": "in-motion localization error exceeded",
+      "end_t": 91.802,
+      "records": []
+    }
+  ],
+  "completed_legs": 0,
+  "elapsed_wall_seconds": 82.8507164420007,
+  "ros_errors": [],
+  "candidate_status_transitions": [
+    {
+      "t": 16.749,
+      "frame": "map",
+      "status": "CLEARED",
+      "phase": "initializing",
+      "candidate_start": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "t": 20.183,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        4.619116212033241,
+        7.330585817281783
+      ],
+      "truth": [
+        4.602469290095229,
+        7.306754951055611,
+        0.13268515959085195,
+        0.03844754569028928
+      ],
+      "localization_error": 0.029904182476053257
+    },
+    {
+      "t": 25.521,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        10.498703528427356,
+        11.25318548765901
+      ],
+      "truth": [
+        10.784326928504276,
+        11.61326749433653,
+        0.027791763677865462,
+        0.8310651771387297
+      ],
+      "localization_error": 0.04318806589759531
+    },
+    {
+      "t": 25.662,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        11.119736480178297,
+        11.908059660248954
+      ],
+      "truth": [
+        10.99124686331988,
+        11.833596287522889,
+        0.02202225546523945,
+        0.8294901947155628
+      ],
+      "localization_error": 0.04284245214656076
+    },
+    {
+      "t": 32.721000000000004,
+      "frame": "map",
+      "status": "CANDIDATE: COLLISION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.745526492150063,
+        4.562986419940174
+      ],
+      "truth": [
+        9.710231737994553,
+        4.675276732861997,
+        0.0644484475685998,
+        -1.4874197131076614
+      ],
+      "localization_error": 0.040079100427560195
+    },
+    {
+      "t": 32.853,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.77800241991972,
+        4.377850066683637
+      ],
+      "truth": [
+        9.74636621441335,
+        4.4822142898952535,
+        0.059392947681719044,
+        -1.5230105245198857
+      ],
+      "localization_error": 0.04008480571438289
+    },
+    {
+      "t": 37.739,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        10.06300693002024,
+        10.8083325762839
+      ],
+      "truth": [
+        10.122797174776215,
+        10.916503019867205,
+        0.04603730825300082,
+        0.9361509182450157
+      ],
+      "localization_error": 0.03687821728876902
+    },
+    {
+      "t": 37.867,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        10.397620381274145,
+        11.166773325799788
+      ],
+      "truth": [
+        10.287952134346625,
+        11.093012807577804,
+        0.04141522193672666,
+        0.9141978906312219
+      ],
+      "localization_error": 0.03654934286198423
+    },
+    {
+      "t": 42.797,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.177761810379383,
+        6.092710204813889
+      ],
+      "truth": [
+        9.080327322598198,
+        6.362982871187663,
+        0.10881110403937812,
+        -1.0252946480192175
+      ],
+      "localization_error": 0.03727646220517592
+    },
+    {
+      "t": 42.924,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.271783479136735,
+        5.846645871958099
+      ],
+      "truth": [
+        9.24351614526382,
+        5.90786973651335,
+        0.0967251051408478,
+        -1.0184432725241166
+      ],
+      "localization_error": 0.03581321694582702
+    },
+    {
+      "t": 43.437,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.550372974757678,
+        5.1195968198258335
+      ],
+      "truth": [
+        9.500004171984774,
+        5.224329503967659,
+        0.07882587943976532,
+        -0.9805546842879896
+      ],
+      "localization_error": 0.02198015774214987
+    },
+    {
+      "t": 43.584,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.628451022898464,
+        4.929776948716078
+      ],
+      "truth": [
+        9.587496769885131,
+        5.028793972654448,
+        0.07370558706129476,
+        -1.0280554545262965
+      ],
+      "localization_error": 0.027547918760584086
+    },
+    {
+      "t": 51.136,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        12.844347817169407,
+        13.32538274012446
+      ],
+      "truth": [
+        12.872609193698814,
+        13.40126735176896,
+        -0.01902850662700111,
+        0.15034928136681844
+      ],
+      "localization_error": 0.059904294474775244
+    },
+    {
+      "t": 51.267,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        13.045179379758295,
+        13.399453367998921
+      ],
+      "truth": [
+        12.97534468738526,
+        13.441695199803947,
+        -0.019622931648949765,
+        0.0762917940234812
+      ],
+      "localization_error": 0.06201864954361466
+    },
+    {
+      "t": 57.201,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.5200270449636,
+        5.600832237278364
+      ],
+      "truth": [
+        9.470019061750913,
+        5.6847928877244644,
+        0.09088360052786335,
+        -1.2176712599114852
+      ],
+      "localization_error": 0.04410244612016237
+    },
+    {
+      "t": 57.332,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.566963336136775,
+        5.474710290389245
+      ],
+      "truth": [
+        9.520738043950116,
+        5.557938117337073,
+        0.08756180083965576,
+        -1.266942130042394
+      ],
+      "localization_error": 0.04683571525529756
+    },
+    {
+      "t": 62.331,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        10.638840345985553,
+        11.383643111917761
+      ],
+      "truth": [
+        10.503091405476638,
+        11.292491879709178,
+        0.03619166276802926,
+        0.781594587604099
+      ],
+      "localization_error": 0.05997702212645157
+    },
+    {
+      "t": 62.465,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        10.843423907004171,
+        11.593989186499432
+      ],
+      "truth": [
+        10.692707958892834,
+        11.496001796905063,
+        0.030862618002439106,
+        0.7740300747531891
+      ],
+      "localization_error": 0.06303999023144223
+    },
+    {
+      "t": 68.516,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        8.949836410601344,
+        8.11035435946189
+      ],
+      "truth": [
+        8.912917961206258,
+        7.998332365219477,
+        0.12245221738625488,
+        -1.5356431414375609
+      ],
+      "localization_error": 0.03173228581175274
+    },
+    {
+      "t": 68.635,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        8.933126803113591,
+        7.710697080394195
+      ],
+      "truth": [
+        8.906613449502803,
+        7.8080228452608385,
+        0.1274357376571676,
+        -1.4627311443857791
+      ],
+      "localization_error": 0.03213454622827698
+    },
+    {
+      "t": 74.66,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        12.900122108198987,
+        13.351347535592955
+      ],
+      "truth": [
+        12.925764092191498,
+        13.409848403936195,
+        -0.01877697890856074,
+        0.11296795446557174
+      ],
+      "localization_error": 0.057137955042646196
+    },
+    {
+      "t": 74.848,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        13.167150855670991,
+        13.415218548987944
+      ],
+      "truth": [
+        13.110726226317317,
+        13.451280723278941,
+        -0.02033842735344655,
+        -0.006623383092711258
+      ],
+      "localization_error": 0.05633918686711237
+    },
+    {
+      "t": 80.431,
+      "frame": "map",
+      "status": "CANDIDATE: COLLISION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.640567858552604,
+        5.095604274296344
+      ],
+      "truth": [
+        9.642402714907247,
+        5.029151164110409,
+        0.07371492544024523,
+        -1.3613571120385122
+      ],
+      "localization_error": 0.050617864505794676
+    },
+    {
+      "t": 80.559,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        9.722059975476313,
+        4.76969759062073
+      ],
+      "truth": [
+        9.684973922199621,
+        4.848640730606486,
+        0.06898812328635688,
+        -1.394691639963562
+      ],
+      "localization_error": 0.048267764893273224
+    },
+    {
+      "t": 90.993,
+      "frame": "map",
+      "status": "CANDIDATE: KINEMATIC_VIOLATION",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        13.247610622636058,
+        13.465489398964717
+      ],
+      "truth": [
+        13.19493020696292,
+        13.486636529785377,
+        -0.021177928620715776,
+        0.03663453037641017
+      ],
+      "localization_error": 0.055656887273582284
+    },
+    {
+      "t": 91.047,
+      "frame": "map",
+      "status": "CANDIDATE: VALID",
+      "phase": "goal_[24.0, 7.3]",
+      "candidate_start": [
+        13.247399304307846,
+        13.46836252133805
+      ],
+      "truth": [
+        13.19493028125604,
+        13.486629427495686,
+        -0.02117773703654429,
+        0.037725583409813926
+      ],
+      "localization_error": 0.056426635842445595
+    }
+  ],
+  "failure": "in-motion localization error exceeded",
+  "planner_stdout_counts": {
+    "collision": 2,
+    "dynamics": 10,
+    "rejected": 12,
+    "yaw_fallback": 11,
+    "large_tracking_error": 0
+  },
+  "launch_log": "/tmp/yaw-runtime-acceptance/launch.log",
+  "launch_log_start_line": 162,
+  "sample_metrics": {
+    "sample_count": 751,
+    "truth_distance_m": 105.2569218298402,
+    "localization_yaw_max_rad": 0.01343919745320519,
+    "localization_max_m": 0.15403396454278015,
+    "localization_p95_m": 0.06812256960713961
+  }
+}

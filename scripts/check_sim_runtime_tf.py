@@ -48,8 +48,8 @@ def main():
     buffer = Buffer()
     listener = TransformListener(buffer, node)
     truth = deque(maxlen=1000)
-    counts, last, publishers = Counter(), {}, {}
-    errors, yaw_errors, ages = [], [], []
+    counts, last, publishers, parents = Counter(), {}, {}, {}
+    errors, orientation_errors, ages = [], [], []
     tf_misses = 0
     def receive(topic):
         def callback(message):
@@ -71,6 +71,7 @@ def main():
         for transform in message.transforms:
             edge = transform.header.frame_id + ' -> ' + transform.child_frame_id
             publishers.setdefault(edge, set()).add(gid)
+            parents.setdefault(transform.child_frame_id, set()).add(transform.header.frame_id)
     node.create_subscription(TFMessage, '/tf', tf_received, 100)
     node.create_subscription(TFMessage, '/tf_static', tf_received,
                              QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -78,6 +79,7 @@ def main():
     previous = started
     report_at = started
     start_sim = None
+    now = 0.0
     with (args.directory / 'samples.jsonl').open('w') as stream:
         try:
             while time.monotonic() - started < args.seconds and not (args.directory / 'STOP').exists():
@@ -97,7 +99,7 @@ def main():
                     delta = xyz(transform.translation) - xyz(gt.pose.pose.position)
                     angle = float((rotation(transform.rotation) * rotation(gt.pose.pose.orientation).inv()).magnitude())
                     errors.append(float(np.linalg.norm(delta)))
-                    yaw_errors.append(angle)
+                    orientation_errors.append(angle)
                     record.update(truth=xyz(gt.pose.pose.position).tolist(), delta=delta.tolist(), orientation_error=angle)
                 except Exception as error:
                     tf_misses += 1
@@ -116,13 +118,14 @@ def main():
         finally:
             summary = dict(samples=len(errors), tf_misses=tf_misses,
                            max_position_error_m=max(errors, default=None),
-                           max_orientation_error_rad=max(yaw_errors, default=None),
+                           max_orientation_error_rad=max(orientation_errors, default=None),
                            max_chassis_age_sec=max(ages, default=None), counts=dict(counts),
                            sim_seconds=now - start_sim if start_sim is not None else 0,
                            wall_seconds=time.monotonic() - started,
                            edge_publishers={k: sorted(v) for k, v in publishers.items()},
                            duplicate_edges=[k for k, v in publishers.items() if len(v) > 1],
                            publisher_identity_available=all('unavailable' not in v for v in publishers.values()),
+                           conflicting_parents={k: sorted(v) for k, v in parents.items() if len(v) > 1},
                            tf_publishers=[e.node_name for e in node.get_publishers_info_by_topic('/tf')])
             (args.directory / 'summary.json').write_text(json.dumps(summary, indent=2))
             print(json.dumps(summary), flush=True)

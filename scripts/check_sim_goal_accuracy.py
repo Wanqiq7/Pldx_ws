@@ -310,6 +310,8 @@ def main():
     args = parser.parse_args()
     rclpy.init()
     node = Accuracy(args.directory)
+    node.max_localization_error = args.max_localization_error
+    node.max_yaw_error = args.max_yaw_error
     violations = []
     try:
         node.ready()
