@@ -301,11 +301,17 @@ void GicpFilter::updateResultQuality(Result & result,
     static_cast<double>(overlap_count) / static_cast<double>(transformed_source->size());
 }
 
-GicpFilter::PreparedSource GicpFilter::prepareSource(const PointCloud::Ptr & source_cloud) const
+GicpFilter::PreparedSource GicpFilter::prepareSource(
+  const PointCloud::Ptr & source_cloud, const Eigen::Vector3f & source_origin) const
 {
   const auto start_time = std::chrono::high_resolution_clock::now();
   PreparedSource prepared;
-  PointCloud::Ptr source_filtered_height = applyHeightFilter(source_cloud);
+  prepared.source_from_window.block<3, 1>(0, 3) = source_origin;
+  PointCloud::Ptr window_cloud(new PointCloud());
+  if (source_cloud) {
+    pcl::transformPointCloud(*source_cloud, *window_cloud, prepared.source_from_window.inverse());
+  }
+  PointCloud::Ptr source_filtered_height = applyHeightFilter(window_cloud);
   prepared.cropped_cloud = cropSourceCloud(source_filtered_height);
 
   if (!prepared.cropped_cloud || prepared.cropped_cloud->empty()) {
@@ -472,7 +478,8 @@ GicpFilter::Result GicpFilter::alignPrepared(const PreparedSource & source,
 
   // 在精配准前根据当前先验位姿更新局部地图
   const auto local_map_start = std::chrono::high_resolution_clock::now();
-  updateLocalMap(initial_guess);
+  const Eigen::Matrix4f window_guess = initial_guess * source.source_from_window;
+  updateLocalMap(window_guess);
   const double local_map_update_time_ms =
     std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - local_map_start)
       .count();
@@ -495,7 +502,7 @@ GicpFilter::Result GicpFilter::alignPrepared(const PreparedSource & source,
   register_engine.optimizer.max_iterations = options_.max_iterations;
 
   Eigen::Isometry3d init_guess_d = Eigen::Isometry3d::Identity();
-  init_guess_d.matrix() = initial_guess.cast<double>();
+  init_guess_d.matrix() = window_guess.cast<double>();
 
   const auto registration_start = std::chrono::high_resolution_clock::now();
   const small_gicp::RegistrationResult small_gicp_result =
@@ -533,6 +540,8 @@ GicpFilter::Result GicpFilter::alignPrepared(const PreparedSource & source,
         .count();
   }
 
+  // Expose the original source frame to callers, including the second alignment stage.
+  result.final_transformation *= source.source_from_window.inverse();
   return result;
 }
 

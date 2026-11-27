@@ -1,4 +1,5 @@
 #include "gicp_utils.hpp"
+#include <Eigen/Geometry>
 
 #include "color_text.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -13,6 +14,23 @@
 #include <limits>
 
 namespace icp_relocalization::gicp_utils {
+
+TransformDelta transformDelta(
+  const Eigen::Matrix4f & reference, const Eigen::Matrix4f & candidate, bool planar)
+{
+  if (!planar) {
+    const double translation =
+      (candidate.block<3, 1>(0, 3) - reference.block<3, 1>(0, 3)).cast<double>().norm();
+    const Eigen::Quaterniond before(reference.block<3, 3>(0, 0).cast<double>());
+    const Eigen::Quaterniond after(candidate.block<3, 3>(0, 0).cast<double>());
+    return {translation, before.normalized().angularDistance(after.normalized())};
+  }
+  const double dx = candidate(0, 3) - reference(0, 3);
+  const double dy = candidate(1, 3) - reference(1, 3);
+  const double yaw =
+    std::atan2(candidate(1, 0), candidate(0, 0)) - std::atan2(reference(1, 0), reference(0, 0));
+  return {std::hypot(dx, dy), std::abs(std::atan2(std::sin(yaw), std::cos(yaw)))};
+}
 
 namespace {
 

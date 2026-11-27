@@ -695,7 +695,13 @@ GicpFilter::Result GicpRosInterface::runTwoStageAlignment(const PointCloud::Ptr 
   std::string & final_stage)
 {
   const auto start_time = std::chrono::high_resolution_clock::now();
-  const GicpFilter::PreparedSource prepared_source = gicp_filter_->prepareSource(source_cloud);
+  Eigen::Vector3f source_origin = Eigen::Vector3f::Zero();
+  if (enable_continuous_relocalization_) {
+    std::lock_guard<std::mutex> lock(odom_mtx_);
+    source_origin = latest_odom_pose_.block<3, 1>(0, 3);
+  }
+  const GicpFilter::PreparedSource prepared_source =
+    gicp_filter_->prepareSource(source_cloud, source_origin);
   GicpFilter::Result result;
   double coarse_registration_time_ms = 0.0;
   double fine_registration_time_ms = 0.0;
@@ -745,10 +751,9 @@ bool GicpRosInterface::isInitialCorrectionAccepted(
     return true;
   }
 
-  const double dx = static_cast<double>(candidate(0, 3) - initial_reference_pose_(0, 3));
-  const double dy = static_cast<double>(candidate(1, 3) - initial_reference_pose_(1, 3));
-  translation_correction = std::hypot(dx, dy);
-  yaw_correction = std::abs(wrappedYawDifference(poseYaw(candidate), poseYaw(initial_reference_pose_)));
+  const auto delta = gicp_utils::transformDelta(initial_reference_pose_, candidate, publish_planar_tf_);
+  translation_correction = delta.translation;
+  yaw_correction = delta.rotation;
   return translation_correction <= max_initial_translation_correction_ &&
          yaw_correction <= max_initial_yaw_correction_;
 }
@@ -764,11 +769,10 @@ bool GicpRosInterface::evaluatePoseStability(
 
   for (std::size_t i = 0; i < convergence_poses_.size(); ++i) {
     for (std::size_t j = i + 1; j < convergence_poses_.size(); ++j) {
-      const double dx = static_cast<double>(convergence_poses_[i](0, 3) - convergence_poses_[j](0, 3));
-      const double dy = static_cast<double>(convergence_poses_[i](1, 3) - convergence_poses_[j](1, 3));
-      max_xy_spread = std::max(max_xy_spread, std::hypot(dx, dy));
-      max_yaw_spread = std::max(max_yaw_spread,
-        std::abs(wrappedYawDifference(poseYaw(convergence_poses_[i]), poseYaw(convergence_poses_[j]))));
+      const auto delta =
+        gicp_utils::transformDelta(convergence_poses_[i], convergence_poses_[j], publish_planar_tf_);
+      max_xy_spread = std::max(max_xy_spread, delta.translation);
+      max_yaw_spread = std::max(max_yaw_spread, delta.rotation);
     }
   }
 
@@ -777,12 +781,10 @@ bool GicpRosInterface::evaluatePoseStability(
   for (std::size_t i = 0; i < convergence_poses_.size(); ++i) {
     double distance_sum = 0.0;
     for (std::size_t j = 0; j < convergence_poses_.size(); ++j) {
-      const double dx = static_cast<double>(convergence_poses_[i](0, 3) - convergence_poses_[j](0, 3));
-      const double dy = static_cast<double>(convergence_poses_[i](1, 3) - convergence_poses_[j](1, 3));
-      const double xy_distance = std::hypot(dx, dy) / max_stability_xy_spread_;
-      const double yaw_distance =
-        std::abs(wrappedYawDifference(poseYaw(convergence_poses_[i]), poseYaw(convergence_poses_[j]))) /
-        max_stability_yaw_spread_;
+      const auto delta =
+        gicp_utils::transformDelta(convergence_poses_[i], convergence_poses_[j], publish_planar_tf_);
+      const double xy_distance = delta.translation / max_stability_xy_spread_;
+      const double yaw_distance = delta.rotation / max_stability_yaw_spread_;
       distance_sum += xy_distance + yaw_distance;
     }
     if (distance_sum < best_distance_sum) {
@@ -1204,14 +1206,9 @@ void GicpRosInterface::runFSM()
       const Eigen::Matrix4f prev = has_last_successful_pose_ ? last_successful_pose_ : map_to_camera_init_;
       const Eigen::Matrix4f candidate = result.final_transformation;
 
-      const double dx = static_cast<double>(candidate(0, 3) - prev(0, 3));
-      const double dy = static_cast<double>(candidate(1, 3) - prev(1, 3));
-      const double trans_jump = std::hypot(dx, dy);
-
-      const double prev_yaw = std::atan2(static_cast<double>(prev(1, 0)), static_cast<double>(prev(0, 0)));
-      const double cand_yaw =
-        std::atan2(static_cast<double>(candidate(1, 0)), static_cast<double>(candidate(0, 0)));
-      const double yaw_jump = std::atan2(std::sin(cand_yaw - prev_yaw), std::cos(cand_yaw - prev_yaw));
+      const auto delta = gicp_utils::transformDelta(prev, candidate, publish_planar_tf_);
+      const double trans_jump = delta.translation;
+      const double yaw_jump = delta.rotation;
 
       if (trans_jump <= max_translation_jump_ && std::abs(yaw_jump) <= max_yaw_jump_) {
         jump_accepted = true;
@@ -1223,7 +1220,8 @@ void GicpRosInterface::runFSM()
         last_successful_pose_ = candidate;
         tracking_lost_count_ = 0;
       } else {
-        std::cout << color_text::YELLOW << "[GICP] Reject large jump in LOCALIZED: dxy=" << trans_jump
+        std::cout << color_text::YELLOW
+                  << "[GICP] Reject large jump in LOCALIZED: translation=" << trans_jump
                   << "m (limit=" << max_translation_jump_ << "), dyaw=" << yaw_jump
                   << "rad (limit=" << max_yaw_jump_ << ")" << color_text::RESET << std::endl;
         tracking_lost_count_++;

@@ -101,6 +101,7 @@ public:
     PointCloud::Ptr cropped_cloud;
     SmallGicpPointCloud::Ptr registration_cloud;
     double preprocessing_time_ms = 0.0;
+    Eigen::Matrix4f source_from_window = Eigen::Matrix4f::Identity();
   };
 
   // 构造函数，加载地图并进行预处理
@@ -117,7 +118,8 @@ public:
   Result align(const PointCloud::Ptr & source_cloud,
     const Eigen::Matrix4f & initial_guess,
     double max_correspondence_distance = -1.0);
-  PreparedSource prepareSource(const PointCloud::Ptr & source_cloud) const;
+  PreparedSource prepareSource(const PointCloud::Ptr & source_cloud,
+    const Eigen::Vector3f & source_origin = Eigen::Vector3f::Zero()) const;
   Result alignPrepared(const PreparedSource & source,
     const Eigen::Matrix4f & initial_guess,
     double max_correspondence_distance = -1.0,

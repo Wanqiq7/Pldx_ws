@@ -13,6 +13,16 @@
 
 namespace icp_relocalization::gicp_utils {
 
+struct TransformDelta
+{
+  double translation;
+  double rotation;
+};
+
+// Use the same geometry as the published TF for all acceptance decisions.
+TransformDelta transformDelta(
+  const Eigen::Matrix4f & reference, const Eigen::Matrix4f & candidate, bool planar);
+
 geometry_msgs::msg::TransformStamped currentTransform(const std::string & map_frame,
   const Eigen::Matrix4f & map_to_camera_init,
   const rclcpp::Time & stamp,

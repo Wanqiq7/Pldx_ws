@@ -148,6 +148,8 @@ flowchart RL
 | `results.enable` | bool | false | 是否追加记录每次最终配准尝试。示例配置为 `true`。 |
 | `results.path` | string | `/tmp/gicp_relocalization_results.csv` | CSV 输出路径；自动创建父目录并即时 flush。 |
 
+当 `publish_planar_tf: false` 时，上述平移门限按 XYZ 欧氏距离检查，旋转门限按完整 SO(3) 角距离检查；首次修正、收敛窗口和持续定位的跳变检查使用同一几何定义。参数名保留兼容，`max_yaw_*` 此时表示完整旋转角，而非仅 yaw。`publish_planar_tf: true` 继续使用 XY/yaw。
+
 CSV 同时记录 raw/normalized score、内点与重叠率、平面可观测性、XY/Yaw、初值修正量、窗口离散度、总耗时，以及源点预处理、局部地图更新、粗配准、精配准和质量评估的分阶段耗时。CSV 表头升级后，若目标路径已有旧格式文件，节点会关闭本轮记录并提示先归档或重命名，避免混入不同列结构。
 
 示例配置使用 `height_filter.enable: true` 和 `[-0.5, 2.5] m` 的宽范围，只剔除明显超出机器人周围有效高度的点；范围内的地面和坡道仍参与 GICP。该滤波不是地面语义分割，不会按坡度删除坡道。示例同时保留 0.05 m 地图体素以维持 XY/Yaw 精度，将源点体素设为 0.08 m，并把局部地图半径设为 12 m 来降低 `/cloud_registered_full` 的运行耗时。
