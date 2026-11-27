@@ -14,10 +14,10 @@ os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Twist, TwistStamped
+from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import UInt8MultiArray
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path as NavPath
 from ros_interfaces.msg import YawJointState
 from scipy.spatial.transform import Rotation as R
 from tf2_msgs.msg import TFMessage
@@ -32,7 +32,15 @@ class ReplayTest(unittest.TestCase):
         odom_pub = node.create_publisher(Odometry, '/aft_mapped_to_init', 50)
         joint_pub = node.create_publisher(YawJointState, '/sentry/yaw_joint_state', 200)
         observed, differences, transforms, packets = {}, [], {}, []
-        command_pub = node.create_publisher(Twist, "/cmd_vel_mpc", 20)
+        planner_poses, planner_velocities, predictions, commands = {}, {}, {}, []
+        key_of = lambda msg: msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
+        node.create_subscription(PoseStamped, '/chassis/test/planner_pose',
+                                 lambda msg: planner_poses.update({key_of(msg): msg}), 100)
+        node.create_subscription(TwistStamped, '/chassis/test/planner_velocity',
+                                 lambda msg: planner_velocities.update({key_of(msg): msg}), 100)
+        node.create_subscription(NavPath, '/mpc_predict_path',
+                                 lambda msg: predictions.update({key_of(msg): msg}), 100)
+        node.create_subscription(Twist, '/cmd_vel_mpc', commands.append, 100)
         clock_pub = node.create_publisher(Clock, "/clock", 20)
         node.create_subscription(UInt8MultiArray, "/chassis/test/nav_packet", packets.append, 100)
         def receive(msg):
@@ -56,15 +64,16 @@ class ReplayTest(unittest.TestCase):
             config = Path(tmp) / 'geometry.yaml'
             config.write_text(yaml.safe_dump({'chassis_state': {'ros__parameters': geometry}}))
             process = subprocess.Popen(['ros2', 'run', 'chassis_state', 'chassis_state',
-                                        '--ros-args', '--params-file', str(config)])
+                                        '--ros-args', '--params-file', str(config)], start_new_session=True)
             capture = subprocess.Popen(['ros2', 'run', 'ros2_libxr', 'chassis_command_capture',
                                         '--ros-args', '-p', 'rotate_latency:=0.0',
-                                        '-p', 'use_sim_time:=true'])
+                                        '-p', 'use_sim_time:=true'], start_new_session=True)
+            probe = subprocess.Popen(['ros2', 'run', 'minco_controller', 'navigation_chassis_probe'], start_new_session=True)
             try:
                 deadline = time.monotonic() + 15
                 while (odom_pub.get_subscription_count() == 0 or joint_pub.get_subscription_count() == 0
                        or node.count_publishers('/chassis/odom') == 0
-                       or command_pub.get_subscription_count() == 0):
+                       or node.count_publishers('/chassis/test/planner_pose') == 0):
                     self.assertIsNone(process.poll())
                     self.assertLess(time.monotonic(), deadline, 'node discovery timeout')
                     rclpy.spin_once(node, timeout_sec=.05)
@@ -114,6 +123,8 @@ class ReplayTest(unittest.TestCase):
                          msg.twist.twist.linear.z) = velocity
                         (msg.twist.twist.angular.x, msg.twist.twist.angular.y,
                          msg.twist.twist.angular.z) = omega
+                        commands.clear()
+                        packets.clear()
                         odom_pub.publish(msg)
                         key = stamp.sec * 10**9 + stamp.nanosec
                         deadline = time.monotonic() + 3
@@ -133,26 +144,40 @@ class ReplayTest(unittest.TestCase):
                                     np.max(np.abs(base.apply([actual_w.x,actual_w.y,actual_w.z]) - [0,0,base_rate])))
                         self.assertLess(error, 1e-7)
                         errors.append(float(error))
-                        # Exercise the production bridge with a fixed world direction.
-                        packets.clear()
-                        command = Twist()
-                        command.linear.x = 1.0
-                        command.angular.z = .2
-                        command_pub.publish(command)
+                        # The recovered message must pass through actual planner/MPC plugins.
+                        deadline = time.monotonic() + 3.
+                        while (key not in planner_poses or key not in planner_velocities
+                               or key not in predictions or not commands):
+                            self.assertLess(time.monotonic(), deadline, 'planner/MPC did not process sample')
+                            rclpy.spin_once(node, timeout_sec=.01)
+                        planner = planner_poses[key].pose
+                        np.testing.assert_allclose([planner.position.x,planner.position.y,planner.position.z],
+                                                   [vx*t,0,0], atol=1e-7)
+                        pq = planner.orientation
+                        self.assertLess(np.linalg.norm((R.from_quat([pq.x,pq.y,pq.z,pq.w])*base.inv()).as_rotvec()), 1e-7)
+                        pv = planner_velocities[key].twist.linear
+                        np.testing.assert_allclose([pv.x,pv.y,pv.z], [vx,0,0], atol=1e-7)
+                        prediction = predictions[key].poses[0].pose
+                        np.testing.assert_allclose([prediction.position.x,prediction.position.y], [vx*t,0], atol=1e-7)
+                        pq = prediction.orientation
+                        prediction_yaw = np.arctan2(2*(pq.w*pq.z+pq.x*pq.y),1-2*(pq.y*pq.y+pq.z*pq.z))
+                        self.assertAlmostEqual(prediction_yaw, base_rate*t, delta=1e-7)
+                        command = commands[-1]
+                        expected_xy = [np.cos(base_rate*t)*command.linear.x + np.sin(base_rate*t)*command.linear.y,
+                                       -np.sin(base_rate*t)*command.linear.x + np.cos(base_rate*t)*command.linear.y]
                         deadline = time.monotonic() + 1.
-                        match = None
+                        matched = False
                         while time.monotonic() < deadline:
                             rclpy.spin_once(node, timeout_sec=.01)
                             for packet in packets:
                                 if len(packet.data) == 30:
                                     x, y, w, valid = struct.unpack('<fffB', bytes(packet.data[16:29]))
-                                    if valid and abs(w - .2) < 1e-6:
-                                        match = x, y
-                            if match is not None:
+                                    if (valid and abs(w-command.angular.z)<2e-6
+                                        and np.allclose([x,y], expected_xy, atol=2e-6)):
+                                        matched = True
+                            if matched:
                                 break
-                        self.assertIsNotNone(match, 'no valid encoded chassis command')
-                        np.testing.assert_allclose(match, [np.cos(base_rate*t), -np.sin(base_rate*t)],
-                                                   atol=2e-6)
+                        self.assertTrue(matched, 'encoded command differs from real MPC world command')
 
                     report.append({'scenario': scenario, 'samples': len(errors), 'max_error': max(errors)})
                     t0 += 2_000_000_000
@@ -192,17 +217,23 @@ class ReplayTest(unittest.TestCase):
                 np.testing.assert_allclose([diff.angular.x,diff.angular.y,diff.angular.z], [0,0,.8], atol=1e-7)
                 print('CHASSIS_REPLAY_REPORT=' + json.dumps(report))
             finally:
-                capture.send_signal(signal.SIGINT)
+                os.killpg(probe.pid, signal.SIGINT)
+                try:
+                    probe.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(probe.pid, signal.SIGKILL)
+                    probe.wait()
+                os.killpg(capture.pid, signal.SIGINT)
                 try:
                     capture.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    capture.kill()
+                    os.killpg(capture.pid, signal.SIGKILL)
                     capture.wait()
-                process.send_signal(signal.SIGINT)
+                os.killpg(process.pid, signal.SIGINT)
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
                 node.destroy_node()
                 rclpy.shutdown()
