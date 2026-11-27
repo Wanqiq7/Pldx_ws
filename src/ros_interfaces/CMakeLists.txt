@@ -14,6 +14,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Find required packages
 find_package(ament_cmake REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -35,6 +36,7 @@ set(idl_files
   "msg/SentryInfoOffline.idl"
   "msg/SentryInfoOnline.idl"
   "msg/ChassisCommand.idl"
+  "msg/YawJointState.idl"
 )
 
 # set(srv_files
@@ -44,7 +46,7 @@ set(idl_files
 # Generate interfaces
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${idl_files}
-  DEPENDENCIES std_msgs geometry_msgs nav_msgs sensor_msgs
+  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs nav_msgs sensor_msgs
 )
 
 # Export dependencies
